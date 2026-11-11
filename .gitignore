@@ -1,0 +1,13 @@
+node_modules/
+out/
+dist/
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+*.log
+.claude/temp/
+.DS_Store
