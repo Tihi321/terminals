@@ -1,0 +1,36 @@
+appId: com.tihi.terminals
+productName: Terminals
+copyright: Copyright (c) Tihomir Selak
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - '!**/*.{map,pdb,md,ts}'
+  - '!node_modules/@lydell/node-pty-win32-x64/prebuilds/win32-x64/*.pdb'
+asarUnpack:
+  - node_modules/@lydell/**
+# The pty ships prebuilt binaries; never rebuild them from source.
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: x64
+    - target: portable
+      arch: x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Terminals
+  uninstallDisplayName: Terminals
+  artifactName: Terminals-Setup-${version}.${ext}
+portable:
+  artifactName: Terminals-${version}-portable.${ext}

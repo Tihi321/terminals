@@ -11,3 +11,4 @@ dist/
 *.log
 .claude/temp/
 .DS_Store
+release/

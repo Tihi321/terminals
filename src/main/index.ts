@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from 'ele
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import icon from '../../build/icon.png?asset'
 import type { IPty } from '@lydell/node-pty'
 import type { Command, PtyCreateRequest, Settings, UiState } from '../shared/types'
 import { spawnShell, spawnSteps } from './pty'
@@ -16,6 +17,9 @@ if (dataDir) {
   const abs = resolve(dataDir)
   mkdirSync(abs, { recursive: true })
   app.setPath('userData', abs)
+} else {
+  // Pin to the dev location so a packaged build (productName "Terminals") keeps using %APPDATA%\terminals.
+  app.setPath('userData', join(app.getPath('appData'), 'terminals'))
 }
 
 const SMOKE = process.argv.includes('--smoke') || process.env.TERMINALS_SMOKE === '1'
@@ -45,6 +49,7 @@ function createWindow(): void {
     minWidth: 760,
     minHeight: 440,
     title: 'Terminals',
+    icon,
     backgroundColor: '#16181d',
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',

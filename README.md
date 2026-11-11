@@ -22,6 +22,25 @@ yarn smoke       # headless PTY checks inside Electron; prints a PASS line per c
 
 `yarn smoke` runs two checks: an interactive shell echoing a marker, and a 2-step command (`Write-Output ('a'+'1')` then `exit 3`) whose output must contain `a1` and whose exit code must be 3.
 
+## Build an .exe
+
+```
+yarn dist        # electron-vite build + electron-builder -> release/
+yarn dist:dir    # unpacked app only: release/win-unpacked/Terminals.exe (quick testing)
+yarn icon        # regenerate build/icon.png and build/icon.ico from build/icon.svg
+```
+
+`yarn dist` produces, in `release/` (git-ignored):
+
+- `Terminals-Setup-<version>.exe`: NSIS installer, per-user (no admin), you choose the install directory, Start menu and desktop shortcuts, uninstaller.
+- `Terminals-<version>-portable.exe`: single portable exe, no install.
+
+Settings live in electron-builder.yml. x64 only. The native pty (`@lydell/node-pty*`, with `conpty.node`, `conpty.dll`, `OpenConsole.exe`) is shipped prebuilt and unpacked from the asar (`asarUnpack`), so nothing is rebuilt from source.
+
+Data is the same as in dev: `%APPDATA%\terminals\terminals.json`. The main process pins `userData` to that folder, so the product name does not move it, and your saved folders show up in the packaged app. `--data-dir` / `TERMINALS_DATA_DIR` still override it.
+
+The exe is not code signed, so Windows SmartScreen shows "Windows protected your PC" on first run: click "More info", then "Run anyway".
+
 ### Isolated data directory
 
 `--data-dir=<path>` (or the env var `TERMINALS_DATA_DIR`) sets Electron's `userData` before the app is ready, so a test or dev run never touches `%APPDATA%\terminals`. A different data dir also gets its own single-instance lock, so it can run next to your normal instance.
