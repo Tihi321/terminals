@@ -13,7 +13,7 @@ export interface UiState {
   sidebarWidth: number
   panelWidth: number
   panelOpen: boolean
-  panelTab: 'files' | 'commands'
+  panelTab: 'files' | 'commands' | 'git'
 }
 
 export interface Folder {
@@ -116,6 +116,59 @@ export interface DirEntry {
   isDir: boolean
 }
 
+/** One changed file in `git status`. Paths are relative to the repository root. */
+export interface GitFile {
+  path: string
+  /** Rename/copy source (renames only). */
+  origPath?: string
+  /** Index status letter (M A D R C T) or null when nothing is staged. */
+  staged: string | null
+  /** Worktree status letter (M D T ...) or null when there are no unstaged changes. */
+  unstaged: string | null
+  untracked: boolean
+  conflicted: boolean
+  /** Line counts; null = binary or unknown. */
+  stagedAdded: number | null
+  stagedDeleted: number | null
+  unstagedAdded: number | null
+  unstagedDeleted: number | null
+}
+
+export interface GitStatus {
+  /** Absolute repository root; all file paths are relative to it. */
+  root: string
+  branch: string | null
+  detached: boolean
+  upstream: string | null
+  ahead: number
+  behind: number
+  hasCommits: boolean
+  files: GitFile[]
+}
+
+export interface GitCommit {
+  hash: string
+  short: string
+  subject: string
+  author: string
+  /** Relative date, e.g. "3 hours ago". */
+  date: string
+}
+
+export interface GitNumstat {
+  path: string
+  origPath?: string
+  added: number | null
+  deleted: number | null
+}
+
+export type GitDiffRequest =
+  | { mode: 'unstaged' | 'staged' | 'untracked'; path: string }
+  | { mode: 'commit'; path: string; hash: string }
+
+/** Git calls never throw: failures come back as `{ ok: false, error }`, with `notRepo` set when the folder is not in a repository. */
+export type GitResult<T = object> = ({ ok: true } & T) | { ok: false; error: string; notRepo?: boolean }
+
 export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string }
 
 export interface TerminalsApi {
@@ -153,6 +206,16 @@ export interface TerminalsApi {
   listDir(path: string, showIgnored: boolean): Promise<Result<{ entries: DirEntry[] }>>
   watchDirs(paths: string[]): void
   onFsChanged(cb: (dir: string) => void): () => void
+
+  gitStatus(folder: string): Promise<GitResult<{ status: GitStatus }>>
+  gitDiff(folder: string, req: GitDiffRequest): Promise<GitResult<{ text: string; truncated: boolean }>>
+  /** paths = null stages everything (`git add -A`). Include a rename's origPath to stage both halves. */
+  gitStage(folder: string, paths: string[] | null): Promise<GitResult>
+  gitUnstage(folder: string, paths: string[] | null): Promise<GitResult>
+  /** stageTracked runs `git add -u` first ("Commit Tracked"). */
+  gitCommit(folder: string, message: string, stageTracked: boolean): Promise<GitResult>
+  gitLog(folder: string): Promise<GitResult<{ commits: GitCommit[] }>>
+  gitCommitFiles(folder: string, hash: string): Promise<GitResult<{ files: GitNumstat[] }>>
 
   clipboardRead(): Promise<string>
   clipboardReadForPaste(): Promise<PasteContent>

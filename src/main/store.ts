@@ -145,7 +145,7 @@ export function migrate(raw: Record<string, unknown>): Persisted {
     sidebarWidth: num(u.sidebarWidth, DEFAULT_UI.sidebarWidth, 180, 600),
     panelWidth: num(u.panelWidth, DEFAULT_UI.panelWidth, 220, 900),
     panelOpen: !!u.panelOpen,
-    panelTab: u.panelTab === 'commands' ? 'commands' : 'files'
+    panelTab: u.panelTab === 'commands' || u.panelTab === 'git' ? u.panelTab : 'files'
   }
   // Drop dangling group references rather than losing the folder.
   const groupIds = new Set(d.groups.map((g) => g.id))
@@ -501,7 +501,7 @@ export function setUi(patch: Partial<UiState>): AppState {
   if (patch.sidebarWidth !== undefined) u.sidebarWidth = num(patch.sidebarWidth, u.sidebarWidth, 180, 600)
   if (patch.panelWidth !== undefined) u.panelWidth = num(patch.panelWidth, u.panelWidth, 220, 900)
   if (patch.panelOpen !== undefined) u.panelOpen = !!patch.panelOpen
-  if (patch.panelTab === 'files' || patch.panelTab === 'commands') u.panelTab = patch.panelTab
+  if (patch.panelTab === 'files' || patch.panelTab === 'commands' || patch.panelTab === 'git') u.panelTab = patch.panelTab
   save()
   return getState()
 }

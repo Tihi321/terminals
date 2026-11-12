@@ -1,11 +1,15 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, FolderTree, FolderX, Group, Plus, RotateCw, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
-import type { AppState, Command } from '../../shared/types'
+import { FileDiff, FileText, FolderTree, FolderX, GitBranch, Group, Plus, RotateCw, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
+import type { AppState, Command, GitDiffRequest } from '../../shared/types'
 import { Sidebar } from './Sidebar'
 import { TerminalView } from './TerminalView'
 import { FileTree } from './FileTree'
 import { CommandsPanel } from './CommandsPanel'
+import { GitPanel } from './GitPanel'
+import { DiffView } from './DiffView'
+import { diffTitle } from './gitUtil'
+import type { DiffSpec } from './gitUtil'
 import { SnippetPicker } from './SnippetPicker'
 import { Keys } from './Keys'
 import { visibleSnippets } from './SnippetEditor'
@@ -19,11 +23,15 @@ interface Tab {
   locId: string
   cwd: string
   title: string
-  kind: 'shell' | 'command'
+  kind: 'shell' | 'command' | 'diff'
   /** Shell tabs: the process ended. */
   exited: boolean
   /** Command tabs only. */
   steps?: string[]
+  /** Diff tabs only: no pty behind them. */
+  diff?: DiffSpec
+  /** Diff tabs only: replaced by the next single-click diff (italic title) until pinned. */
+  preview?: boolean
   run?: { commandId: string; runId: string; status: 'running' | 'success' | 'failed'; exitCode?: number }
 }
 
@@ -134,6 +142,43 @@ export function App(): JSX.Element {
     [select, newTab]
   )
 
+  /** Opens a diff tab for the selected folder: reuses a tab for the same file+mode, else replaces the preview tab. */
+  const openDiff = useCallback(
+    (folder: string, req: GitDiffRequest, pin: boolean) => {
+      const locId = stateRef.current?.selectedId
+      if (!locId) return
+      const spec: DiffSpec = { ...req, folder }
+      const same = (a: DiffSpec, b: DiffSpec): boolean =>
+        a.folder === b.folder && a.mode === b.mode && a.path === b.path && (a.mode !== 'commit' || (b.mode === 'commit' && a.hash === b.hash))
+      const existing = tabsRef.current.find((t) => t.locId === locId && t.diff && same(t.diff, spec))
+      if (existing) {
+        if (pin && existing.preview) commitTabs((all) => all.map((t) => (t.id === existing.id ? { ...t, preview: false } : t)))
+        setActiveByLoc((a) => ({ ...a, [locId]: existing.id }))
+        return
+      }
+      const preview = tabsRef.current.find((t) => t.locId === locId && t.diff && t.preview)
+      if (preview) {
+        commitTabs((all) =>
+          all.map((t) => (t.id === preview.id ? { ...t, diff: spec, title: diffTitle(spec), cwd: folder, preview: !pin } : t))
+        )
+        setActiveByLoc((a) => ({ ...a, [locId]: preview.id }))
+        return
+      }
+      const id = crypto.randomUUID()
+      commitTabs((t) => [...t, { id, locId, cwd: folder, title: diffTitle(spec), kind: 'diff', exited: false, diff: spec, preview: !pin }])
+      setActiveByLoc((a) => ({ ...a, [locId]: id }))
+    },
+    [commitTabs]
+  )
+
+  /** A diff tab changed what it shows (e.g. after staging). */
+  const updateDiff = useCallback(
+    (id: string, spec: DiffSpec) => {
+      commitTabs((all) => all.map((t) => (t.id === id ? { ...t, diff: spec, title: diffTitle(spec) } : t)))
+    },
+    [commitTabs]
+  )
+
   /** Recompute a run's aggregate status from its tabs. */
   const refreshRun = useCallback(
     (runId: string) => {
@@ -229,8 +274,10 @@ export function App(): JSX.Element {
       const tab = tabsRef.current.find((t) => t.id === id)
       if (!tab) return
       if (tab.run?.status === 'running') stopRun(tab.run.commandId)
-      window.api.ptyKill(id)
-      getTerm(id)?.dispose()
+      if (tab.kind !== 'diff') {
+        window.api.ptyKill(id)
+        getTerm(id)?.dispose()
+      }
       const all = tabsRef.current
       setActiveByLoc((a) => {
         if (a[tab.locId] !== id) return a
@@ -277,7 +324,7 @@ export function App(): JSX.Element {
   )
 
   const togglePanel = useCallback(
-    async (tab: 'files' | 'commands') => {
+    async (tab: 'files' | 'commands' | 'git') => {
       const ui = stateRef.current?.ui
       if (!ui) return
       const open = ui.panelOpen && ui.panelTab === tab
@@ -363,9 +410,9 @@ export function App(): JSX.Element {
       } else if (e.shiftKey && k === 'w') {
         e.preventDefault()
         act.current.closeActive()
-      } else if (e.shiftKey && (k === 'e' || k === 'r')) {
+      } else if (e.shiftKey && (k === 'e' || k === 'r' || k === 'g')) {
         e.preventDefault()
-        void togglePanel(k === 'e' ? 'files' : 'commands')
+        void togglePanel(k === 'e' ? 'files' : k === 'r' ? 'commands' : 'git')
       } else if (e.shiftKey && k === 'p') {
         e.preventDefault()
         setPickerOpen(true)
@@ -409,6 +456,7 @@ export function App(): JSX.Element {
 
   const ui = state.ui
   const folderTabs = tabs.filter((t) => t.locId === selectedId)
+  const activeDiff = folderTabs.find((t) => t.id === activeTabId && t.kind === 'diff')
   const manualMembers = selected?.kind === 'manual' ? state.folders.filter((f) => f.groupId === selected.id).length : 0
 
   const addFolder = async (): Promise<void> => setState(await window.api.addFolder())
@@ -444,6 +492,13 @@ export function App(): JSX.Element {
             onClick={() => void togglePanel('commands')}
           >
             <Zap size={16} />
+          </button>
+          <button
+            className={`icon-btn ${ui.panelOpen && ui.panelTab === 'git' ? 'active' : ''}`}
+            title="Git changes (Ctrl+Shift+G)"
+            onClick={() => void togglePanel('git')}
+          >
+            <GitBranch size={16} />
           </button>
         </div>
       </header>
@@ -493,12 +548,19 @@ export function App(): JSX.Element {
                 return (
                   <div
                     key={t.id}
-                    className={`tab ${t.id === activeTabId ? 'active' : ''} ${t.exited ? 'exited' : ''}`}
+                    className={`tab ${t.id === activeTabId ? 'active' : ''} ${t.exited ? 'exited' : ''} ${t.preview ? 'preview' : ''}`}
                     onClick={() => setActiveByLoc((a) => ({ ...a, [t.locId]: t.id }))}
+                    onDoubleClick={() => t.preview && commitTabs((all) => all.map((x) => (x.id === t.id ? { ...x, preview: false } : x)))}
                     onAuxClick={(e) => e.button === 1 && closeTab(t.id)}
-                    title={`${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}`}
+                    title={t.diff ? `${t.diff.path}\n${t.cwd}` : `${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}`}
                   >
-                    {t.kind === 'command' ? <Zap size={13} className="tab-icon" /> : <Terminal size={13} className="tab-icon" />}
+                    {t.kind === 'command' ? (
+                      <Zap size={13} className="tab-icon" />
+                    ) : t.kind === 'diff' ? (
+                      <FileDiff size={13} className="tab-icon" />
+                    ) : (
+                      <Terminal size={13} className="tab-icon" />
+                    )}
                     <span className="tab-title">{t.title}</span>
                     {t.kind === 'command' && <span className={`dot ${t.run?.status}`} />}
                     {t.exited && <span className="tab-exited">exited</span>}
@@ -518,7 +580,7 @@ export function App(): JSX.Element {
                     )}
                     <button
                       className="tab-btn"
-                      title="Close terminal"
+                      title={t.kind === 'diff' ? 'Close diff' : 'Close terminal'}
                       onClick={(e) => {
                         e.stopPropagation()
                         closeTab(t.id)
@@ -540,7 +602,7 @@ export function App(): JSX.Element {
             </div>
           )}
           <div className="term-area">
-            {tabs.map((t) => (
+            {tabs.filter((t) => t.kind !== 'diff').map((t) => (
               <TerminalView
                 key={t.id}
                 id={t.id}
@@ -549,6 +611,14 @@ export function App(): JSX.Element {
                 visible={t.locId === selectedId && t.id === activeTabId}
               />
             ))}
+            {activeDiff?.diff && (
+              <DiffView
+                key={activeDiff.id}
+                spec={activeDiff.diff}
+                fontSize={Math.max(11, state.settings.terminalFontSize - 2)}
+                onChangeSpec={(spec) => updateDiff(activeDiff.id, spec)}
+              />
+            )}
             {!selected && (
               <div className="empty">
                 <span className="empty-icon">
@@ -627,6 +697,13 @@ export function App(): JSX.Element {
                 >
                   <Zap size={14} /> Commands
                 </button>
+                <button
+                  className={ui.panelTab === 'git' ? 'active' : ''}
+                  onClick={async () => setState(await window.api.setUi({ panelTab: 'git' }))}
+                  title="Git changes (Ctrl+Shift+G)"
+                >
+                  <GitBranch size={14} /> Git
+                </button>
                 <span className="spacer" />
                 <button className="icon-btn" title="Close panel" onClick={async () => setState(await window.api.setUi({ panelOpen: false }))}>
                   <X size={15} />
@@ -637,6 +714,12 @@ export function App(): JSX.Element {
                   root={selected?.path ?? null}
                   rootMissing={!!selected?.missing}
                   onOpenTerminalHere={(dir) => selected && newTab(selected.id, dir)}
+                />
+              ) : ui.panelTab === 'git' ? (
+                <GitPanel
+                  root={selected?.path ?? null}
+                  rootMissing={!!selected?.missing}
+                  onOpenDiff={(folder, spec, pin) => openDiff(folder, spec, pin)}
                 />
               ) : (
                 <CommandsPanel

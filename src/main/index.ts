@@ -10,6 +10,8 @@ import { spawnShell, spawnSteps } from './pty'
 import * as store from './store'
 import { runSmoke } from './smoke'
 import { DirWatcher, listDir, openInEditor } from './fsops'
+import * as gitcli from './gitcli'
+import type { GitDiffRequest } from '../shared/types'
 
 // Must run before app is ready: lets tests/dev runs use an isolated data directory.
 const dataDirArg = process.argv.find((a) => a.startsWith('--data-dir='))?.slice('--data-dir='.length)
@@ -232,6 +234,21 @@ function registerIpc(): void {
   ipcMain.on('fs:watch', (_e, paths: string[]) => {
     watcher.sync((Array.isArray(paths) ? paths : []).filter(allowed).map((p) => resolve(p)))
   })
+
+  const notAllowed = { ok: false as const, error: 'Folder is not a saved folder' }
+  ipcMain.handle('git:status', (_e, f: string) => (allowed(f) ? gitcli.gitStatus(f) : notAllowed))
+  ipcMain.handle('git:diff', (_e, f: string, req: GitDiffRequest) => (allowed(f) ? gitcli.gitDiff(f, req) : notAllowed))
+  ipcMain.handle('git:stage', (_e, f: string, paths: string[] | null) =>
+    allowed(f) ? gitcli.gitStage(f, paths === null ? null : Array.isArray(paths) ? paths : []) : notAllowed
+  )
+  ipcMain.handle('git:unstage', (_e, f: string, paths: string[] | null) =>
+    allowed(f) ? gitcli.gitUnstage(f, paths === null ? null : Array.isArray(paths) ? paths : []) : notAllowed
+  )
+  ipcMain.handle('git:commit', (_e, f: string, msg: string, tracked: boolean) =>
+    allowed(f) ? gitcli.gitCommit(f, msg, !!tracked) : notAllowed
+  )
+  ipcMain.handle('git:log', (_e, f: string) => (allowed(f) ? gitcli.gitLog(f) : notAllowed))
+  ipcMain.handle('git:commitFiles', (_e, f: string, hash: string) => (allowed(f) ? gitcli.gitCommitFiles(f, hash) : notAllowed))
 
   ipcMain.handle('clipboard:read', () => clipboard.readText())
   ipcMain.handle('clipboard:readForPaste', () => readForPaste())

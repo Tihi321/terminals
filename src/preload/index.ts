@@ -46,6 +46,14 @@ const api: TerminalsApi = {
     return () => ipcRenderer.removeListener('fs:changed', h)
   },
 
+  gitStatus: (f) => inv('git:status', f),
+  gitDiff: (f, req) => inv('git:diff', f, req),
+  gitStage: (f, paths) => inv('git:stage', f, paths),
+  gitUnstage: (f, paths) => inv('git:unstage', f, paths),
+  gitCommit: (f, msg, tracked) => inv('git:commit', f, msg, tracked),
+  gitLog: (f) => inv('git:log', f),
+  gitCommitFiles: (f, hash) => inv('git:commitFiles', f, hash),
+
   clipboardRead: () => inv('clipboard:read'),
   clipboardReadForPaste: () => inv('clipboard:readForPaste'),
   clipboardWrite: (text) => inv('clipboard:write', text),

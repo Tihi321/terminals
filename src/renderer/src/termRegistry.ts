@@ -30,7 +30,7 @@ export interface TermHooks {
   onCloseTab: () => void
   onExit: (id: string, code: number) => void
   onZoom: (dir: -1 | 0 | 1) => void
-  onTogglePanel: (tab: 'files' | 'commands') => void
+  onTogglePanel: (tab: 'files' | 'commands' | 'git') => void
   onSnippetPicker: () => void
 }
 let hooks: TermHooks = {
@@ -190,9 +190,9 @@ export function createTerm(id: string, opts: { command?: boolean } = {}): TermEn
       hooks.onCloseTab()
       return false
     }
-    if (ev.ctrlKey && ev.shiftKey && (k === 'e' || k === 'r')) {
+    if (ev.ctrlKey && ev.shiftKey && (k === 'e' || k === 'r' || k === 'g')) {
       ev.preventDefault()
-      hooks.onTogglePanel(k === 'e' ? 'files' : 'commands')
+      hooks.onTogglePanel(k === 'e' ? 'files' : k === 'r' ? 'commands' : 'git')
       return false
     }
     if (ev.ctrlKey && ev.shiftKey && !ev.altKey && k === 'p') {

@@ -43,7 +43,7 @@ const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp']
 const ARCHIVE = new Set(['zip', '7z', 'rar', 'tar', 'gz', 'tgz', 'nupkg'])
 const TEXT = new Set(['md', 'txt', 'log', 'csv', 'lock', 'ini', 'env', 'gitignore'])
 
-function fileIcon(name: string): ReactNode {
+export function fileIcon(name: string): ReactNode {
   const ext = name.includes('.') ? (name.split('.').pop() ?? '').toLowerCase() : ''
   if (ext === 'json' || ext === 'jsonc') return <FileJson size={15} className="ic-json" />
   if (CODE.has(ext)) return <FileCode size={15} className="ic-code" />
