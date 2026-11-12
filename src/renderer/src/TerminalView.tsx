@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import { getTerm } from './termRegistry'
+import { formatPaths, getTerm } from './termRegistry'
 
 interface Props {
   id: string
@@ -35,6 +35,7 @@ export function TerminalView({ id, cwd, visible, steps }: Props): JSX.Element {
       void window.api
         .ptyCreate({ id, cwd, cols: entry.term.cols, rows: entry.term.rows, steps })
         .then((r) => {
+          entry.markReady()
           if (!r.ok) {
             entry.term.write(`\x1b[31mFailed to start: ${r.error}\x1b[0m\r\n`)
             // Treat as exited so the tab is marked consistently.
@@ -60,5 +61,37 @@ export function TerminalView({ id, cwd, visible, steps }: Props): JSX.Element {
     return () => cancelAnimationFrame(raf)
   }, [visible, id])
 
-  return <div ref={ref} className="term-host" style={{ display: visible ? 'block' : 'none' }} />
+  const [dropping, setDropping] = useState(false)
+
+  const onDrop = (e: React.DragEvent): void => {
+    if (!e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    setDropping(false)
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.api.getPathForFile(f))
+      .filter(Boolean)
+    const entry = getTerm(id)
+    if (paths.length > 0 && entry) {
+      entry.term.paste(formatPaths(paths))
+      entry.term.focus()
+    }
+  }
+
+  return (
+    <div
+      ref={ref}
+      className={`term-host${dropping ? ' drop-target' : ''}`}
+      style={{ display: visible ? 'block' : 'none' }}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+        if (!dropping) setDropping(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false)
+      }}
+      onDrop={onDrop}
+    />
+  )
 }

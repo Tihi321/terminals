@@ -1,5 +1,5 @@
 /** Current on-disk schema version. Files without a `version` field are version 1. */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface Settings {
   /** Shell executable. Empty string = auto (pwsh.exe if on PATH, else powershell.exe). */
@@ -74,10 +74,25 @@ export interface Command {
   targets: CommandTarget[]
 }
 
+/** Saved prompt / text snippet that can be pasted into a terminal. */
+export interface Snippet {
+  id: string
+  name: string
+  body: string
+  /** 'global' or a folder, group or child id. */
+  scope: string
+}
+
+export type PasteContent =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; path: string }
+  | { kind: 'files'; paths: string[] }
+
 export interface AppState {
   folders: FolderView[]
   groups: GroupView[]
   commands: Command[]
+  snippets: Snippet[]
   /** Selected folder, group or child id. */
   selectedId: string | null
   settings: Settings
@@ -120,6 +135,12 @@ export interface TerminalsApi {
   select(id: string | null): Promise<AppState>
   saveCommand(cmd: Command): Promise<AppState>
   deleteCommand(id: string): Promise<AppState>
+  saveSnippet(s: Snippet): Promise<AppState>
+  deleteSnippet(id: string): Promise<AppState>
+  /** Add dropped directories (files are ignored, known paths skipped). Selects the first new one. */
+  addFolderPaths(paths: string[], groupId: string | null, beforeId?: string): Promise<AppState>
+  /** Real filesystem path of a dropped File (File.path is gone in Electron 32+). */
+  getPathForFile(file: File): string
   setSettings(patch: Partial<Settings>): Promise<AppState>
   setUi(patch: Partial<UiState>): Promise<AppState>
   pickFolder(): Promise<string | null>
@@ -134,6 +155,7 @@ export interface TerminalsApi {
   onFsChanged(cb: (dir: string) => void): () => void
 
   clipboardRead(): Promise<string>
+  clipboardReadForPaste(): Promise<PasteContent>
   clipboardWrite(text: string): Promise<void>
   ptyCreate(req: PtyCreateRequest): Promise<Result>
   ptyWrite(id: string, data: string): void

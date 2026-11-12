@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps } from './pty'
+import { migrate } from './store'
+import { SCHEMA_VERSION } from '../shared/types'
 
 interface CheckResult {
   ok: boolean
@@ -66,13 +68,35 @@ function checkSteps(dir: string, shell: string, track: (p: IPty) => void): Promi
   })
 }
 
+/** Check 3: a v2 file migrates to the current schema, gets empty snippets and keeps folders/commands/v1 data. */
+function checkMigration(): CheckResult {
+  const v2 = {
+    version: 2,
+    folders: [{ id: 'f1', path: 'C:\a\proj', name: 'proj', order: 0, groupId: null }],
+    commands: [{ id: 'c1', name: 'build', ownerId: 'f1', mode: 'parallel', targets: [{ cwd: 'C:\a\proj', steps: ['yarn build'] }] }],
+    selectedId: 'f1'
+  }
+  const v1 = { folders: [{ id: 'f2', path: 'C:\b', name: 'b', order: 0 }] }
+  const a = migrate(v2 as never)
+  const b = migrate(v1 as never)
+  const ok =
+    SCHEMA_VERSION === 3 &&
+    a.snippets.length === 0 &&
+    a.folders.length === 1 &&
+    a.commands.length === 1 &&
+    a.selectedId === 'f1' &&
+    b.snippets.length === 0 &&
+    b.folders[0]?.groupId === null
+  return { ok, msg: ok ? 'migration: v2 and v1 files migrate with snippets: [] and data kept' : 'migration: unexpected result ' + JSON.stringify({ a, b }) }
+}
+
 export async function runSmoke(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'terminals-smoke-'))
   const shell = resolveShell('')
   const ptys: IPty[] = []
   const track = (p: IPty): void => void ptys.push(p)
 
-  const results = [await checkInteractive(dir, shell, track), await checkSteps(dir, shell, track)]
+  const results = [await checkInteractive(dir, shell, track), await checkSteps(dir, shell, track), checkMigration()]
   for (const r of results) console.log(r.ok ? `PASS: ${r.msg}` : `FAIL: ${r.msg}`)
   const ok = results.every((r) => r.ok)
 

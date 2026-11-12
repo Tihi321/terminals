@@ -1,10 +1,11 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import icon from '../../build/icon.png?asset'
 import type { IPty } from '@lydell/node-pty'
-import type { Command, PtyCreateRequest, Settings, UiState } from '../shared/types'
+import type { Command, PasteContent, PtyCreateRequest, Settings, Snippet, UiState } from '../shared/types'
 import { spawnShell, spawnSteps } from './pty'
 import * as store from './store'
 import { runSmoke } from './smoke'
@@ -23,7 +24,9 @@ if (dataDir) {
 }
 
 const SMOKE = process.argv.includes('--smoke') || process.env.TERMINALS_SMOKE === '1'
-const BAR_COLOR = '#12141a'
+/** Keep in sync with --bg-chrome and --bg-term in the renderer's styles.css. */
+const BAR_COLOR = '#131315'
+const WINDOW_BG = '#18181b'
 
 const ptys = new Map<string, IPty>()
 let win: BrowserWindow | null = null
@@ -50,10 +53,10 @@ function createWindow(): void {
     minHeight: 440,
     title: 'Terminals',
     icon,
-    backgroundColor: '#16181d',
+    backgroundColor: WINDOW_BG,
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: BAR_COLOR, symbolColor: '#c9ccd6', height: 36 },
+    titleBarOverlay: { color: BAR_COLOR, symbolColor: '#a4a4ad', height: 36 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -75,6 +78,84 @@ function createWindow(): void {
     win = null
     watcher.closeAll()
   })
+}
+
+const PASTE_DIR = (): string => join(app.getPath('temp'), 'terminals-paste')
+
+/** Removes pasted clipboard images older than 24h. */
+function prunePasteDir(): void {
+  const dir = PASTE_DIR()
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      try {
+        if (statSync(p).mtimeMs < cutoff) unlinkSync(p)
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* dir does not exist yet */
+  }
+}
+
+/**
+ * Electron 45 only has the async W3C-style clipboard (readImage/readBuffer are gone). Files copied in Explorer
+ * show up as a "text/uri-list" entry of file: URLs.
+ */
+async function readClipboardFiles(items: Electron.ClipboardItem[]): Promise<string[]> {
+  const out: string[] = []
+  for (const it of items) {
+    if (!it.types.includes('text/uri-list')) continue
+    try {
+      const text = await (await it.getType('text/uri-list')).text()
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.startsWith('file:')) continue
+        const p = fileURLToPath(line.trim())
+        if (existsSync(p)) out.push(p)
+      }
+    } catch {
+      /* unreadable entry */
+    }
+  }
+  return out
+}
+
+async function readClipboardImage(items: Electron.ClipboardItem[]): Promise<Buffer | null> {
+  for (const it of items) {
+    const type = it.types.includes('image/png') ? 'image/png' : it.types.find((t) => t.startsWith('image/'))
+    if (!type) continue
+    try {
+      const buf = Buffer.from(await ((await it.getType(type)) as Blob).arrayBuffer())
+      if (type === 'image/png') return buf
+      const img = nativeImage.createFromBuffer(buf)
+      if (!img.isEmpty()) return img.toPNG()
+    } catch {
+      /* unreadable entry */
+    }
+  }
+  return null
+}
+
+async function readForPaste(): Promise<PasteContent> {
+  let items: Electron.ClipboardItem[] = []
+  try {
+    items = await clipboard.read()
+  } catch {
+    /* fall through to text */
+  }
+  const files = await readClipboardFiles(items)
+  if (files.length > 0) return { kind: 'files', paths: files }
+  const png = await readClipboardImage(items)
+  if (png) {
+    const dir = PASTE_DIR()
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, `paste-${Date.now()}.png`)
+    writeFileSync(path, png)
+    return { kind: 'image', path }
+  }
+  return { kind: 'text', text: await clipboard.readText() }
 }
 
 async function pickFolder(): Promise<string | null> {
@@ -114,6 +195,11 @@ function registerIpc(): void {
   )
   ipcMain.handle('commands:save', (_e, cmd: Command) => store.saveCommand(cmd))
   ipcMain.handle('commands:delete', (_e, id: string) => store.deleteCommand(id))
+  ipcMain.handle('snippets:save', (_e, s: Snippet) => store.saveSnippet(s))
+  ipcMain.handle('snippets:delete', (_e, id: string) => store.deleteSnippet(id))
+  ipcMain.handle('folders:addPaths', (_e, paths: string[], groupId: string | null, beforeId?: string) =>
+    store.addFolderPaths(Array.isArray(paths) ? paths : [], typeof groupId === 'string' ? groupId : null, beforeId)
+  )
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => store.setSettings(patch))
   ipcMain.handle('ui:set', (_e, patch: Partial<UiState>) => store.setUi(patch))
   ipcMain.handle('dialog:pickFolder', () => pickFolder())
@@ -148,6 +234,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('clipboard:read', () => clipboard.readText())
+  ipcMain.handle('clipboard:readForPaste', () => readForPaste())
   ipcMain.handle('clipboard:write', (_e, text: string) => clipboard.writeText(String(text)))
 
   ipcMain.handle('pty:create', (e, req: PtyCreateRequest) => {
@@ -210,6 +297,7 @@ if (SMOKE) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     store.loadStore()
+    prunePasteDir()
     registerIpc()
     createWindow()
   })

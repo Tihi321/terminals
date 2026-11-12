@@ -13,7 +13,10 @@ import {
   FolderOpen,
   FolderPlus,
   FolderTree,
+  FolderX,
+  GitBranch,
   Group,
+  TriangleAlert,
   Pencil,
   RefreshCw,
   SquareArrowOutUpRight,
@@ -40,6 +43,8 @@ interface Props {
   onRenameFolder: (id: string, name: string) => void
   onRenameGroup: (id: string, name: string) => void
   onMoveFolder: (id: string, groupId: string | null, beforeId?: string) => void
+  /** Folders dragged in from the OS (Explorer). */
+  onDropPaths: (paths: string[], groupId: string | null, beforeId?: string) => void
   onToggleCollapse: (id: string, collapsed: boolean) => void
   onToggleShowHidden: (id: string, show: boolean) => void
   onHideChild: (groupId: string, path: string, hidden: boolean) => void
@@ -61,6 +66,10 @@ interface RowProps {
   icon: ReactNode
   name: string
   subtitle?: string | null
+  /** How the subtitle is drawn: a git branch, a path, a missing-folder warning or plain text. */
+  subKind?: 'branch' | 'path' | 'missing' | 'text'
+  /** Group header row (manual or parent group). */
+  group?: boolean
   title: string
   selected: boolean
   missing?: boolean
@@ -89,8 +98,15 @@ interface RowProps {
 function Row(r: RowProps): JSX.Element {
   return (
     <div
-      className={['row', r.selected ? 'selected' : '', r.missing ? 'missing' : '', r.dim ? 'dim' : '', r.dropActive ? 'drag-over' : ''].join(' ')}
-      style={{ paddingLeft: 8 + r.indent * 16 }}
+      className={[
+        'row',
+        r.group ? 'group-row' : '',
+        r.selected ? 'selected' : '',
+        r.missing ? 'missing' : '',
+        r.dim ? 'dim' : '',
+        r.dropActive ? 'drag-over' : ''
+      ].join(' ')}
+      style={{ paddingLeft: 8 + r.indent * 18 }}
       title={r.title}
       draggable={!!r.drag && !r.editing}
       onClick={r.onClick}
@@ -122,7 +138,13 @@ function Row(r: RowProps): JSX.Element {
             {r.name}
           </div>
         )}
-        {r.subtitle && !r.editing && <div className="row-sub">{r.subtitle}</div>}
+        {r.subtitle && !r.editing && (
+          <div className={`row-sub ${r.subKind ?? 'text'}`}>
+            {r.subKind === 'branch' && <GitBranch size={11} strokeWidth={2.25} />}
+            {r.subKind === 'missing' && <TriangleAlert size={11} strokeWidth={2.25} />}
+            <span>{r.subtitle}</span>
+          </div>
+        )}
       </div>
       {r.count > 0 && <span className="badge">{r.count}</span>}
       {r.actions && (
@@ -229,7 +251,20 @@ export function Sidebar(p: Props): JSX.Element {
     { label: 'Copy path', icon: <Copy size={14} />, onClick: () => p.onCopy(c.path) }
   ]
 
+  /** True for a drag coming from the OS (Explorer), as opposed to the internal folder reorder. */
+  const isOsDrag = (e: React.DragEvent): boolean => !dragId.current && e.dataTransfer.types.includes('Files')
+  const osDrop = (e: React.DragEvent, groupId: string | null, beforeId?: string): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOver(null)
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.api.getPathForFile(f))
+      .filter(Boolean)
+    if (paths.length > 0) p.onDropPaths(paths, groupId, beforeId)
+  }
+
   const drop = (target: FolderView, e: React.DragEvent): void => {
+    if (isOsDrag(e)) return osDrop(e, target.groupId, target.id)
     e.preventDefault()
     e.stopPropagation()
     const from = dragId.current
@@ -242,9 +277,10 @@ export function Sidebar(p: Props): JSX.Element {
     <Row
       key={f.id}
       indent={indent}
-      icon={f.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
+      icon={f.missing ? <FolderX size={16} /> : f.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
       name={f.name}
       subtitle={f.missing ? 'Folder not found' : f.branch ? f.branch : f.path}
+      subKind={f.missing ? 'missing' : f.branch ? 'branch' : 'path'}
       title={f.missing ? `${f.path}\n(folder not found on disk)` : f.path}
       selected={f.id === state.selectedId}
       missing={f.missing}
@@ -265,7 +301,7 @@ export function Sidebar(p: Props): JSX.Element {
           setDragOver(null)
         },
         onDragOver: (e) => {
-          if (dragId.current) {
+          if (dragId.current || isOsDrag(e)) {
             e.preventDefault()
             e.stopPropagation()
             setDragOver(f.id)
@@ -295,12 +331,32 @@ export function Sidebar(p: Props): JSX.Element {
       (g.kind === 'manual' ? members.reduce((n, f) => n + (p.counts[f.id] ?? 0), 0) : g.children.reduce((n, c) => n + (p.counts[c.id] ?? 0), 0))
     const total = g.kind === 'manual' ? members.length : visibleChildren.length
     return (
-      <div key={g.id} className="group">
+      <div
+        key={g.id}
+        className="group"
+        // Manual groups accept folders dragged in from Explorer; parent groups don't (they bubble to the
+        // sidebar, which adds the folder as a standalone one).
+        onDragOver={
+          g.kind === 'manual'
+            ? (e) => {
+                if (isOsDrag(e)) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setDragOver(g.id)
+                }
+              }
+            : undefined
+        }
+        onDragLeave={g.kind === 'manual' ? (e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setDragOver((d) => (d === g.id ? null : d)) : undefined}
+        onDrop={g.kind === 'manual' ? (e) => isOsDrag(e) && osDrop(e, g.id) : undefined}
+      >
         <Row
           indent={0}
           icon={g.kind === 'manual' ? <Group size={16} /> : <FolderTree size={16} />}
           name={g.name}
           subtitle={g.missing ? 'Folder not found' : g.kind === 'parent' ? g.branch ?? g.path : `${total} ${total === 1 ? 'folder' : 'folders'}`}
+          subKind={g.missing ? 'missing' : g.kind === 'parent' ? (g.branch ? 'branch' : 'path') : 'text'}
+          group
           title={g.path ? (g.missing ? `${g.path}\n(folder not found on disk)` : g.path) : g.name}
           selected={g.id === state.selectedId}
           missing={g.missing}
@@ -384,6 +440,7 @@ export function Sidebar(p: Props): JSX.Element {
                   icon={c.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
                   name={c.name}
                   subtitle={c.hidden ? 'hidden' : c.isGit ? c.branch ?? 'git' : null}
+                  subKind={c.hidden ? 'text' : 'branch'}
                   title={c.path}
                   selected={c.id === state.selectedId}
                   dim={c.hidden}
@@ -433,7 +490,19 @@ export function Sidebar(p: Props): JSX.Element {
           </button>
         </div>
       </div>
-      <div className="tree">
+      <div
+        className={dragOver === 'standalone' ? 'tree drop-active' : 'tree'}
+        onDragOver={(e) => {
+          if (isOsDrag(e)) {
+            e.preventDefault()
+            setDragOver('standalone')
+          }
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver((d) => (d === 'standalone' ? null : d))
+        }}
+        onDrop={(e) => isOsDrag(e) && osDrop(e, null)}
+      >
         {creating !== null && (
           <div className="row creating">
             <span className="row-chevron" />
@@ -459,8 +528,11 @@ export function Sidebar(p: Props): JSX.Element {
         )}
         {empty && (
           <div className="sidebar-empty">
-            <FolderPlus size={28} />
-            <div>Add a folder or a parent folder to get started</div>
+            <span className="empty-glyph">
+              <FolderPlus size={18} />
+            </span>
+            <div className="empty-title">No folders yet</div>
+            <div>Add a folder or a parent folder with the buttons above, or drag folders here from Explorer.</div>
           </div>
         )}
         {state.groups.map(groupBlock)}

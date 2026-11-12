@@ -1,14 +1,17 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, FolderTree, FolderX, Play, Plus, RotateCw, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
+import { FileText, FolderTree, FolderX, Group, Plus, RotateCw, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
 import type { AppState, Command } from '../../shared/types'
 import { Sidebar } from './Sidebar'
 import { TerminalView } from './TerminalView'
 import { FileTree } from './FileTree'
 import { CommandsPanel } from './CommandsPanel'
+import { SnippetPicker } from './SnippetPicker'
+import { Keys } from './Keys'
+import { visibleSnippets } from './SnippetEditor'
 import type { RunInfo } from './CommandsPanel'
 import { baseName, buildLocs } from './locations'
-import { createTerm, getTerm, setTermHooks, setTerminalFontSize, DEFAULT_FONT_SIZE } from './termRegistry'
+import { createTerm, getTerm, pasteInto, setTermHooks, setTerminalFontSize, DEFAULT_FONT_SIZE } from './termRegistry'
 
 interface Tab {
   id: string
@@ -68,6 +71,7 @@ export function App(): JSX.Element {
   const runCtl = useRef(new Map<string, RunCtl>())
   const latestRun = useRef<Record<string, string>>({})
   const counters = useRef<Record<string, number>>({})
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [widths, setWidths] = useState<{ sb: number; panel: number } | null>(null)
   const widthsRef = useRef(widths)
   widthsRef.current = widths
@@ -105,18 +109,19 @@ export function App(): JSX.Element {
   const select = useCallback(async (id: string | null) => setState(await window.api.select(id)), [setState])
 
   const newTab = useCallback(
-    (locId: string, cwdOverride?: string) => {
+    (locId: string, cwdOverride?: string): string | undefined => {
       const st = stateRef.current
-      if (!st) return
+      if (!st) return undefined
       const loc = buildLocs(st).get(locId)
       const cwd = cwdOverride ?? loc?.path
-      if (!loc || !cwd || (loc.missing && !cwdOverride)) return
+      if (!loc || !cwd || (loc.missing && !cwdOverride)) return undefined
       const id = crypto.randomUUID()
       const n = (counters.current[locId] = (counters.current[locId] ?? 0) + 1)
       createTerm(id)
       const title = cwdOverride ? baseName(cwdOverride) : `${shellLabel(st.resolvedShell)} ${n}`
       commitTabs((t) => [...t, { id, locId, cwd, title, kind: 'shell', exited: false }])
       setActiveByLoc((a) => ({ ...a, [locId]: id }))
+      return id
     },
     [commitTabs]
   )
@@ -160,7 +165,7 @@ export function App(): JSX.Element {
       ctl.nextIndex = index + 1
       const id = crypto.randomUUID()
       createTerm(id, { command: true })
-      const title = ctl.cmd.targets.length > 1 ? `▶ ${ctl.cmd.name} · ${baseName(target.cwd)}` : `▶ ${ctl.cmd.name}`
+      const title = ctl.cmd.targets.length > 1 ? `${ctl.cmd.name} · ${baseName(target.cwd)}` : ctl.cmd.name
       commitTabs((t) => [
         ...t,
         {
@@ -293,6 +298,38 @@ export function App(): JSX.Element {
   )
 
   const activeTabId = selectedId ? activeByLoc[selectedId] : undefined
+  const activeRef = useRef(activeByLoc)
+  activeRef.current = activeByLoc
+
+  /** Paste a saved prompt into the selected folder's active shell tab, opening one first when needed. */
+  const insertSnippet = useCallback(
+    async (body: string, enter: boolean) => {
+      const locId = stateRef.current?.selectedId
+      if (!locId) return
+      const live = (t: Tab): boolean => t.locId === locId && t.kind === 'shell' && !t.exited
+      const activeId = activeRef.current[locId]
+      const tab = tabsRef.current.find((t) => t.id === activeId && live(t)) ?? tabsRef.current.find(live)
+      let id = tab?.id
+      let fresh = false
+      if (!id) {
+        id = newTab(locId)
+        fresh = true
+      } else if (id !== activeId) {
+        const target = id
+        setActiveByLoc((a) => ({ ...a, [locId]: target }))
+      }
+      if (!id) return
+      const entry = getTerm(id)
+      if (!entry) return
+      if (fresh) {
+        // Let the pty start and the shell draw its prompt before pasting.
+        await entry.ready
+        await new Promise((r) => setTimeout(r, 600))
+      }
+      pasteInto(id, body, enter)
+    },
+    [newTab]
+  )
 
   useEffect(() => {
     document.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -311,7 +348,8 @@ export function App(): JSX.Element {
       onCloseTab: () => act.current.closeActive(),
       onExit: handleExit,
       onZoom: (d) => void zoom(d),
-      onTogglePanel: (t) => void togglePanel(t)
+      onTogglePanel: (t) => void togglePanel(t),
+      onSnippetPicker: () => setPickerOpen(true)
     })
   }, [handleExit, zoom, togglePanel])
 
@@ -328,15 +366,24 @@ export function App(): JSX.Element {
       } else if (e.shiftKey && (k === 'e' || k === 'r')) {
         e.preventDefault()
         void togglePanel(k === 'e' ? 'files' : 'commands')
+      } else if (e.shiftKey && k === 'p') {
+        e.preventDefault()
+        setPickerOpen(true)
       } else if (k === '=' || k === '+' || k === '-' || k === '0') {
         e.preventDefault()
         void zoom(k === '0' ? 0 : k === '-' ? -1 : 1)
       }
     }
+    // A drop that misses every target must never navigate the window to the dropped file.
+    const stop = (e: DragEvent): void => e.preventDefault()
+    window.addEventListener('dragover', stop)
+    window.addEventListener('drop', stop)
     const onFailed = (e: Event): void => handleExit((e as CustomEvent<string>).detail, 1)
     window.addEventListener('keydown', onKey)
     window.addEventListener('terminal-failed', onFailed)
     return () => {
+      window.removeEventListener('dragover', stop)
+      window.removeEventListener('drop', stop)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('terminal-failed', onFailed)
     }
@@ -370,12 +417,17 @@ export function App(): JSX.Element {
     <div className="app">
       <header className="titlebar">
         <div className="titlebar-left">
-          <SquareTerminal size={16} className="titlebar-logo" />
+          <span className="titlebar-mark">
+            <Terminal size={13} strokeWidth={2.75} />
+          </span>
           <span className="titlebar-name">Terminals</span>
           {selected && (
-            <span className="titlebar-path" title={selected.path ?? selected.name}>
-              {selected.path ?? selected.name}
-            </span>
+            <>
+              <span className="titlebar-sep">/</span>
+              <span className="titlebar-path" title={selected.path ?? selected.name}>
+                <bdi>{selected.path ?? selected.name}</bdi>
+              </span>
+            </>
           )}
         </div>
         <div className="titlebar-right">
@@ -417,6 +469,7 @@ export function App(): JSX.Element {
             onRenameFolder={async (id, name) => setState(await window.api.renameFolder(id, name))}
             onRenameGroup={async (id, name) => setState(await window.api.renameGroup(id, name))}
             onMoveFolder={async (id, gid, before) => setState(await window.api.moveFolder(id, gid, before))}
+            onDropPaths={async (paths, gid, before) => setState(await window.api.addFolderPaths(paths, gid, before))}
             onToggleCollapse={async (id, c) => setState(await window.api.setGroupCollapsed(id, c))}
             onToggleShowHidden={async (id, s) => setState(await window.api.setShowHidden(id, s))}
             onHideChild={async (gid, path, h) => setState(await window.api.setChildHidden(gid, path, h))}
@@ -498,42 +551,56 @@ export function App(): JSX.Element {
             ))}
             {!selected && (
               <div className="empty">
-                <FolderTree size={36} />
+                <span className="empty-icon">
+                  <FolderTree size={24} strokeWidth={1.75} />
+                </span>
                 <h2>No folder selected</h2>
-                <p>Add a folder, or a parent folder whose subfolders are discovered automatically.</p>
+                <p>Add a folder, or a parent folder whose subfolders are discovered automatically. You can also drag folders from Explorer onto the sidebar.</p>
                 <button className="btn primary" onClick={() => void addFolder()}>
-                  <Plus size={14} /> Add folder
+                  <Plus size={15} /> Add folder
                 </button>
               </div>
             )}
             {selected && selected.missing && (
               <div className="empty">
-                <FolderX size={36} />
-                <h2 className="warn">Folder not found</h2>
-                <p>{selected.path} no longer exists on disk. Terminals cannot be opened here.</p>
+                <span className="empty-icon warn">
+                  <FolderX size={24} strokeWidth={1.75} />
+                </span>
+                <h2>Folder not found</h2>
+                <p>
+                  <span className="path-chip">{selected.path}</span> no longer exists on disk. Terminals cannot be opened here.
+                </p>
               </div>
             )}
             {selected && !selected.missing && !selected.path && folderTabs.length === 0 && (
               <div className="empty">
-                <FolderTree size={36} />
+                <span className="empty-icon">
+                  <Group size={24} strokeWidth={1.75} />
+                </span>
                 <h2>{selected.name}</h2>
                 <p>
                   {manualMembers === 0
                     ? 'This group is empty. Drag folders onto it or use "Move to group".'
                     : 'Select one of the folders in this group to open a terminal.'}
                 </p>
-                <p className="hint">Commands saved on this group are in the Commands panel (Ctrl+Shift+R).</p>
+                <p className="hint">
+                  Commands saved on this group are in the Commands panel <Keys combo="Ctrl+Shift+R" />
+                </p>
               </div>
             )}
             {selected && !selected.missing && selected.path && folderTabs.length === 0 && (
               <div className="empty">
-                <SquareTerminal size={36} />
+                <span className="empty-icon">
+                  <SquareTerminal size={24} strokeWidth={1.75} />
+                </span>
                 <h2>{selected.name}</h2>
                 <p>No terminals open here.</p>
                 <button className="btn primary" onClick={() => newTab(selected.id)}>
-                  <Plus size={14} /> New terminal
+                  <Plus size={15} /> New terminal
                 </button>
-                <p className="hint">Ctrl+Shift+T</p>
+                <p className="hint">
+                  <Keys combo="Ctrl+Shift+T" />
+                </p>
               </div>
             )}
           </div>
@@ -583,12 +650,26 @@ export function App(): JSX.Element {
                   onDuplicate={async (c) =>
                     setState(await window.api.saveCommand({ ...c, id: crypto.randomUUID(), name: `${c.name} (copy)` }))
                   }
+                  onInsertSnippet={(body, enter) => void insertSnippet(body, enter)}
+                  onSaveSnippet={async (s) => setState(await window.api.saveSnippet(s))}
+                  onDeleteSnippet={async (id) => setState(await window.api.deleteSnippet(id))}
+                  onCopy={(t) => void window.api.clipboardWrite(t)}
                 />
               )}
             </aside>
           </>
         )}
       </div>
+      {pickerOpen && (
+        <SnippetPicker
+          snippets={visibleSnippets(state, selected)}
+          onClose={() => setPickerOpen(false)}
+          onPick={(s) => {
+            setPickerOpen(false)
+            void insertSnippet(s.body, false)
+          }}
+        />
+      )}
     </div>
   )
 }

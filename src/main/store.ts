@@ -19,6 +19,7 @@ import {
   type Command,
   type Folder,
   type GroupView,
+  type Snippet,
   type Settings,
   type UiState
 } from '../shared/types'
@@ -42,6 +43,7 @@ interface Persisted {
   folders: Folder[]
   groups: PersistedGroup[]
   commands: Command[]
+  snippets: Snippet[]
   selectedId: string | null
   settings: Settings
   ui: UiState
@@ -56,6 +58,7 @@ function emptyData(): Persisted {
     folders: [],
     groups: [],
     commands: [],
+    snippets: [],
     selectedId: null,
     settings: { ...DEFAULT_SETTINGS },
     ui: { ...DEFAULT_UI }
@@ -86,8 +89,18 @@ function sanitizeCommand(c: Partial<Command>): Command | null {
   }
 }
 
+function sanitizeSnippet(s: Partial<Snippet>): Snippet | null {
+  if (!s || typeof s.id !== 'string') return null
+  return {
+    id: s.id,
+    name: String(s.name ?? '').trim() || 'Untitled prompt',
+    body: String(s.body ?? ''),
+    scope: typeof s.scope === 'string' && s.scope ? s.scope : 'global'
+  }
+}
+
 /** Migrates any older shape (version missing = 1) into the current schema without dropping data. */
-function migrate(raw: Record<string, unknown>): Persisted {
+export function migrate(raw: Record<string, unknown>): Persisted {
   const d = emptyData()
   // v1 -> v2 added groups, commands, ui, settings.editor/terminalFontSize and folder.groupId.
   // Folders, selection and settings.shell are carried over unchanged.
@@ -116,6 +129,10 @@ function migrate(raw: Record<string, unknown>): Persisted {
   d.commands = (Array.isArray(raw.commands) ? (raw.commands as Partial<Command>[]) : [])
     .map(sanitizeCommand)
     .filter((c): c is Command => !!c)
+  // v2 -> v3 added snippets (absent in older files, so they migrate to an empty list).
+  d.snippets = (Array.isArray(raw.snippets) ? (raw.snippets as Partial<Snippet>[]) : [])
+    .map(sanitizeSnippet)
+    .filter((s): s is Snippet => !!s)
   d.selectedId = typeof raw.selectedId === 'string' ? raw.selectedId : null
   const s = (raw.settings ?? {}) as Partial<Settings>
   d.settings = {
@@ -241,6 +258,7 @@ export function getState(): AppState {
     }),
     groups,
     commands: data.commands,
+    snippets: data.snippets,
     selectedId: data.selectedId,
     settings: data.settings,
     ui: data.ui,
@@ -336,6 +354,7 @@ function fixSelection(): void {
 export function removeFolder(id: string): AppState {
   data.folders = data.folders.filter((f) => f.id !== id)
   data.commands = data.commands.filter((c) => c.ownerId !== id)
+  data.snippets = data.snippets.filter((s) => s.scope !== id)
   fixSelection()
   save()
   return getState()
@@ -345,6 +364,7 @@ export function removeGroup(id: string): AppState {
   data.groups = data.groups.filter((g) => g.id !== id)
   for (const f of data.folders) if (f.groupId === id) f.groupId = null
   data.commands = data.commands.filter((c) => c.ownerId !== id)
+  data.snippets = data.snippets.filter((s) => s.scope !== id)
   fixSelection()
   save()
   return getState()
@@ -419,6 +439,50 @@ export function saveCommand(cmd: Command): AppState {
 
 export function deleteCommand(id: string): AppState {
   data.commands = data.commands.filter((c) => c.id !== id)
+  save()
+  return getState()
+}
+
+export function saveSnippet(snip: Snippet): AppState {
+  const s = sanitizeSnippet(snip)
+  if (s) {
+    const i = data.snippets.findIndex((x) => x.id === s.id)
+    if (i >= 0) data.snippets[i] = s
+    else data.snippets.push(s)
+    save()
+  }
+  return getState()
+}
+
+export function deleteSnippet(id: string): AppState {
+  data.snippets = data.snippets.filter((s) => s.id !== id)
+  save()
+  return getState()
+}
+
+/** Adds existing directories not yet saved. Returns the new folder ids in input order. */
+export function addFolderPaths(paths: string[], groupId: string | null, beforeId?: string): AppState {
+  if (groupId && !data.groups.some((g) => g.id === groupId && g.kind === 'manual')) groupId = null
+  const created: Folder[] = []
+  for (const raw of paths) {
+    if (typeof raw !== 'string' || !raw) continue
+    let isDir = false
+    try {
+      isDir = statSync(raw).isDirectory()
+    } catch {
+      isDir = false
+    }
+    if (!isDir) continue
+    const key = norm(raw)
+    if (data.folders.some((f) => norm(f.path) === key) || created.some((f) => norm(f.path) === key)) continue
+    const path = resolve(raw)
+    created.push({ id: randomUUID(), path, name: basename(path) || path, order: 0, groupId })
+  }
+  if (created.length === 0) return getState()
+  const at = beforeId ? data.folders.findIndex((x) => x.id === beforeId) : -1
+  if (at >= 0) data.folders.splice(at, 0, ...created)
+  else data.folders.push(...created)
+  data.selectedId = created[0].id
   save()
   return getState()
 }

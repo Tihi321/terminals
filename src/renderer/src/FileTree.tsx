@@ -155,7 +155,9 @@ export function FileTree({ root, rootMissing, onOpenTerminalHere }: Props): JSX.
   if (!root) {
     return (
       <div className="panel-empty">
-        <FolderOpen size={28} />
+        <span className="empty-glyph">
+          <FolderOpen size={18} />
+        </span>
         <div>Select a folder to browse its files</div>
       </div>
     )
@@ -163,7 +165,9 @@ export function FileTree({ root, rootMissing, onOpenTerminalHere }: Props): JSX.
   if (rootMissing) {
     return (
       <div className="panel-empty">
-        <FolderX size={28} />
+        <span className="empty-glyph">
+          <FolderX size={18} />
+        </span>
         <div>Folder not found on disk</div>
       </div>
     )
@@ -173,7 +177,7 @@ export function FileTree({ root, rootMissing, onOpenTerminalHere }: Props): JSX.
     <div className="filetree">
       <div className="panel-toolbar">
         <div className="filter-box">
-          <Search size={14} />
+          <Search size={13} />
           <input placeholder="Filter loaded files" value={filter} onChange={(e) => setFilter(e.target.value)} />
         </div>
         <button

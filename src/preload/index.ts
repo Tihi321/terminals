@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { TerminalsApi } from '../shared/types'
 
 const inv = (channel: string, ...args: unknown[]): Promise<never> => ipcRenderer.invoke(channel, ...args) as Promise<never>
@@ -19,6 +19,16 @@ const api: TerminalsApi = {
   select: (id) => inv('state:select', id),
   saveCommand: (cmd) => inv('commands:save', cmd),
   deleteCommand: (id) => inv('commands:delete', id),
+  saveSnippet: (s) => inv('snippets:save', s),
+  deleteSnippet: (id) => inv('snippets:delete', id),
+  addFolderPaths: (paths, groupId, beforeId) => inv('folders:addPaths', paths, groupId, beforeId),
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
   setSettings: (patch) => inv('settings:set', patch),
   setUi: (patch) => inv('ui:set', patch),
   pickFolder: () => inv('dialog:pickFolder'),
@@ -37,6 +47,7 @@ const api: TerminalsApi = {
   },
 
   clipboardRead: () => inv('clipboard:read'),
+  clipboardReadForPaste: () => inv('clipboard:readForPaste'),
   clipboardWrite: (text) => inv('clipboard:write', text),
   ptyCreate: (req) => inv('pty:create', req),
   ptyWrite: (id, data) => ipcRenderer.send('pty:write', id, data),
