@@ -7,20 +7,25 @@ import type {
   GitFile,
   GitNumstat,
   GitResult,
-  GitStatus
+  GitStatus,
+  GitBranch
 } from '../shared/types'
 
 /** Everything here shells out to the `git` CLI (no shell, args as arrays) and never throws. */
 
 const MAX_OUT = 12 * 1024 * 1024
 const TIMEOUT = 20000
-const HASH_RE = /^[0-9a-f]{4,40}$/i
+/** fetch/pull/push can be slow on a bad connection; credential helpers may also show a dialog. */
+const NET_TIMEOUT = 120000
+const HASH_RE =/^[0-9a-f]{4,40}$/i
 /** Untracked files above this size are not read for line counts. */
 const COUNT_LIMIT = 1024 * 1024
 
 interface RunOpts {
   input?: string
   maxBytes?: number
+  /** Overrides the default timeout (network commands). */
+  timeoutMs?: number
 }
 interface RunOut {
   code: number
@@ -63,7 +68,7 @@ function run(cwd: string, args: string[], opts: RunOpts = {}): Promise<RunOut> {
     const timer = setTimeout(() => {
       child.kill()
       finish({ code: -1, stderr: stderr + '\ngit timed out' })
-    }, TIMEOUT)
+    }, opts.timeoutMs ?? TIMEOUT)
     child.stdout.on('data', (d: Buffer) => {
       if (truncated) return
       size += d.length
@@ -384,4 +389,93 @@ export async function gitCommitFiles(folder: string, hash: string): Promise<GitR
   const r = await run(rr.root, ['show', '--numstat', '--format=', '-z', '--first-parent', hash])
   if (r.code !== 0) return { ok: false, error: failText(r) }
   return { ok: true, files: parseNumstat(r.stdout) }
+}
+
+// ---------- sync + branches ----------
+
+const BRANCH_FORMAT = '%(HEAD)%1f%(refname)%1f%(authorname)%1f%(committerdate:unix)%1f%(contents:subject)%1e'
+
+/**
+ * Parses `git for-each-ref --format=BRANCH_FORMAT refs/heads refs/remotes` (already sorted).
+ * Skips `<remote>/HEAD` and remote branches that have a local branch of the same short name.
+ */
+export function parseBranches(out: string): GitBranch[] {
+  const rows: GitBranch[] = []
+  for (const rec of out.split('\x1e')) {
+    const [head, ref, author, date, subject] = rec.replace(/^\s+/, '').split('\x1f')
+    if (!ref) continue
+    let name: string
+    let remote: boolean
+    if (ref.startsWith('refs/heads/')) {
+      name = ref.slice('refs/heads/'.length)
+      remote = false
+    } else if (ref.startsWith('refs/remotes/')) {
+      name = ref.slice('refs/remotes/'.length)
+      remote = true
+      if (!name.includes('/') || name.endsWith('/HEAD')) continue
+    } else continue
+    rows.push({
+      name,
+      remote,
+      current: !remote && head === '*',
+      author: author ?? '',
+      date: Number(date) || 0,
+      subject: subject ?? ''
+    })
+  }
+  const locals = new Set(rows.filter((b) => !b.remote).map((b) => b.name))
+  return rows.filter((b) => !b.remote || !locals.has(b.name.slice(b.name.indexOf('/') + 1)))
+}
+
+export async function gitBranches(folder: string): Promise<GitResult<{ branches: GitBranch[] }>> {
+  const rr = await repoRoot(folder)
+  if (!rr.ok) return rr
+  const r = await run(rr.root, ['for-each-ref', '--sort=-committerdate', `--format=${BRANCH_FORMAT}`, 'refs/heads', 'refs/remotes'])
+  if (r.code !== 0) return { ok: false, error: failText(r) }
+  return { ok: true, branches: parseBranches(r.stdout) }
+}
+
+async function netRun(folder: string, args: string[] | ((root: string) => Promise<string[] | string>)): Promise<GitResult> {
+  const rr = await repoRoot(folder)
+  if (!rr.ok) return rr
+  let a: string[]
+  if (typeof args === 'function') {
+    const res = await args(rr.root)
+    if (typeof res === 'string') return { ok: false, error: res }
+    a = res
+  } else a = args
+  const r = await run(rr.root, a, { timeoutMs: NET_TIMEOUT })
+  return r.code === 0 ? { ok: true } : { ok: false, error: failText(r) }
+}
+
+export const gitFetch = (folder: string): Promise<GitResult> => netRun(folder, ['fetch', '--prune'])
+
+/** Fast-forward only: diverged histories fail with git's own message instead of merging or rebasing. */
+export const gitPull = (folder: string): Promise<GitResult> => netRun(folder, ['pull', '--ff-only'])
+
+/** publish = first push of a branch without upstream: `push -u <origin|first remote> <branch>`. */
+export function gitPush(folder: string, publish?: boolean): Promise<GitResult> {
+  if (!publish) return netRun(folder, ['push'])
+  return netRun(folder, async (root) => {
+    const br = await run(root, ['symbolic-ref', '-q', '--short', 'HEAD'])
+    const branch = br.stdout.trim()
+    if (br.code !== 0 || !branch) return 'Cannot publish a detached HEAD'
+    const rm = await run(root, ['remote'])
+    const remotes = rm.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    if (remotes.length === 0) return 'No git remote configured'
+    return ['push', '-u', remotes.includes('origin') ? 'origin' : remotes[0], branch]
+  })
+}
+
+export async function gitSwitch(folder: string, name: string, opts: { create?: boolean; track?: boolean } = {}): Promise<GitResult> {
+  if (typeof name !== 'string' || !name.trim() || name.includes('\0')) return { ok: false, error: 'Enter a branch name' }
+  const rr = await repoRoot(folder)
+  if (!rr.ok) return rr
+  const n = name.trim()
+  // Also rejects leading '-' so the name can never be read as an option.
+  const chk = await run(rr.root, ['check-ref-format', '--branch', n])
+  if (chk.code !== 0 || n.startsWith('-')) return { ok: false, error: `'${n}' is not a valid branch name` }
+  const args = opts.create ? ['switch', '-c', n] : opts.track ? ['switch', '--track', n] : ['switch', n]
+  const r = await run(rr.root, args, { timeoutMs: NET_TIMEOUT })
+  return r.code === 0 ? { ok: true } : { ok: false, error: failText(r) }
 }

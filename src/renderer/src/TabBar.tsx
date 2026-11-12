@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { JSX } from 'react'
-import { FileDiff, Plus, RotateCw, Terminal, X, Zap } from 'lucide-react'
+import { FileDiff, FileText, Plus, RotateCw, Terminal, X, Zap } from 'lucide-react'
 import type { Command } from '../../shared/types'
 import type { DiffSpec } from './gitUtil'
 import type { Loc } from './locations'
@@ -11,14 +11,16 @@ export interface Tab {
   locId: string
   cwd: string
   title: string
-  kind: 'shell' | 'command' | 'diff'
+  kind: 'shell' | 'command' | 'diff' | 'file'
   /** Shell tabs: the process ended. */
   exited: boolean
   /** Command tabs only. */
   steps?: string[]
   /** Diff tabs only: no pty behind them. */
   diff?: DiffSpec
-  /** Diff tabs only: replaced by the next single-click diff (italic title) until pinned. */
+  /** File tabs only: absolute path shown read-only. */
+  file?: string
+  /** Diff/file tabs: replaced by the next single-click diff (italic title) until pinned. */
   preview?: boolean
   run?: { commandId: string; runId: string; status: 'running' | 'success' | 'failed'; exitCode?: number }
 }
@@ -67,12 +69,14 @@ export function TabBar(p: Props): JSX.Element {
             onClick={() => p.onActivate(t.id)}
             onDoubleClick={() => t.preview && p.onPin(t.id)}
             onAuxClick={(e) => e.button === 1 && p.onClose(t.id)}
-            title={t.diff ? `${t.diff.path}\n${t.cwd}` : `${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}`}
+            title={t.file ? t.file : t.diff ? `${t.diff.path}\n${t.cwd}` :`${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}`}
           >
             {t.kind === 'command' ? (
               <Zap size={13} className="tab-icon" />
             ) : t.kind === 'diff' ? (
               <FileDiff size={13} className="tab-icon" />
+            ) : t.kind === 'file' ? (
+              <FileText size={13} className="tab-icon" />
             ) : (
               <Terminal size={13} className="tab-icon" />
             )}
@@ -95,7 +99,7 @@ export function TabBar(p: Props): JSX.Element {
             )}
             <button
               className="tab-btn"
-              title={t.kind === 'diff' ? 'Close diff' : 'Close terminal'}
+              title={t.kind === 'diff' ? 'Close diff' : t.kind === 'file' ? 'Close file' : 'Close terminal'}
               onClick={(e) => {
                 e.stopPropagation()
                 p.onClose(t.id)

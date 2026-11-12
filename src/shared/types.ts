@@ -120,6 +120,12 @@ export interface PtyCreateRequest {
   steps?: string[]
 }
 
+/** In-app file viewer payload: text, an image as a data URL, or a marker for binary/too-large files. */
+export type FileContent =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; dataUrl: string }
+  | { kind: 'binary'; reason: 'binary' | 'large' }
+
 export interface DirEntry {
   name: string
   path: string
@@ -163,6 +169,17 @@ export interface GitCommit {
   author: string
   /** Relative date, e.g. "3 hours ago". */
   date: string
+}
+
+export interface GitBranch {
+  /** Local name, or `<remote>/<branch>` for remote-tracking branches. */
+  name: string
+  remote: boolean
+  current: boolean
+  author: string
+  /** Last commit time, unix seconds. */
+  date: number
+  subject: string
 }
 
 export interface GitNumstat {
@@ -214,6 +231,7 @@ export interface TerminalsApi {
   openDefault(path: string): Promise<void>
   revealInExplorer(path: string): Promise<void>
   listDir(path: string, showIgnored: boolean): Promise<Result<{ entries: DirEntry[] }>>
+  readFile(path: string): Promise<Result<{ content: FileContent }>>
   watchDirs(paths: string[]): void
   onFsChanged(cb: (dir: string) => void): () => void
 
@@ -226,6 +244,14 @@ export interface TerminalsApi {
   gitCommit(folder: string, message: string, stageTracked: boolean): Promise<GitResult>
   gitLog(folder: string): Promise<GitResult<{ commits: GitCommit[] }>>
   gitCommitFiles(folder: string, hash: string): Promise<GitResult<{ files: GitNumstat[] }>>
+  gitFetch(folder: string): Promise<GitResult>
+  /** `git pull --ff-only`. */
+  gitPull(folder: string): Promise<GitResult>
+  /** publish = `git push -u <remote> <branch>` for a branch without upstream. */
+  gitPush(folder: string, publish?: boolean): Promise<GitResult>
+  gitBranches(folder: string): Promise<GitResult<{ branches: GitBranch[] }>>
+  /** create = `switch -c`, track = `switch --track` (remote-tracking branch). */
+  gitSwitch(folder: string, name: string, opts?: { create?: boolean; track?: boolean }): Promise<GitResult>
 
   clipboardRead(): Promise<string>
   clipboardReadForPaste(): Promise<PasteContent>

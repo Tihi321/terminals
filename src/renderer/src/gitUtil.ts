@@ -73,6 +73,26 @@ export function diffModeLabel(spec: GitDiffRequest): string {
   return spec.mode
 }
 
+/** "3 hours ago" style age from unix seconds. */
+export function relativeAge(unixSeconds: number, now = Date.now()): string {
+  const s = Math.max(0, Math.floor(now / 1000 - unixSeconds))
+  const units: [number, string][] = [
+    [31536000, 'year'],
+    [2592000, 'month'],
+    [604800, 'week'],
+    [86400, 'day'],
+    [3600, 'hour'],
+    [60, 'minute']
+  ]
+  for (const [n, label] of units) {
+    if (s >= n) {
+      const v = Math.floor(s / n)
+      return `${v} ${label}${v === 1 ? '' : 's'} ago`
+    }
+  }
+  return 'just now'
+}
+
 /** Joins a repo-relative path onto the repo root with the OS separator Windows tools expect. */
 export function absPath(root: string, rel: string): string {
   return `${root.replace(/[\\/]+$/, '')}\\${rel.replace(/\//g, '\\')}`

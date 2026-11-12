@@ -8,6 +8,7 @@ import { FileTree } from './FileTree'
 import { CommandsPanel } from './CommandsPanel'
 import { GitPanel } from './GitPanel'
 import { DiffView } from './DiffView'
+import { FileViewer } from './FileViewer'
 import { diffTitle } from './gitUtil'
 import type { DiffSpec } from './gitUtil'
 import { SnippetPicker } from './SnippetPicker'
@@ -259,6 +260,31 @@ export function App(): JSX.Element {
     [commitTabs]
   )
 
+  /** Opens a read-only file tab for the selected location; the same file focuses its existing tab. */
+  const openFile = useCallback(
+    (path: string, pin: boolean) => {
+      const locId = stateRef.current?.selectedId
+      if (!locId) return
+      const name = path.split(/[\\/]/).pop() || path
+      const existing = tabsRef.current.find((t) => t.locId === locId && t.file === path)
+      if (existing) {
+        if (pin && existing.preview) commitTabs((all) => all.map((t) => (t.id === existing.id ? { ...t, preview: false } : t)))
+        setActiveByLoc((a) => ({ ...a, [locId]: existing.id }))
+        return
+      }
+      const preview = tabsRef.current.find((t) => t.locId === locId && t.file && t.preview)
+      if (preview) {
+        commitTabs((all) => all.map((t) => (t.id === preview.id ? { ...t, file: path, title: name, preview: !pin } : t)))
+        setActiveByLoc((a) => ({ ...a, [locId]: preview.id }))
+        return
+      }
+      const id = crypto.randomUUID()
+      commitTabs((t) => [...t, { id, locId, cwd: path, title: name, kind: 'file', exited: false, file: path, preview: !pin }])
+      setActiveByLoc((a) => ({ ...a, [locId]: id }))
+    },
+    [commitTabs]
+  )
+
   /** A diff tab changed what it shows (e.g. after staging). */
   const updateDiff = useCallback(
     (id: string, spec: DiffSpec) => {
@@ -362,7 +388,7 @@ export function App(): JSX.Element {
       const tab = tabsRef.current.find((t) => t.id === id)
       if (!tab) return
       if (tab.run?.status === 'running') stopRun(tab.run.commandId)
-      if (tab.kind !== 'diff') {
+      if (tab.kind === 'shell' || tab.kind === 'command') {
         window.api.ptyKill(id)
         getTerm(id)?.dispose()
       }
@@ -688,6 +714,7 @@ export function App(): JSX.Element {
               const paneTabs = tabs.filter((t) => t.locId === p.locId)
               const paneActive = p.locId ? activeByLoc[p.locId] : undefined
               const diff = paneTabs.find((t) => t.id === paneActive && t.kind === 'diff')
+              const fileTab = paneTabs.find((t) => t.id === paneActive && t.kind === 'file')
               const members = loc?.kind === 'manual' ? state.folders.filter((f) => f.groupId === loc.id).length : 0
               return (
                 <div
@@ -731,6 +758,14 @@ export function App(): JSX.Element {
                         spec={diff.diff}
                         fontSize={Math.max(11, state.settings.terminalFontSize - 2)}
                         onChangeSpec={(spec) => updateDiff(diff.id, spec)}
+                      />
+                    )}
+                    {fileTab?.file && (
+                      <FileViewer
+                        key={fileTab.id}
+                        path={fileTab.file}
+                        root={loc?.path ?? null}
+                        fontSize={Math.max(11, state.settings.terminalFontSize - 2)}
                       />
                     )}
                     {!loc && (
@@ -793,7 +828,7 @@ export function App(): JSX.Element {
             })}
             {/* Every terminal lives in this one stable list whatever pane shows it: positioning, not reparenting, moves it. */}
             {tabs
-              .filter((t) => t.kind !== 'diff')
+              .filter((t) => t.kind === 'shell' || t.kind === 'command')
               .map((t) => {
                 const pi = paneIndexOfLoc.get(t.locId)
                 const visible = pi !== undefined && activeByLoc[t.locId] === t.id
@@ -878,6 +913,7 @@ export function App(): JSX.Element {
                   root={selected?.path ?? null}
                   rootMissing={!!selected?.missing}
                   onOpenTerminalHere={(dir) => selected && newTab(selected.id, dir)}
+                  onOpenFile={(path, pin) => openFile(path, pin)}
                 />
               ) : ui.panelTab === 'git' ? (
                 <GitPanel

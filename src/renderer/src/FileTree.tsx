@@ -31,6 +31,7 @@ interface Props {
   root: string | null
   rootMissing: boolean
   onOpenTerminalHere: (dir: string) => void
+  onOpenFile: (path: string, pin: boolean) => void
 }
 
 interface Row {
@@ -53,7 +54,7 @@ export function fileIcon(name: string): ReactNode {
   return <FileIcon size={15} />
 }
 
-export function FileTree({ root, rootMissing, onOpenTerminalHere }: Props): JSX.Element {
+export function FileTree({ root, rootMissing, onOpenTerminalHere, onOpenFile }: Props): JSX.Element {
   const [entries, setEntries] = useState<Record<string, DirEntry[]>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
@@ -199,7 +200,8 @@ export function FileTree({ root, rootMissing, onOpenTerminalHere }: Props): JSX.
             key={entry.path}
             className="file-row"
             title={entry.path}
-            onClick={() => (entry.isDir ? toggle(entry.path) : void window.api.openInEditor(entry.path))}
+            onClick={() => (entry.isDir ? toggle(entry.path) : onOpenFile(entry.path, false))}
+            onDoubleClick={() => !entry.isDir && onOpenFile(entry.path, true)}
             onContextMenu={(e) => menuFor(e, entry)}
           >
             {Array.from({ length: depth }, (_, i) => (

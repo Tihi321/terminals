@@ -1,11 +1,42 @@
 import { shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync, readdirSync, statSync, watch, type FSWatcher } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, watch, type FSWatcher } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
-import type { DirEntry, Result } from '../shared/types'
+import type { DirEntry, FileContent, Result } from '../shared/types'
 import { findOnPath } from './pty'
 
 const IGNORED = new Set(['.git', 'node_modules'])
+
+const TEXT_LIMIT = 2 * 1024 * 1024
+const IMAGE_LIMIT = 8 * 1024 * 1024
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp'
+}
+
+/** Reads a file for the in-app viewer: text, a data-URL image, or a "binary/large" marker. */
+export function readFileContent(path: string): Result<{ content: FileContent }> {
+  try {
+    const st = statSync(path)
+    if (!st.isFile()) return { ok: false, error: 'Not a file' }
+    const mime = IMAGE_MIME[extname(path).toLowerCase()]
+    if (mime) {
+      if (st.size > IMAGE_LIMIT) return { ok: true, content: { kind: 'binary', reason: 'large' } }
+      const data = readFileSync(path)
+      return { ok: true, content: { kind: 'image', dataUrl: `data:${mime};base64,${data.toString('base64')}` } }
+    }
+    if (st.size > TEXT_LIMIT) return { ok: true, content: { kind: 'binary', reason: 'large' } }
+    const buf = readFileSync(path)
+    if (buf.subarray(0, 8192).includes(0)) return { ok: true, content: { kind: 'binary', reason: 'binary' } }
+    return { ok: true, content: { kind: 'text', text: buf.toString('utf8') } }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
 
 export function listDir(dir: string, showIgnored: boolean): Result<{ entries: DirEntry[] }> {
   try {

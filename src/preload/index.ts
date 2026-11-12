@@ -39,6 +39,7 @@ const api: TerminalsApi = {
   openDefault: (p) => inv('shell:openDefault', p),
   revealInExplorer: (p) => inv('shell:reveal', p),
   listDir: (p, ignored) => inv('fs:list', p, ignored),
+  readFile: (p) => inv('fs:read', p),
   watchDirs: (paths) => ipcRenderer.send('fs:watch', paths),
   onFsChanged: (cb) => {
     const h = (_: unknown, dir: string): void => cb(dir)
@@ -53,6 +54,11 @@ const api: TerminalsApi = {
   gitCommit: (f, msg, tracked) => inv('git:commit', f, msg, tracked),
   gitLog: (f) => inv('git:log', f),
   gitCommitFiles: (f, hash) => inv('git:commitFiles', f, hash),
+  gitFetch: (f) => inv('git:fetch', f),
+  gitPull: (f) => inv('git:pull', f),
+  gitPush: (f, publish) => inv('git:push', f, publish),
+  gitBranches: (f) => inv('git:branches', f),
+  gitSwitch: (f, name, opts) => inv('git:switch', f, name, opts),
 
   clipboardRead: () => inv('clipboard:read'),
   clipboardReadForPaste: () => inv('clipboard:readForPaste'),

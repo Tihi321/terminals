@@ -16,6 +16,7 @@ import {
   RefreshCw
 } from 'lucide-react'
 import type { GitCommit, GitDiffRequest, GitFile, GitNumstat, GitStatus } from '../../shared/types'
+import { BranchPicker } from './BranchPicker'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { fileIcon } from './FileTree'
@@ -95,6 +96,8 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
   const [message, setMessage] = useState('')
   const [commitError, setCommitError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [syncing, setSyncing] = useState<'fetch' | 'pull' | 'push' | 'publish' | 'switch' | null>(null)
+  const [picker, setPicker] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const [commits, setCommits] = useState<GitCommit[] | null>(null)
   const [openHash, setOpenHash] = useState<string | null>(null)
@@ -207,6 +210,7 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
     } finally {
       setBusy(false)
       lastStatus.current = ''
+      lastLog.current = ''
       inflight.current = false
       window.dispatchEvent(new Event('git-changed'))
     }
@@ -216,6 +220,51 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
     act(() => window.api.gitStage(root as string, files ? files.flatMap(pathsOf) : null))
   const unstage = (files: GitFile[] | null): Promise<void> =>
     act(() => window.api.gitUnstage(root as string, files ? files.flatMap(pathsOf) : null))
+
+  const closePicker = useCallback(() => setPicker(false), [])
+
+  const sync = async (kind: 'fetch' | 'pull' | 'push' | 'publish'): Promise<void> => {
+    if (!root || busy || syncing) return
+    setSyncing(kind)
+    try {
+      await act(() =>
+        kind === 'fetch'
+          ? window.api.gitFetch(root)
+          : kind === 'pull'
+            ? window.api.gitPull(root)
+            : window.api.gitPush(root, kind === 'publish')
+      )
+    } finally {
+      setSyncing(null)
+    }
+  }
+
+  const switchBranch = async (name: string, opts: { create?: boolean; track?: boolean }): Promise<void> => {
+    setPicker(false)
+    if (!root || busy) return
+    setSyncing('switch')
+    try {
+      await act(() => window.api.gitSwitch(root, name, opts))
+    } finally {
+      setSyncing(null)
+    }
+  }
+
+  const syncMain: { kind: 'fetch' | 'pull' | 'push' | 'publish'; label: string; icon: JSX.Element | null } = !status?.upstream
+    ? { kind: 'publish', label: 'Publish', icon: <ArrowUp size={12} /> }
+    : status.behind > 0
+      ? { kind: 'pull', label: `Pull ↓${status.behind}`, icon: null }
+      : status.ahead > 0
+        ? { kind: 'push', label: `Push ↑${status.ahead}`, icon: null }
+        : { kind: 'fetch', label: 'Fetch', icon: <RefreshCw size={12} /> }
+  const syncTitle =
+    syncMain.kind === 'publish'
+      ? 'Publish branch: git push -u <remote> <branch>'
+      : syncMain.kind === 'pull'
+        ? 'git pull --ff-only'
+        : syncMain.kind === 'push'
+          ? 'git push'
+          : 'git fetch --prune'
 
   const stagedCount = groups.staged.length
   const trackedCount = groups.tracked.length
@@ -449,22 +498,59 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
           </div>
           <div className="git-commit">
             <div className="git-branch">
-              <GitBranch size={13} />
-              <span className="git-branch-name" title={status.upstream ? `${status.branch} → ${status.upstream}` : (status.branch ?? '')}>
-                {status.detached ? 'detached HEAD' : (status.branch ?? 'no branch')}
-              </span>
+              <div className="git-branch-anchor">
+                <button
+                  className={`git-branch-btn ${picker ? 'open' : ''}`}
+                  title={
+                    (status.upstream ? `${status.branch} → ${status.upstream}\n` : '') + 'Switch branch'
+                  }
+                  disabled={busy}
+                  onClick={() => setPicker((v) => !v)}
+                >
+                  <GitBranch size={13} />
+                  <span className="git-branch-name">{status.detached ? 'detached HEAD' : (status.branch ?? 'no branch')}</span>
+                </button>
+                {picker && <BranchPicker folder={root} onClose={closePicker} onPick={(n, o) => void switchBranch(n, o)} />}
+              </div>
               {!status.hasCommits && <span className="git-note">no commits yet</span>}
-              {status.ahead > 0 && (
+              {status.behind > 0 && status.ahead > 0 && (
                 <span className="git-ab" title={`${status.ahead} commit(s) ahead of ${status.upstream}`}>
                   <ArrowUp size={12} />
                   {status.ahead}
                 </span>
               )}
-              {status.behind > 0 && (
-                <span className="git-ab" title={`${status.behind} commit(s) behind ${status.upstream}`}>
-                  <ArrowDown size={12} />
-                  {status.behind}
-                </span>
+              <span className="git-fill" />
+              {!status.detached && (
+                <div className="git-sync">
+                  <button
+                    className="btn small git-sync-main"
+                    disabled={busy || syncing !== null || (!status.hasCommits && !status.upstream)}
+                    title={syncTitle}
+                    onClick={() => void sync(syncMain.kind)}
+                  >
+                    {syncing !== null ? <RefreshCw size={12} className="spin" /> : syncMain.icon}
+                    <span>{syncMain.label}</span>
+                  </button>
+                  <button
+                    className="btn small git-sync-caret"
+                    title="Fetch, pull or push"
+                    disabled={busy || syncing !== null}
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect()
+                      setMenu({
+                        x: r.right - 160,
+                        y: r.top - 108,
+                        items: [
+                          { label: 'Fetch', icon: <RefreshCw size={14} />, onClick: () => void sync('fetch') },
+                          { label: 'Pull', icon: <ArrowDown size={14} />, onClick: () => void sync('pull') },
+                          { label: 'Push', icon: <ArrowUp size={14} />, onClick: () => void sync('push') }
+                        ]
+                      })
+                    }}
+                  >
+                    <ChevronDown size={12} />
+                  </button>
+                </div>
               )}
             </div>
             <textarea

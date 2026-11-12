@@ -9,7 +9,7 @@ import type { Command, PasteContent, PtyCreateRequest, Settings, Snippet, UiStat
 import { spawnShell, spawnSteps } from './pty'
 import * as store from './store'
 import { runSmoke } from './smoke'
-import { DirWatcher, listDir, openInEditor } from './fsops'
+import { DirWatcher, listDir, openInEditor, readFileContent } from './fsops'
 import * as gitcli from './gitcli'
 import type { GitDiffRequest } from '../shared/types'
 
@@ -231,6 +231,9 @@ function registerIpc(): void {
   ipcMain.handle('fs:list', (_e, p: string, showIgnored: boolean) =>
     allowed(p) ? listDir(resolve(p), !!showIgnored) : { ok: false, error: 'Path is outside the saved folders' }
   )
+  ipcMain.handle('fs:read', (_e, p: string) =>
+    allowed(p) ? readFileContent(resolve(p)) : { ok: false as const, error: 'Path is outside the saved folders' }
+  )
   ipcMain.on('fs:watch', (_e, paths: string[]) => {
     watcher.sync((Array.isArray(paths) ? paths : []).filter(allowed).map((p) => resolve(p)))
   })
@@ -249,6 +252,13 @@ function registerIpc(): void {
   )
   ipcMain.handle('git:log', (_e, f: string) => (allowed(f) ? gitcli.gitLog(f) : notAllowed))
   ipcMain.handle('git:commitFiles', (_e, f: string, hash: string) => (allowed(f) ? gitcli.gitCommitFiles(f, hash) : notAllowed))
+  ipcMain.handle('git:fetch', (_e, f: string) => (allowed(f) ? gitcli.gitFetch(f) : notAllowed))
+  ipcMain.handle('git:pull', (_e, f: string) => (allowed(f) ? gitcli.gitPull(f) : notAllowed))
+  ipcMain.handle('git:push', (_e, f: string, publish?: boolean) => (allowed(f) ? gitcli.gitPush(f, !!publish) : notAllowed))
+  ipcMain.handle('git:branches', (_e, f: string) => (allowed(f) ? gitcli.gitBranches(f) : notAllowed))
+  ipcMain.handle('git:switch', (_e, f: string, name: string, opts?: { create?: boolean; track?: boolean }) =>
+    allowed(f) ? gitcli.gitSwitch(f, name, { create: !!opts?.create, track: !!opts?.track }) : notAllowed
+  )
 
   ipcMain.handle('clipboard:read', () => clipboard.readText())
   ipcMain.handle('clipboard:readForPaste', () => readForPaste())
