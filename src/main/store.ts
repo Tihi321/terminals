@@ -23,6 +23,7 @@ import {
   type Settings,
   type UiState
 } from '../shared/types'
+import { sanitizePersisted } from '../shared/panes'
 import { resolveShell } from './pty'
 import { readGit } from './git'
 
@@ -50,7 +51,7 @@ interface Persisted {
 }
 
 const DEFAULT_SETTINGS: Settings = { shell: '', editor: 'zed', terminalFontSize: 15 }
-const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, panelOpen: false, panelTab: 'files' }
+const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files' }
 
 function emptyData(): Persisted {
   return {
@@ -144,6 +145,8 @@ export function migrate(raw: Record<string, unknown>): Persisted {
   d.ui = {
     sidebarWidth: num(u.sidebarWidth, DEFAULT_UI.sidebarWidth, 180, 600),
     panelWidth: num(u.panelWidth, DEFAULT_UI.panelWidth, 220, 900),
+    sidebarCollapsed: !!u.sidebarCollapsed,
+    panes: sanitizePersisted(u.panes),
     panelOpen: !!u.panelOpen,
     panelTab: u.panelTab === 'commands' || u.panelTab === 'git' ? u.panelTab : 'files'
   }
@@ -500,6 +503,8 @@ export function setUi(patch: Partial<UiState>): AppState {
   const u = data.ui
   if (patch.sidebarWidth !== undefined) u.sidebarWidth = num(patch.sidebarWidth, u.sidebarWidth, 180, 600)
   if (patch.panelWidth !== undefined) u.panelWidth = num(patch.panelWidth, u.panelWidth, 220, 900)
+  if (patch.sidebarCollapsed !== undefined) u.sidebarCollapsed = !!patch.sidebarCollapsed
+  if (patch.panes !== undefined) u.panes = sanitizePersisted(patch.panes)
   if (patch.panelOpen !== undefined) u.panelOpen = !!patch.panelOpen
   if (patch.panelTab === 'files' || patch.panelTab === 'commands' || patch.panelTab === 'git') u.panelTab = patch.panelTab
   save()

@@ -9,9 +9,19 @@ export interface Settings {
   terminalFontSize: number
 }
 
+/** Side-by-side panes: location ids in order, width fractions (sum 1) and the focused index. */
+export interface PersistedPanes {
+  locIds: string[]
+  fractions: number[]
+  focused: number
+}
+
 export interface UiState {
   sidebarWidth: number
   panelWidth: number
+  sidebarCollapsed: boolean
+  /** Null until a layout has been saved; the renderer then starts with one pane on the selection. */
+  panes: PersistedPanes | null
   panelOpen: boolean
   panelTab: 'files' | 'commands' | 'git'
 }

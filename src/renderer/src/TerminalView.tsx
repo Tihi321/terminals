@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import type { JSX } from 'react'
+import type { CSSProperties, JSX } from 'react'
 import { formatPaths, getTerm } from './termRegistry'
 
 interface Props {
   id: string
   cwd: string
   visible: boolean
+  /** Visible in the focused pane: gets keyboard focus. */
+  focused: boolean
+  /** Position inside the pane area; panes are laid out by the parent so this element never changes parent. */
+  style?: CSSProperties
   /** Set for command tabs: run these steps instead of an interactive shell. */
   steps?: string[]
 }
@@ -21,7 +25,7 @@ function safeFit(id: string, el: HTMLElement): void {
 }
 
 /** Hosts a long-lived xterm instance. Mounted for the tab's whole life, hidden via CSS when inactive. */
-export function TerminalView({ id, cwd, visible, steps }: Props): JSX.Element {
+export function TerminalView({ id, cwd, visible, focused, style, steps }: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -56,10 +60,10 @@ export function TerminalView({ id, cwd, visible, steps }: Props): JSX.Element {
     // Wait a frame so display:block has been applied before measuring.
     const raf = requestAnimationFrame(() => {
       safeFit(id, el)
-      entry.term.focus()
+      if (focused) entry.term.focus()
     })
     return () => cancelAnimationFrame(raf)
-  }, [visible, id])
+  }, [visible, focused, id])
 
   const [dropping, setDropping] = useState(false)
 
@@ -81,7 +85,7 @@ export function TerminalView({ id, cwd, visible, steps }: Props): JSX.Element {
     <div
       ref={ref}
       className={`term-host${dropping ? ' drop-target' : ''}`}
-      style={{ display: visible ? 'block' : 'none' }}
+      style={{ ...style, display: visible ? 'block' : 'none' }}
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes('Files')) return
         e.preventDefault()

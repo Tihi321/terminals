@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
 import {
+  PanelRight,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -29,12 +30,16 @@ import {
 import type { AppState, ChildView, FolderView, GroupView } from '../../shared/types'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
+import { LOC_DRAG_TYPE, locDrag } from './TabBar'
 
 interface Props {
   state: AppState
   counts: Record<string, number>
   onSelect: (id: string) => void
   onOpenTerminal: (id: string) => void
+  /** Show this location in a pane next to the focused one (or focus its pane when it already has one). */
+  onOpenToSide: (id: string) => void
+  canOpenToSide: (id: string) => boolean
   onAddFolder: () => void
   onAddParent: () => void
   onAddGroup: (name: string) => void
@@ -62,6 +67,8 @@ interface MenuState {
 }
 
 interface RowProps {
+  /** Location this row stands for; makes the row draggable onto a pane edge. */
+  locId?: string
   indent: number
   icon: ReactNode
   name: string
@@ -108,11 +115,21 @@ function Row(r: RowProps): JSX.Element {
       ].join(' ')}
       style={{ paddingLeft: 8 + r.indent * 18 }}
       title={r.title}
-      draggable={!!r.drag && !r.editing}
+      draggable={(!!r.drag || !!r.locId) && !r.editing}
       onClick={r.onClick}
       onContextMenu={r.onContext}
-      onDragStart={r.drag?.onDragStart}
-      onDragEnd={r.drag?.onDragEnd}
+      onDragStart={(e) => {
+        r.drag?.onDragStart()
+        if (r.locId) {
+          locDrag.id = r.locId
+          e.dataTransfer.setData(LOC_DRAG_TYPE, r.locId)
+          e.dataTransfer.effectAllowed = 'copyMove'
+        }
+      }}
+      onDragEnd={() => {
+        locDrag.id = null
+        r.drag?.onDragEnd()
+      }}
       onDragOver={r.drag?.onDragOver}
       onDragLeave={r.drag?.onDragLeave}
       onDrop={r.drag?.onDrop}
@@ -187,8 +204,16 @@ export function Sidebar(p: Props): JSX.Element {
     setMenu({ x: e.clientX, y: e.clientY, items })
   }
 
+  const sideItem = (id: string, missing: boolean): MenuItem => ({
+    label: 'Open to the side',
+    icon: <PanelRight size={14} />,
+    disabled: missing || !p.canOpenToSide(id),
+    onClick: () => p.onOpenToSide(id)
+  })
+
   const pathItems = (id: string, path: string, missing: boolean): MenuItem[] => [
     { label: 'Open terminal', icon: <Terminal size={14} />, disabled: missing, onClick: () => p.onOpenTerminal(id) },
+    sideItem(id, missing),
     { label: 'Open in Windows Terminal', icon: <SquareTerminal size={14} />, disabled: missing, onClick: () => p.onOpenWt(path) },
     { label: 'Open in Explorer', icon: <FolderOpen size={14} />, disabled: missing, onClick: () => p.onOpenExplorer(path) },
     { label: 'Open in editor', icon: <Code size={14} />, disabled: missing, onClick: () => p.onOpenEditor(path) }
@@ -224,7 +249,7 @@ export function Sidebar(p: Props): JSX.Element {
       danger: true,
       onClick: () => p.onRemoveGroup(g.id)
     }
-    if (g.kind === 'manual') return [rename, { separator: true }, remove]
+    if (g.kind === 'manual') return [sideItem(g.id, false), { separator: true }, rename, { separator: true }, remove]
     const path = g.path as string
     return [
       ...pathItems(g.id, path, g.missing),
@@ -283,6 +308,7 @@ export function Sidebar(p: Props): JSX.Element {
       subKind={f.missing ? 'missing' : f.branch ? 'branch' : 'path'}
       title={f.missing ? `${f.path}\n(folder not found on disk)` : f.path}
       selected={f.id === state.selectedId}
+      locId={f.id}
       missing={f.missing}
       count={p.counts[f.id] ?? 0}
       dropActive={dragOver === f.id}
@@ -359,6 +385,7 @@ export function Sidebar(p: Props): JSX.Element {
           group
           title={g.path ? (g.missing ? `${g.path}\n(folder not found on disk)` : g.path) : g.name}
           selected={g.id === state.selectedId}
+          locId={g.id}
           missing={g.missing}
           count={count}
           dropActive={dragOver === g.id}
@@ -443,6 +470,7 @@ export function Sidebar(p: Props): JSX.Element {
                   subKind={c.hidden ? 'text' : 'branch'}
                   title={c.path}
                   selected={c.id === state.selectedId}
+                  locId={c.id}
                   dim={c.hidden}
                   count={p.counts[c.id] ?? 0}
                   onClick={() => p.onSelect(c.id)}

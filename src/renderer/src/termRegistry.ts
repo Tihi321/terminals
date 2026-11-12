@@ -32,6 +32,7 @@ export interface TermHooks {
   onZoom: (dir: -1 | 0 | 1) => void
   onTogglePanel: (tab: 'files' | 'commands' | 'git') => void
   onSnippetPicker: () => void
+  onToggleSidebar: () => void
 }
 let hooks: TermHooks = {
   onNewTab: () => {},
@@ -39,7 +40,8 @@ let hooks: TermHooks = {
   onExit: () => {},
   onZoom: () => {},
   onTogglePanel: () => {},
-  onSnippetPicker: () => {}
+  onSnippetPicker: () => {},
+  onToggleSidebar: () => {}
 }
 export function setTermHooks(h: TermHooks): void {
   hooks = h
@@ -193,6 +195,11 @@ export function createTerm(id: string, opts: { command?: boolean } = {}): TermEn
     if (ev.ctrlKey && ev.shiftKey && (k === 'e' || k === 'r' || k === 'g')) {
       ev.preventDefault()
       hooks.onTogglePanel(k === 'e' ? 'files' : k === 'r' ? 'commands' : 'git')
+      return false
+    }
+    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && k === 'b') {
+      ev.preventDefault()
+      hooks.onToggleSidebar()
       return false
     }
     if (ev.ctrlKey && ev.shiftKey && !ev.altKey && k === 'p') {

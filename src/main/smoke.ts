@@ -6,6 +6,7 @@ import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps } from './pty'
 import { migrate } from './store'
 import { SCHEMA_VERSION } from '../shared/types'
+import { canAddPane, closePane, dragDivider, dropOnEdge, fromPersisted, normalize, openToSide } from '../shared/panes'
 import { gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage } from './gitcli'
 
 interface CheckResult {
@@ -92,6 +93,51 @@ function checkMigration(): CheckResult {
   return { ok, msg: ok ? 'migration: v2 and v1 files migrate with snippets: [] and data kept' : 'migration: unexpected result ' + JSON.stringify({ a, b }) }
 }
 
+/** Check: the pane layout migrates (old files load without it, bad data is cleaned) and the pure helpers behave. */
+function checkPanes(): CheckResult {
+  let n = 0
+  const mk = (): string => `p${n++}`
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'panes: ' + m })
+  const old = migrate({ ui: { sidebarWidth: 300 } } as never)
+  if (old.ui.panes !== null) return fail('old file should have panes: null')
+  const dirty = migrate({
+    ui: { panes: { locIds: ['a', 'b', 'a', 5, 'c', 'd', 'e'], fractions: [1, 1, 1, 1, 1, 1, 1], focused: 3 } }
+  } as never)
+  const dp = dirty.ui.panes
+  if (!dp || dp.locIds.join() !== 'a,b,c,d' || dp.focused !== 0 || Math.abs(dp.fractions.reduce((x, y) => x + y, 0) - 1) > 1e-9)
+    return fail('dirty layout not cleaned ' + JSON.stringify(dp))
+  if (migrate({ ui: { panes: 'nope' } } as never).ui.panes !== null) return fail('garbage should become null')
+
+  const valid = new Set(['a', 'b', 'c', 'd', 'e'])
+  const loaded = fromPersisted({ locIds: ['a', 'gone', 'b'], fractions: [0.2, 0.3, 0.5], focused: 2 }, valid, 'a', mk)
+  if (loaded.panes.map((p) => p.locId).join() !== 'a,b' || loaded.focused !== 1 || Math.abs(loaded.fractions[0] - 0.2 / 0.7) > 1e-9)
+    return fail('fromPersisted ' + JSON.stringify(loaded))
+  const fallback = fromPersisted(null, valid, 'c', mk)
+  if (fallback.panes.length !== 1 || fallback.panes[0].locId !== 'c') return fail('fallback pane')
+
+  let s = fromPersisted(null, valid, 'a', mk)
+  s = openToSide(s, 'b', mk)
+  if (s.panes.map((p) => p.locId).join() !== 'a,b' || s.focused !== 1 || s.fractions.join() !== '0.5,0.5') return fail('openToSide ' + JSON.stringify(s))
+  s = openToSide(s, 'a', mk)
+  if (s.panes.length !== 2 || s.focused !== 0) return fail('open existing should focus')
+  s = dropOnEdge(s, 'c', 0, 'left', mk)
+  if (s.panes.map((p) => p.locId).join() !== 'c,a,b' || s.focused !== 0) return fail('dropOnEdge new left ' + JSON.stringify(s))
+  s = dropOnEdge(s, 'c', 2, 'right', mk)
+  if (s.panes.map((p) => p.locId).join() !== 'a,b,c' || s.focused !== 2) return fail('dropOnEdge move ' + JSON.stringify(s))
+  s = openToSide(openToSide(s, 'd', mk), 'e', mk)
+  if (s.panes.length !== 4 || canAddPane(s, 'e') || !canAddPane(s, 'a')) return fail('cap at 4 ' + JSON.stringify(s))
+  const full = openToSide(s, 'x', mk)
+  if (full !== s) return fail('fifth pane should be refused')
+  const closed = closePane(s, s.focused)
+  if (closed.panes.length !== 3 || Math.abs(closed.fractions.reduce((x, y) => x + y, 0) - 1) > 1e-9) return fail('closePane')
+  if (closePane({ panes: [{ id: 'z', locId: 'a' }], fractions: [1], focused: 0 }, 0).panes.length !== 1) return fail('last pane closed')
+  const dd = dragDivider([0.5, 0.5], 0, 0.99, 0.2)
+  if (Math.abs(dd[0] - 0.8) > 1e-9 || Math.abs(dd[1] - 0.2) > 1e-9) return fail('dragDivider clamp ' + JSON.stringify(dd))
+  const gone = normalize(s, new Set(['a']), 'a', mk)
+  if (gone.panes.length !== 1 || gone.panes[0].locId !== 'a') return fail('normalize drop')
+  return { ok: true, msg: 'panes: migrate cleans/defaults the layout; open/drop/close/divider/normalize helpers behave' }
+}
+
 /** Check 4: the git status/diff/stage/commit/log layer against a throwaway repo. */
 async function checkGit(): Promise<CheckResult> {
   const repo = mkdtempSync(join(tmpdir(), 'terminals-smoke-git-'))
@@ -144,7 +190,7 @@ export async function runSmoke(): Promise<void> {
   const ptys: IPty[] = []
   const track = (p: IPty): void => void ptys.push(p)
 
-  const results = [await checkInteractive(dir, shell, track), await checkSteps(dir, shell, track), checkMigration(), await checkGit()]
+  const results = [await checkInteractive(dir, shell, track), await checkSteps(dir, shell, track), checkMigration(), checkPanes(), await checkGit()]
   for (const r of results) console.log(r.ok ? `PASS: ${r.msg}` : `FAIL: ${r.msg}`)
   const ok = results.every((r) => r.ok)
 

@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileDiff, FileText, FolderTree, FolderX, GitBranch, Group, Plus, RotateCw, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
+import { FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
 import type { AppState, Command, GitDiffRequest } from '../../shared/types'
 import { Sidebar } from './Sidebar'
 import { TerminalView } from './TerminalView'
@@ -11,29 +11,28 @@ import { DiffView } from './DiffView'
 import { diffTitle } from './gitUtil'
 import type { DiffSpec } from './gitUtil'
 import { SnippetPicker } from './SnippetPicker'
+import { TabBar, TAB_DRAG_TYPE, LOC_DRAG_TYPE, locDrag } from './TabBar'
+import type { Tab } from './TabBar'
+import {
+  canAddPane,
+  closePane,
+  dragDivider,
+  dropOnEdge,
+  focusLoc,
+  fromPersisted,
+  indexOfLoc,
+  normalize,
+  openToSide,
+  paneAt,
+  startOf,
+  toPersisted
+} from '../../shared/panes'
+import type { PaneState, Side } from '../../shared/panes'
 import { Keys } from './Keys'
 import { visibleSnippets } from './SnippetEditor'
 import type { RunInfo } from './CommandsPanel'
 import { baseName, buildLocs } from './locations'
 import { createTerm, getTerm, pasteInto, setTermHooks, setTerminalFontSize, DEFAULT_FONT_SIZE } from './termRegistry'
-
-interface Tab {
-  id: string
-  /** Sidebar entry (folder, child or group) whose tab bar this belongs to. */
-  locId: string
-  cwd: string
-  title: string
-  kind: 'shell' | 'command' | 'diff'
-  /** Shell tabs: the process ended. */
-  exited: boolean
-  /** Command tabs only. */
-  steps?: string[]
-  /** Diff tabs only: no pty behind them. */
-  diff?: DiffSpec
-  /** Diff tabs only: replaced by the next single-click diff (italic title) until pinned. */
-  preview?: boolean
-  run?: { commandId: string; runId: string; status: 'running' | 'success' | 'failed'; exitCode?: number }
-}
 
 interface RunCtl {
   cmd: Command
@@ -41,6 +40,9 @@ interface RunCtl {
   nextIndex: number
   stopped: boolean
 }
+
+const MIN_PANE_PX = 240
+const mkId = (): string => crypto.randomUUID()
 
 function shellLabel(shell: string): string {
   const base = shell.split(/[\\/]/).pop() ?? shell
@@ -80,6 +82,12 @@ export function App(): JSX.Element {
   const latestRun = useRef<Record<string, string>>({})
   const counters = useRef<Record<string, number>>({})
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [paneState, setPaneState] = useState<PaneState | null>(null)
+  const panesRef = useRef<PaneState | null>(null)
+  const panesEl = useRef<HTMLDivElement>(null)
+  const lastSelected = useRef<string | null>(null)
+  const dragTab = useRef<Tab | null>(null)
+  const [dropHint, setDropHint] = useState<{ index: number; side: Side } | null>(null)
   const [widths, setWidths] = useState<{ sb: number; panel: number } | null>(null)
   const widthsRef = useRef(widths)
   widthsRef.current = widths
@@ -101,6 +109,14 @@ export function App(): JSX.Element {
   useEffect(() => {
     void window.api.getState().then((s) => {
       setState(s)
+      const valid = new Set(buildLocs(s).keys())
+      let ps = fromPersisted(s.ui.panes, valid, s.selectedId, mkId)
+      if (s.selectedId && valid.has(s.selectedId)) ps = focusLoc(ps, s.selectedId)
+      lastSelected.current = s.selectedId
+      panesRef.current = ps
+      setPaneState(ps)
+      const stored = toPersisted(ps)
+      if (stored && JSON.stringify(stored) !== JSON.stringify(s.ui.panes)) void window.api.setUi({ panes: stored })
       setWidths({ sb: s.ui.sidebarWidth, panel: s.ui.panelWidth })
       setTerminalFontSize(s.settings.terminalFontSize)
     })
@@ -115,6 +131,78 @@ export function App(): JSX.Element {
   const selected = (selectedId && locs.get(selectedId)) || null
 
   const select = useCallback(async (id: string | null) => setState(await window.api.select(id)), [setState])
+
+  /** Applies a new pane layout; the layout is persisted unless it is a transient drag step. */
+  const setPanes = useCallback((next: PaneState, persist = true) => {
+    panesRef.current = next
+    setPaneState(next)
+    if (!persist) return
+    const p = toPersisted(next)
+    if (p) void window.api.setUi({ panes: p })
+  }, [])
+
+  /** Applies a layout and makes the store's selection follow the focused pane (selectedId == focused pane's location). */
+  const commitPanes = useCallback(
+    (next: PaneState) => {
+      setPanes(next)
+      const loc = next.panes[next.focused].locId
+      if (loc && loc !== stateRef.current?.selectedId) void select(loc)
+    },
+    [setPanes, select]
+  )
+
+  // Keep the layout valid when locations disappear, and follow selection changes (sidebar click, new folder, removal).
+  useEffect(() => {
+    const cur = panesRef.current
+    if (!state || !cur) return
+    const valid = new Set(locs.keys())
+    let next = normalize(cur, valid, state.selectedId, mkId)
+    if (state.selectedId !== lastSelected.current) {
+      lastSelected.current = state.selectedId
+      if (state.selectedId && valid.has(state.selectedId)) next = focusLoc(next, state.selectedId)
+    }
+    if (next !== cur) setPanes(next)
+  }, [state, locs, setPanes])
+
+  const focusPane = useCallback(
+    (index: number) => {
+      const cur = panesRef.current
+      if (cur && cur.focused !== index) commitPanes({ ...cur, focused: index })
+    },
+    [commitPanes]
+  )
+
+  const openLocToSide = useCallback(
+    (locId: string) => {
+      const cur = panesRef.current
+      if (cur) commitPanes(openToSide(cur, locId, mkId))
+    },
+    [commitPanes]
+  )
+
+  const closePaneById = useCallback(
+    (paneId: string) => {
+      const cur = panesRef.current
+      if (!cur) return
+      commitPanes(closePane(cur, cur.panes.findIndex((p) => p.id === paneId)))
+    },
+    [commitPanes]
+  )
+
+  /** Which pane a tab drag is over and on which half, or null when dropping there would do nothing. */
+  const dropTargetAt = (e: React.DragEvent): { index: number; side: Side; locId: string; tabId?: string } | null => {
+    const el = panesEl.current
+    const cur = panesRef.current
+    if (!el || !cur) return null
+    const types = e.dataTransfer.types
+    const tab = types.includes(TAB_DRAG_TYPE) ? dragTab.current : null
+    const locId = tab ? tab.locId : types.includes(LOC_DRAG_TYPE) ? locDrag.id : null
+    if (!locId) return null
+    const r = el.getBoundingClientRect()
+    const { index, within } = paneAt(cur.fractions, (e.clientX - r.left) / r.width)
+    if (indexOfLoc(cur, locId) === index || !canAddPane(cur, locId)) return null
+    return { index, side: within < 0.5 ? 'left' : 'right', locId, tabId: tab?.id }
+  }
 
   const newTab = useCallback(
     (locId: string, cwdOverride?: string): string | undefined => {
@@ -333,6 +421,12 @@ export function App(): JSX.Element {
     [setState]
   )
 
+  const toggleSidebar = useCallback(async () => {
+    const ui = stateRef.current?.ui
+    if (!ui) return
+    setState(await window.api.setUi({ sidebarCollapsed: !ui.sidebarCollapsed }))
+  }, [setState])
+
   const zoom = useCallback(
     async (dir: -1 | 0 | 1) => {
       const cur = stateRef.current?.settings.terminalFontSize ?? DEFAULT_FONT_SIZE
@@ -378,10 +472,6 @@ export function App(): JSX.Element {
     [newTab]
   )
 
-  useEffect(() => {
-    document.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [activeTabId, tabs.length])
-
   // Latest-handler indirection so the registry hooks and the window listener never go stale.
   const act = useRef({ newSelected: () => {}, closeActive: () => {} })
   act.current = {
@@ -396,9 +486,10 @@ export function App(): JSX.Element {
       onExit: handleExit,
       onZoom: (d) => void zoom(d),
       onTogglePanel: (t) => void togglePanel(t),
-      onSnippetPicker: () => setPickerOpen(true)
+      onSnippetPicker: () => setPickerOpen(true),
+      onToggleSidebar: () => void toggleSidebar()
     })
-  }, [handleExit, zoom, togglePanel])
+  }, [handleExit, zoom, togglePanel, toggleSidebar])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -413,6 +504,9 @@ export function App(): JSX.Element {
       } else if (e.shiftKey && (k === 'e' || k === 'r' || k === 'g')) {
         e.preventDefault()
         void togglePanel(k === 'e' ? 'files' : k === 'r' ? 'commands' : 'git')
+      } else if (e.shiftKey && k === 'b') {
+        e.preventDefault()
+        void toggleSidebar()
       } else if (e.shiftKey && k === 'p') {
         e.preventDefault()
         setPickerOpen(true)
@@ -434,7 +528,7 @@ export function App(): JSX.Element {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('terminal-failed', onFailed)
     }
-  }, [handleExit, togglePanel, zoom])
+  }, [handleExit, togglePanel, toggleSidebar, zoom])
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
@@ -452,12 +546,14 @@ export function App(): JSX.Element {
     [closeTab]
   )
 
-  if (!state || !widths) return <div className="app" />
+  if (!state || !widths || !paneState) return <div className="app" />
 
   const ui = state.ui
-  const folderTabs = tabs.filter((t) => t.locId === selectedId)
-  const activeDiff = folderTabs.find((t) => t.id === activeTabId && t.kind === 'diff')
-  const manualMembers = selected?.kind === 'manual' ? state.folders.filter((f) => f.groupId === selected.id).length : 0
+  const ps = paneState
+  const multi = ps.panes.length > 1
+  const paneIndexOfLoc = new Map<string, number>()
+  ps.panes.forEach((p, i) => p.locId && paneIndexOfLoc.set(p.locId, i))
+  const startPct = (i: number): number => startOf(ps.fractions, i) * 100
 
   const addFolder = async (): Promise<void> => setState(await window.api.addFolder())
 
@@ -465,6 +561,13 @@ export function App(): JSX.Element {
     <div className="app">
       <header className="titlebar">
         <div className="titlebar-left">
+          <button
+            className={`icon-btn ${ui.sidebarCollapsed ? '' : 'active'}`}
+            title="Toggle sidebar (Ctrl+Shift+B)"
+            onClick={() => void toggleSidebar()}
+          >
+            {ui.sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          </button>
           <span className="titlebar-mark">
             <Terminal size={13} strokeWidth={2.75} />
           </span>
@@ -503,12 +606,16 @@ export function App(): JSX.Element {
         </div>
       </header>
       <div className="body">
+        {!ui.sidebarCollapsed && (
+        <>
         <div className="sidebar-wrap" style={{ width: widths.sb }}>
           <Sidebar
             state={state}
             counts={counts}
             onSelect={(id) => void select(id)}
             onOpenTerminal={(id) => void openTerminal(id)}
+            onOpenToSide={openLocToSide}
+            canOpenToSide={(id) => canAddPane(ps, id)}
             onAddFolder={() => void addFolder()}
             onAddParent={async () => setState(await window.api.addParentGroup())}
             onAddGroup={async (name) => setState(await window.api.addGroup(name))}
@@ -539,139 +646,196 @@ export function App(): JSX.Element {
           onDrag={(x) => setWidths((w) => (w ? { ...w, sb: Math.min(600, Math.max(180, x)) } : w))}
           onEnd={() => widthsRef.current && void window.api.setUi({ sidebarWidth: widthsRef.current.sb })}
         />
+        </>
+        )}
         <main className="main">
-          {selected && (
-            <div className="tabbar">
-              {folderTabs.map((t) => {
-                const status = t.kind === 'command' ? t.run?.status : t.exited ? 'exited' : undefined
-                const finished = t.kind === 'command' && t.run?.status !== 'running'
-                return (
-                  <div
-                    key={t.id}
-                    className={`tab ${t.id === activeTabId ? 'active' : ''} ${t.exited ? 'exited' : ''} ${t.preview ? 'preview' : ''}`}
-                    onClick={() => setActiveByLoc((a) => ({ ...a, [t.locId]: t.id }))}
-                    onDoubleClick={() => t.preview && commitTabs((all) => all.map((x) => (x.id === t.id ? { ...x, preview: false } : x)))}
-                    onAuxClick={(e) => e.button === 1 && closeTab(t.id)}
-                    title={t.diff ? `${t.diff.path}\n${t.cwd}` : `${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}`}
-                  >
-                    {t.kind === 'command' ? (
-                      <Zap size={13} className="tab-icon" />
-                    ) : t.kind === 'diff' ? (
-                      <FileDiff size={13} className="tab-icon" />
-                    ) : (
-                      <Terminal size={13} className="tab-icon" />
-                    )}
-                    <span className="tab-title">{t.title}</span>
-                    {t.kind === 'command' && <span className={`dot ${t.run?.status}`} />}
-                    {t.exited && <span className="tab-exited">exited</span>}
-                    {finished && t.run && (
-                      <button
-                        className="tab-btn"
-                        title="Run again"
-                        disabled={!state.commands.some((c) => c.id === t.run?.commandId)}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const cmd = state.commands.find((c) => c.id === t.run?.commandId)
-                          if (cmd) runCommand(cmd)
+          <div
+            className={`panes ${multi ? 'multi' : ''}`}
+            ref={panesEl}
+            onMouseDownCapture={(e) => {
+              const el = panesEl.current
+              if (!el || (e.target as HTMLElement).closest('.pane-divider')) return
+              const r = el.getBoundingClientRect()
+              focusPane(paneAt(ps.fractions, (e.clientX - r.left) / r.width).index)
+            }}
+            onDragOver={(e) => {
+              const h = dropTargetAt(e)
+              if (!h) {
+                if (dropHint) setDropHint(null)
+                return
+              }
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              if (!dropHint || dropHint.index !== h.index || dropHint.side !== h.side) setDropHint(h)
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(null)
+            }}
+            onDrop={(e) => {
+              const h = dropTargetAt(e)
+              dragTab.current = null
+              locDrag.id = null
+              setDropHint(null)
+              const cur = panesRef.current
+              if (!h || !cur) return
+              e.preventDefault()
+              if (h.tabId) setActiveByLoc((a) => ({ ...a, [h.locId]: h.tabId as string }))
+              commitPanes(dropOnEdge(cur, h.locId, h.index, h.side, mkId))
+            }}
+          >
+            {ps.panes.map((p, i) => {
+              const loc = (p.locId && locs.get(p.locId)) || null
+              const paneTabs = tabs.filter((t) => t.locId === p.locId)
+              const paneActive = p.locId ? activeByLoc[p.locId] : undefined
+              const diff = paneTabs.find((t) => t.id === paneActive && t.kind === 'diff')
+              const members = loc?.kind === 'manual' ? state.folders.filter((f) => f.groupId === loc.id).length : 0
+              return (
+                <div
+                  key={p.id}
+                  className={`pane ${i === ps.focused ? 'focused' : ''}`}
+                  style={{ left: `${startPct(i)}%`, width: `${ps.fractions[i] * 100}%` }}
+                >
+                  {loc && (
+                    <div className="pane-head">
+                      <TabBar
+                        loc={loc}
+                        tabs={paneTabs}
+                        activeId={paneActive}
+                        commands={state.commands}
+                        onActivate={(id) => setActiveByLoc((a) => ({ ...a, [loc.id]: id }))}
+                        onClose={closeTab}
+                        onPin={(id) => commitTabs((all) => all.map((x) => (x.id === id ? { ...x, preview: false } : x)))}
+                        onRunAgain={runCommand}
+                        onNew={() => newTab(loc.id)}
+                        onDragStart={(e, t) => {
+                          dragTab.current = t
+                          e.dataTransfer.setData(TAB_DRAG_TYPE, t.id)
+                          e.dataTransfer.effectAllowed = 'move'
                         }}
-                      >
-                        <RotateCw size={13} />
-                      </button>
+                        onDragEnd={() => {
+                          dragTab.current = null
+                          setDropHint(null)
+                        }}
+                      />
+                      {multi && (
+                        <button className="pane-close" title="Close pane" onClick={() => closePaneById(p.id)}>
+                          <PanelRightClose size={15} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <div className="term-area">
+                    {diff?.diff && (
+                      <DiffView
+                        key={diff.id}
+                        spec={diff.diff}
+                        fontSize={Math.max(11, state.settings.terminalFontSize - 2)}
+                        onChangeSpec={(spec) => updateDiff(diff.id, spec)}
+                      />
                     )}
-                    <button
-                      className="tab-btn"
-                      title={t.kind === 'diff' ? 'Close diff' : 'Close terminal'}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        closeTab(t.id)
-                      }}
-                    >
-                      <X size={13} />
-                    </button>
+                    {!loc && (
+                      <div className="empty">
+                        <span className="empty-icon">
+                          <FolderTree size={24} strokeWidth={1.75} />
+                        </span>
+                        <h2>No folder selected</h2>
+                        <p>Add a folder, or a parent folder whose subfolders are discovered automatically. You can also drag folders from Explorer onto the sidebar.</p>
+                        <button className="btn primary" onClick={() => void addFolder()}>
+                          <Plus size={15} /> Add folder
+                        </button>
+                      </div>
+                    )}
+                    {loc && loc.missing && (
+                      <div className="empty">
+                        <span className="empty-icon warn">
+                          <FolderX size={24} strokeWidth={1.75} />
+                        </span>
+                        <h2>Folder not found</h2>
+                        <p>
+                          <span className="path-chip">{loc.path}</span> no longer exists on disk. Terminals cannot be opened here.
+                        </p>
+                      </div>
+                    )}
+                    {loc && !loc.missing && !loc.path && paneTabs.length === 0 && (
+                      <div className="empty">
+                        <span className="empty-icon">
+                          <Group size={24} strokeWidth={1.75} />
+                        </span>
+                        <h2>{loc.name}</h2>
+                        <p>
+                          {members === 0
+                            ? 'This group is empty. Drag folders onto it or use "Move to group".'
+                            : 'Select one of the folders in this group to open a terminal.'}
+                        </p>
+                        <p className="hint">
+                          Commands saved on this group are in the Commands panel <Keys combo="Ctrl+Shift+R" />
+                        </p>
+                      </div>
+                    )}
+                    {loc && !loc.missing && loc.path && paneTabs.length === 0 && (
+                      <div className="empty">
+                        <span className="empty-icon">
+                          <SquareTerminal size={24} strokeWidth={1.75} />
+                        </span>
+                        <h2>{loc.name}</h2>
+                        <p>No terminals open here.</p>
+                        <button className="btn primary" onClick={() => newTab(loc.id)}>
+                          <Plus size={15} /> New terminal
+                        </button>
+                        <p className="hint">
+                          <Keys combo="Ctrl+Shift+T" />
+                        </p>
+                      </div>
+                    )}
                   </div>
+                </div>
+              )
+            })}
+            {/* Every terminal lives in this one stable list whatever pane shows it: positioning, not reparenting, moves it. */}
+            {tabs
+              .filter((t) => t.kind !== 'diff')
+              .map((t) => {
+                const pi = paneIndexOfLoc.get(t.locId)
+                const visible = pi !== undefined && activeByLoc[t.locId] === t.id
+                return (
+                  <TerminalView
+                    key={t.id}
+                    id={t.id}
+                    cwd={t.cwd}
+                    steps={t.steps}
+                    visible={visible}
+                    focused={visible && pi === ps.focused}
+                    style={
+                      pi === undefined
+                        ? undefined
+                        : { left: `calc(${startPct(pi)}% + 14px)`, width: `calc(${ps.fractions[pi] * 100}% - 16px)` }
+                    }
+                  />
                 )
               })}
-              <button
-                className="tab-new"
-                title="New terminal (Ctrl+Shift+T)"
-                disabled={selected.missing || !selected.path}
-                onClick={() => newTab(selected.id)}
-              >
-                <Plus size={16} />
-              </button>
-            </div>
-          )}
-          <div className="term-area">
-            {tabs.filter((t) => t.kind !== 'diff').map((t) => (
-              <TerminalView
-                key={t.id}
-                id={t.id}
-                cwd={t.cwd}
-                steps={t.steps}
-                visible={t.locId === selectedId && t.id === activeTabId}
-              />
+            {ps.panes.slice(0, -1).map((p, i) => (
+              <div key={p.id} className="pane-divider" style={{ left: `${startPct(i + 1)}%` }}>
+                <ResizeHandle
+                  onDrag={(x) => {
+                    const el = panesEl.current
+                    const cur = panesRef.current
+                    if (!el || !cur) return
+                    const r = el.getBoundingClientRect()
+                    const min = Math.min(MIN_PANE_PX / r.width, 1 / cur.panes.length)
+                    setPanes({ ...cur, fractions: dragDivider(cur.fractions, i, (x - r.left) / r.width, min) }, false)
+                  }}
+                  onEnd={() => panesRef.current && setPanes(panesRef.current)}
+                />
+              </div>
             ))}
-            {activeDiff?.diff && (
-              <DiffView
-                key={activeDiff.id}
-                spec={activeDiff.diff}
-                fontSize={Math.max(11, state.settings.terminalFontSize - 2)}
-                onChangeSpec={(spec) => updateDiff(activeDiff.id, spec)}
+            {dropHint && (
+              <div
+                className="pane-drop"
+                style={{
+                  left: `${startPct(dropHint.index) + (dropHint.side === 'right' ? ps.fractions[dropHint.index] * 50 : 0)}%`,
+                  width: `${ps.fractions[dropHint.index] * 50}%`
+                }}
               />
-            )}
-            {!selected && (
-              <div className="empty">
-                <span className="empty-icon">
-                  <FolderTree size={24} strokeWidth={1.75} />
-                </span>
-                <h2>No folder selected</h2>
-                <p>Add a folder, or a parent folder whose subfolders are discovered automatically. You can also drag folders from Explorer onto the sidebar.</p>
-                <button className="btn primary" onClick={() => void addFolder()}>
-                  <Plus size={15} /> Add folder
-                </button>
-              </div>
-            )}
-            {selected && selected.missing && (
-              <div className="empty">
-                <span className="empty-icon warn">
-                  <FolderX size={24} strokeWidth={1.75} />
-                </span>
-                <h2>Folder not found</h2>
-                <p>
-                  <span className="path-chip">{selected.path}</span> no longer exists on disk. Terminals cannot be opened here.
-                </p>
-              </div>
-            )}
-            {selected && !selected.missing && !selected.path && folderTabs.length === 0 && (
-              <div className="empty">
-                <span className="empty-icon">
-                  <Group size={24} strokeWidth={1.75} />
-                </span>
-                <h2>{selected.name}</h2>
-                <p>
-                  {manualMembers === 0
-                    ? 'This group is empty. Drag folders onto it or use "Move to group".'
-                    : 'Select one of the folders in this group to open a terminal.'}
-                </p>
-                <p className="hint">
-                  Commands saved on this group are in the Commands panel <Keys combo="Ctrl+Shift+R" />
-                </p>
-              </div>
-            )}
-            {selected && !selected.missing && selected.path && folderTabs.length === 0 && (
-              <div className="empty">
-                <span className="empty-icon">
-                  <SquareTerminal size={24} strokeWidth={1.75} />
-                </span>
-                <h2>{selected.name}</h2>
-                <p>No terminals open here.</p>
-                <button className="btn primary" onClick={() => newTab(selected.id)}>
-                  <Plus size={15} /> New terminal
-                </button>
-                <p className="hint">
-                  <Keys combo="Ctrl+Shift+T" />
-                </p>
-              </div>
             )}
           </div>
         </main>
