@@ -118,6 +118,8 @@ export interface PtyCreateRequest {
   rows: number
   /** When set, run these steps (stopping at the first failure) instead of an interactive shell. */
   steps?: string[]
+  /** Folder, child or group id the terminal belongs to; exported to the shell as TERMINALS_LOC_ID for the MCP server. */
+  locId?: string
 }
 
 /** In-app file viewer payload: text, an image as a data URL, or a marker for binary/too-large files. */
@@ -203,6 +205,8 @@ export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string
 
 export interface TerminalsApi {
   getState(): Promise<AppState>
+  /** State changed outside the renderer's own calls (the MCP server). */
+  onStateChanged(cb: (state: AppState) => void): () => void
   addFolder(): Promise<AppState>
   addParentGroup(): Promise<AppState>
   addGroup(name: string): Promise<AppState>

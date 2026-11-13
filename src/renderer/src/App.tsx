@@ -572,6 +572,26 @@ export function App(): JSX.Element {
     [closeTab]
   )
 
+  // State pushed by the main process (MCP server). A folder or group removed there gets the same cleanup as a
+  // removal from the sidebar: its terminals (and a parent group's children's) are closed before the state applies.
+  useEffect(
+    () =>
+      window.api.onStateChanged((next) => {
+        const prev = stateRef.current
+        if (prev) {
+          const gone: string[] = []
+          for (const f of prev.folders) if (!next.folders.some((x) => x.id === f.id)) gone.push(f.id)
+          for (const g of prev.groups) {
+            if (next.groups.some((x) => x.id === g.id)) continue
+            gone.push(g.id, ...(g.kind === 'parent' ? g.children.map((c) => c.id) : []))
+          }
+          if (gone.length > 0) closeTabsOf(gone)
+        }
+        setState(next)
+      }),
+    [closeTabsOf, setState]
+  )
+
   if (!state || !widths || !paneState) return <div className="app" />
 
   const ui = state.ui
@@ -838,6 +858,7 @@ export function App(): JSX.Element {
                     id={t.id}
                     cwd={t.cwd}
                     steps={t.steps}
+                    locId={t.locId}
                     visible={visible}
                     focused={visible && pi === ps.focused}
                     style={

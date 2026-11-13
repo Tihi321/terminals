@@ -1,10 +1,15 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { TerminalsApi } from '../shared/types'
+import type { AppState, TerminalsApi } from '../shared/types'
 
 const inv = (channel: string, ...args: unknown[]): Promise<never> => ipcRenderer.invoke(channel, ...args) as Promise<never>
 
 const api: TerminalsApi = {
   getState: () => inv('state:get'),
+  onStateChanged: (cb) => {
+    const h = (_: unknown, s: AppState): void => cb(s)
+    ipcRenderer.on('state:changed', h)
+    return () => ipcRenderer.removeListener('state:changed', h)
+  },
   addFolder: () => inv('folders:add'),
   addParentGroup: () => inv('groups:addParent'),
   addGroup: (name) => inv('groups:addManual', name),

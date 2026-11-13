@@ -308,29 +308,38 @@ export function addFolder(path: string): AppState {
   return getState()
 }
 
-export function addParentGroup(path: string): AppState {
+/** Finds or creates the parent-folder group for `path` without saving or touching the selection. */
+function upsertParentGroup(path: string): { id: string; existed: boolean } {
   const existing = data.groups.find((g) => g.kind === 'parent' && g.path && norm(g.path) === norm(path))
-  if (existing) {
-    data.selectedId = existing.id
-  } else {
-    const g: PersistedGroup = {
-      id: randomUUID(),
-      kind: 'parent',
-      name: basename(path) || path,
-      path,
-      order: data.groups.length,
-      collapsed: false,
-      showHidden: false,
-      hidden: []
-    }
-    data.groups.push(g)
-    data.selectedId = g.id
+  if (existing) return { id: existing.id, existed: true }
+  const g: PersistedGroup = {
+    id: randomUUID(),
+    kind: 'parent',
+    name: basename(path) || path,
+    path,
+    order: data.groups.length,
+    collapsed: false,
+    showHidden: false,
+    hidden: []
   }
+  data.groups.push(g)
+  return { id: g.id, existed: false }
+}
+
+export function addParentGroup(path: string): AppState {
+  data.selectedId = upsertParentGroup(path).id
   save()
   return getState()
 }
 
-export function addManualGroup(name: string): AppState {
+/** Like addParentGroup, but leaves the selection alone (used by the MCP server). */
+export function createParentGroup(path: string): { id: string; existed: boolean } {
+  const r = upsertParentGroup(path)
+  if (!r.existed) save()
+  return r
+}
+
+function pushManualGroup(name: string): string {
   const g: PersistedGroup = {
     id: randomUUID(),
     kind: 'manual',
@@ -341,9 +350,20 @@ export function addManualGroup(name: string): AppState {
     hidden: []
   }
   data.groups.push(g)
-  data.selectedId = g.id
+  return g.id
+}
+
+export function addManualGroup(name: string): AppState {
+  data.selectedId = pushManualGroup(name)
   save()
   return getState()
+}
+
+/** Like addManualGroup, but leaves the selection alone and returns the new id (used by the MCP server). */
+export function createManualGroup(name: string): string {
+  const id = pushManualGroup(name)
+  save()
+  return id
 }
 
 function fixSelection(): void {
@@ -463,8 +483,24 @@ export function deleteSnippet(id: string): AppState {
   return getState()
 }
 
-/** Adds existing directories not yet saved. Returns the new folder ids in input order. */
+/** Adds existing directories not yet saved and selects the first new one. */
 export function addFolderPaths(paths: string[], groupId: string | null, beforeId?: string): AppState {
+  const created = insertFolders(paths, groupId, beforeId)
+  if (created.length === 0) return getState()
+  data.selectedId = created[0].id
+  save()
+  return getState()
+}
+
+/** Like addFolderPaths, but leaves the selection alone and returns the new folders in input order (used by the MCP server). */
+export function createFolders(paths: string[], groupId: string | null): Folder[] {
+  const created = insertFolders(paths, groupId)
+  if (created.length > 0) save()
+  return created
+}
+
+/** Inserts existing directories not yet saved, without saving. Returns the new folders in input order. */
+function insertFolders(paths: string[], groupId: string | null, beforeId?: string): Folder[] {
   if (groupId && !data.groups.some((g) => g.id === groupId && g.kind === 'manual')) groupId = null
   const created: Folder[] = []
   for (const raw of paths) {
@@ -481,13 +517,11 @@ export function addFolderPaths(paths: string[], groupId: string | null, beforeId
     const path = resolve(raw)
     created.push({ id: randomUUID(), path, name: basename(path) || path, order: 0, groupId })
   }
-  if (created.length === 0) return getState()
+  if (created.length === 0) return created
   const at = beforeId ? data.folders.findIndex((x) => x.id === beforeId) : -1
   if (at >= 0) data.folders.splice(at, 0, ...created)
   else data.folders.push(...created)
-  data.selectedId = created[0].id
-  save()
-  return getState()
+  return created
 }
 
 export function setSettings(patch: Partial<Settings>): AppState {

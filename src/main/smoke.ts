@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps } from './pty'
-import { migrate } from './store'
+import { childId, migrate } from './store'
 import { readFileContent, writeTextFile } from './fsops'
-import { SCHEMA_VERSION } from '../shared/types'
+import { SCHEMA_VERSION, type AppState } from '../shared/types'
+import { contextLocation, findLocation, planCommand, planPrompt, ToolError } from './mcpTools'
+import { hostAllowed, tokenMatches } from './mcp'
 import { canAddPane, closePane, dragDivider, dropOnEdge, fromPersisted, normalize, openToSide } from '../shared/panes'
 import { gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage } from './gitcli'
 
@@ -217,13 +219,179 @@ function checkWrite(): CheckResult {
   }
 }
 
+/** Check: extra env vars given to spawnShell reach the shell and override inherited values (the MCP per-terminal context). */
+function checkPtyEnv(dir: string, shell: string, track: (p: IPty) => void): Promise<CheckResult> {
+  return new Promise((resolve) => {
+    let output = ''
+    let done = false
+    const finish = (ok: boolean, msg: string): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      setTimeout(() => resolve({ ok, msg }), 0)
+    }
+    process.env.TERMINALS_LOC_ID = 'inherited'
+    const want = 'env=smoke-loc|c:\\x'
+    const p = spawnShell(
+      shell,
+      dir,
+      120,
+      24,
+      {
+        onData: (d) => {
+          output += d
+          if (output.includes(want)) finish(true, 'pty env: TERMINALS_LOC_ID/TERMINALS_LOC_PATH reach the shell and override inherited values')
+        },
+        onExit: (code) => finish(false, `pty env: shell exited early with code ${code}`)
+      },
+      { TERMINALS_LOC_ID: 'smoke-loc', TERMINALS_LOC_PATH: 'c:\\x' }
+    )
+    delete process.env.TERMINALS_LOC_ID
+    track(p)
+    const timer = setTimeout(() => finish(false, `pty env: timeout. Output: ${JSON.stringify(output.slice(-300))}`), 10000)
+    const cmd = /pwsh|powershell/i.test(shell)
+      ? "Write-Output ('env=' + $env:TERMINALS_LOC_ID + '|' + $env:TERMINALS_LOC_PATH)"
+      : 'echo env=%TERMINALS_LOC_ID%^|%TERMINALS_LOC_PATH%'
+    setTimeout(() => p.write(cmd + '\r'), 1500)
+  })
+}
+
+/** Check: MCP location resolution, command/prompt validation and the auth/host guards, against a synthetic state. */
+function checkMcpLogic(dir: string): CheckResult {
+  const p = (...n: string[]): string => join(dir, ...n)
+  mkdirSync(p('alpha'), { recursive: true })
+  const folder = (id: string, name: string, path: string, groupId: string | null): AppState['folders'][number] => ({
+    id,
+    name,
+    path,
+    order: 0,
+    groupId,
+    missing: false,
+    isGit: false,
+    branch: null
+  })
+  const group = (id: string, kind: 'manual' | 'parent', name: string, path: string | null): AppState['groups'][number] => ({
+    id,
+    kind,
+    name,
+    path,
+    order: 0,
+    collapsed: false,
+    showHidden: false,
+    missing: false,
+    isGit: false,
+    branch: null,
+    children: [],
+    hiddenCount: 0
+  })
+  const repos = group('g2', 'parent', 'repos', p('repos'))
+  const childPath = p('repos', 'one')
+  repos.children = [{ id: childId(childPath), path: childPath, name: 'one', isGit: false, branch: null, hidden: false }]
+  const state: AppState = {
+    folders: [
+      folder('f1', 'alpha', p('alpha'), 'g1'),
+      folder('f2', 'Beta', p('beta'), null),
+      folder('f3', 'dup', p('dup1'), null),
+      folder('f4', 'DUP', p('dup2'), null)
+    ],
+    groups: [group('g1', 'manual', 'Work', null), repos],
+    commands: [
+      { id: 'c1', name: 'build', ownerId: 'f1', mode: 'parallel', targets: [{ cwd: p('alpha'), steps: ['yarn build'] }] },
+      {
+        id: 'c2',
+        name: 'all',
+        ownerId: 'g1',
+        mode: 'sequential',
+        targets: [
+          { cwd: p('alpha'), steps: ['a'] },
+          { cwd: p('beta'), steps: ['b'] }
+        ]
+      }
+    ],
+    snippets: [{ id: 's1', name: 'hi', body: 'hello', scope: 'global' }],
+    selectedId: null,
+    settings: { shell: '', editor: 'zed', terminalFontSize: 15 },
+    ui: { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files' },
+    resolvedShell: ''
+  }
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'mcp logic: ' + m })
+  /** Returns the ToolError message, or null when fn did not throw one. */
+  const err = (fn: () => unknown): string | null => {
+    try {
+      fn()
+      return null
+    } catch (e) {
+      return e instanceof ToolError ? e.message : 'non-ToolError ' + String(e)
+    }
+  }
+  try {
+    if (findLocation(state, 'f2').id !== 'f2') return fail('by id')
+    if (findLocation(state, p('BETA') + '\\').id !== 'f2') return fail('by path (case, trailing slash)')
+    if (findLocation(state, 'beta').id !== 'f2') return fail('by name')
+    if (findLocation(state, childPath).id !== childId(childPath)) return fail('child path should resolve to the child id')
+    if (findLocation(state, 'Work', ['manual']).id !== 'g1') return fail('group by name')
+    if (!err(() => findLocation(state, 'dup'))?.includes('matches 2')) return fail('ambiguous name not reported')
+    if (!err(() => findLocation(state, p('nope')))?.includes('not a saved folder')) return fail('unknown path')
+    if (!err(() => findLocation(state, 'f1', ['manual']))?.includes('expected a manual group')) return fail('wrong kind')
+    if (!err(() => findLocation(state, '\\alpha'))?.includes('No location')) return fail('drive-less path must not count as absolute')
+    if (!err(() => contextLocation(state, undefined, undefined))?.includes('X-Terminals-Location')) return fail('no location/header')
+    if (!err(() => contextLocation(state, undefined, 'gone'))?.includes('no longer exists')) return fail('stale header')
+    if (contextLocation(state, undefined, 'f1').id !== 'f1' || contextLocation(state, 'Beta', 'f1').id !== 'f2')
+      return fail('header / explicit precedence')
+
+    const c = planCommand(state, { name: ' test ', steps: ['yarn lint\nyarn test', '  '] }, 'f1')
+    if (!c.created || c.command.ownerId !== 'f1' || c.command.name !== 'test' || c.command.mode !== 'parallel') return fail('new command ' + JSON.stringify(c))
+    if (c.command.targets.length !== 1 || c.command.targets[0].cwd !== p('alpha') || c.command.targets[0].steps.join('|') !== 'yarn lint|yarn test' || c.warnings.length)
+      return fail('steps-only target ' + JSON.stringify(c.command.targets))
+    if (planCommand(state, { name: 'x', steps: ['a'], scope: 'group' }, 'f1').command.ownerId !== 'g1') return fail('scope group')
+    if (!err(() => planCommand(state, { name: 'x', steps: ['a'], scope: 'group' }, 'f2'))?.includes('not in a group')) return fail('scope group without group')
+    if (!err(() => planCommand(state, { name: '  ', steps: ['a'] }, 'f1'))?.includes('must not be empty')) return fail('empty name')
+    if (!err(() => planCommand(state, { name: 'x', targets: [{ cwd: 'rel\\dir', steps: ['a'] }] }, 'f1'))?.includes('absolute')) return fail('relative cwd')
+    if (!err(() => planCommand(state, { name: 'x', targets: [{ cwd: p('alpha'), steps: [' '] }] }, 'f1'))?.includes('step')) return fail('empty steps')
+    if (!err(() => planCommand(state, { name: 'x', steps: ['a'], targets: [] }, 'f1'))?.includes('not both')) return fail('steps and targets')
+    if (!err(() => planCommand(state, { name: 'x', steps: ['a'] }, 'g1'))?.includes('manual group')) return fail('steps on a manual group')
+    if (!err(() => planCommand(state, { id: 'nope', name: 'x' }, 'f1'))?.includes('Unknown command id')) return fail('unknown id')
+    if (!err(() => planCommand(state, { name: 'x' }, 'f1'))?.includes('Pass `steps`')) return fail('no steps/targets')
+    const u = planCommand(state, { id: 'c1', steps: ['yarn build:all'] }, undefined)
+    if (u.created || u.command.ownerId !== 'f1' || u.command.name !== 'build' || u.command.targets[0].cwd !== p('alpha')) return fail('update keeps owner/name/cwd ' + JSON.stringify(u))
+    if (!err(() => planCommand(state, { id: 'c2', steps: ['x'] }, undefined))?.includes('2 targets')) return fail('multi-target steps update')
+    if (planCommand(state, { name: 'x', targets: [{ cwd: p('missing'), steps: ['a'] }] }, 'f1').warnings.length !== 1) return fail('missing cwd warning')
+
+    if (planPrompt(state, { name: 'n', body: 'b' }, 'f2').prompt.scope !== 'f2') return fail('prompt default scope')
+    if (planPrompt(state, { name: 'n', body: 'b', scope: 'GLOBAL' }, 'f2').prompt.scope !== 'global') return fail('prompt global scope')
+    if (planPrompt(state, { name: 'n', body: 'b', scope: 'Work' }, 'f2').prompt.scope !== 'g1') return fail('prompt scope by name')
+    if (!err(() => planPrompt(state, { name: 'n', body: ' ' }, 'f2'))?.includes('body')) return fail('empty prompt body')
+    if (!err(() => planPrompt(state, { name: 'n', body: 'b', scope: 'nowhere' }, 'f2'))?.includes('No location')) return fail('unknown prompt scope')
+    const pu = planPrompt(state, { id: 's1', body: 'new' }, 'f2')
+    if (pu.created || pu.prompt.scope !== 'global' || pu.prompt.name !== 'hi') return fail('prompt update keeps scope/name')
+
+    if (!hostAllowed('127.0.0.1:5000', 5000) || !hostAllowed('localhost:5000', 5000)) return fail('host allowed')
+    if (hostAllowed('evil.example:5000', 5000) || hostAllowed('127.0.0.1:5001', 5000) || hostAllowed('127.0.0.1', 5000) || hostAllowed(undefined, 5000))
+      return fail('host rejected')
+    if (!tokenMatches('Bearer abc', 'abc') || !tokenMatches('bearer abc', 'abc')) return fail('token accepted')
+    if (tokenMatches('Bearer abd', 'abc') || tokenMatches('abc', 'abc') || tokenMatches(undefined, 'abc') || tokenMatches('Bearer ', '')) return fail('token rejected')
+    return { ok: true, msg: 'mcp logic: location by id/path/name/child, ambiguity and kind errors, header fallback, command/prompt validation, host and token guards' }
+  } catch (e) {
+    return fail(String(e))
+  }
+}
+
 export async function runSmoke(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'terminals-smoke-'))
   const shell = resolveShell('')
   const ptys: IPty[] = []
   const track = (p: IPty): void => void ptys.push(p)
 
-  const results = [await checkInteractive(dir, shell, track), await checkSteps(dir, shell, track), checkMigration(), checkPanes(), checkWrite(), await checkGit()]
+  const results = [
+    await checkInteractive(dir, shell, track),
+    await checkSteps(dir, shell, track),
+    await checkPtyEnv(dir, shell, track),
+    checkMigration(),
+    checkPanes(),
+    checkWrite(),
+    checkMcpLogic(dir),
+    await checkGit()
+  ]
   for (const r of results) console.log(r.ok ? `PASS: ${r.msg}` : `FAIL: ${r.msg}`)
   const ok = results.every((r) => r.ok)
 

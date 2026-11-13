@@ -12,6 +12,8 @@ import { runSmoke } from './smoke'
 import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } from './fsops'
 import * as gitcli from './gitcli'
 import type { GitDiffRequest } from '../shared/types'
+import { startMcpServer, type McpInfo } from './mcp'
+import { locationById } from './mcpTools'
 
 // Must run before app is ready: lets tests/dev runs use an isolated data directory.
 const dataDirArg = process.argv.find((a) => a.startsWith('--data-dir='))?.slice('--data-dir='.length)
@@ -31,6 +33,8 @@ const BAR_COLOR = '#131315'
 const WINDOW_BG = '#18181b'
 
 const ptys = new Map<string, IPty>()
+/** Null until the MCP server listens (or when it failed to start). */
+let mcp: McpInfo | null = null
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
 /** True once the app is really quitting; until then closing the window only hides it. */
@@ -208,6 +212,25 @@ async function pickFolder(): Promise<string | null> {
   return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
 }
 
+/** Sends the store's state to the renderer after a change it did not make itself (MCP tool calls). */
+function pushState(): void {
+  if (win && !win.isDestroyed()) win.webContents.send('state:changed', store.getState())
+}
+
+/**
+ * Per-terminal MCP context. All four are always set (empty when unknown) so values inherited from a parent
+ * process, e.g. this app started from another instance's terminal, never leak through.
+ */
+function ptyEnv(locId: unknown): Record<string, string> {
+  const loc = mcp && typeof locId === 'string' && locId ? locationById(store.getState(), locId) : null
+  return {
+    TERMINALS_MCP_URL: mcp?.url ?? '',
+    TERMINALS_MCP_TOKEN: mcp?.token ?? '',
+    TERMINALS_LOC_ID: loc?.id ?? '',
+    TERMINALS_LOC_PATH: loc?.path ?? ''
+  }
+}
+
 /** Paths the renderer asks to list/open must be inside a saved folder or group root. */
 function allowed(p: unknown): p is string {
   return typeof p === 'string' && p.length > 0 && store.isInsideRoots(p)
@@ -329,9 +352,10 @@ function registerIpc(): void {
     const cols = Math.max(req.cols, 2)
     const rows = Math.max(req.rows, 1)
     try {
+      const env = ptyEnv(req.locId)
       const p = Array.isArray(req.steps)
-        ? spawnSteps(store.getShell(), req.steps.map(String), req.cwd, cols, rows, handlers)
-        : spawnShell(store.getShell(), req.cwd, cols, rows, handlers)
+        ? spawnSteps(store.getShell(), req.steps.map(String), req.cwd, cols, rows, handlers, env)
+        : spawnShell(store.getShell(), req.cwd, cols, rows, handlers, env)
       ptys.set(req.id, p)
       return { ok: true }
     } catch (err) {
@@ -363,12 +387,20 @@ if (SMOKE) {
   app.quit()
 } else {
   app.on('second-instance', showWindow)
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     Menu.setApplicationMenu(null)
     store.loadStore()
     prunePasteDir()
     registerIpc()
-    createWindow()
+    // Before the window, so the first terminals already get the MCP env vars.
+    try {
+      mcp = await startMcpServer({ dataDir: app.getPath('userData'), version: app.getVersion(), onChange: pushState })
+      console.log(`MCP server listening on ${mcp.url}`)
+    } catch (e) {
+      console.error('MCP server failed to start', e)
+    }
+    // A second-instance launch during the await above may already have created it.
+    if (!win) createWindow()
     createTray()
   })
   app.on('before-quit', () => {

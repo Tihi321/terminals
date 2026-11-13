@@ -77,6 +77,61 @@ A command is a name, a mode (`parallel` or `sequential`) and a list of targets, 
 - Run: every target opens a tab titled `▶ <name>` (`▶ <name> · <folder>` for several targets) in the currently selected folder's tab bar. Steps run in order and the first failing step stops that target (native exit codes propagate). The tab stays open with the output and a `✓ done` or `✗ failed (exit N)` line, and shows a status dot. Parallel starts all targets at once; sequential starts the next target only after the previous one succeeded and stops at the first failure. Stop kills the run's terminals. Run again (command row or the tab's button) replaces the previous run's tabs.
 - Under PowerShell the steps are passed as an `-EncodedCommand`, so no quoting is needed. Under other shells they are joined with `&&`.
 
+## MCP server
+
+The app runs a small [MCP](https://modelcontextprotocol.io) server so a Claude Code session in one of its terminals can manage the app: saved commands, saved prompts, groups and folders. Changes show up in the open window straight away and are saved to `terminals.json` like any change made in the UI. There is deliberately no tool that runs a command or types into a terminal.
+
+Transport: Streamable HTTP (stateless, JSON responses) at `http://127.0.0.1:<port>/mcp`, built on `@modelcontextprotocol/sdk`. The port is 47821, or `TERMINALS_MCP_PORT` when set; when that port is taken (for example the dev build and the installed build at once) the app falls back to a free port chosen by the OS. Terminals always get the actual URL. The server is not started in `--smoke` mode.
+
+### Tools
+
+| Tool | What it does |
+| --- | --- |
+| `get_context` | This terminal's location (id, name, path, kind, group) and the data directory |
+| `list_locations` | All groups (parent groups with their subfolders), saved folders, ids, paths, group membership |
+| `list_commands` | Commands of a location plus those inherited from its group (`inherited: true`) |
+| `save_command` | Create (no `id`) or update a command. `steps` alone builds one target in the location's folder; `targets` = `[{ cwd, steps }]`; `scope: "group"` saves it on the location's group |
+| `delete_command` | Delete a command |
+| `list_prompts` | Prompts visible at a location: global, the location's own and its group's |
+| `save_prompt` | Create or update a prompt; `scope` is `global` or a location (default: this terminal's location) |
+| `delete_prompt` | Delete a prompt |
+| `create_group` | New manual group; `folders` (absolute paths) not yet saved are added, saved ones are moved in. Reports per path |
+| `add_parent_group` | Parent folder group for a directory whose subfolders are listed automatically |
+| `rename_group` / `delete_group` | Rename / remove a group. Removing deletes the commands and prompts saved on the group and closes its terminals; a manual group's folders stay |
+| `add_folders` | Save directories as folders, optionally into a manual group. Reports per path |
+| `move_folder` | Into a manual group, or out of it with `group: null` |
+| `rename_folder` / `remove_folder` | Rename / remove a folder. Removing deletes its commands and prompts and closes its terminals |
+
+Folder-scoped tools take an optional `location`: a location id, an absolute path (a saved folder, a parent group, or a subfolder of a parent group) or a unique name (case-insensitive). Without it they use the terminal the request came from (the `X-Terminals-Location` header). Unknown paths are an error; nothing is added implicitly. Adding folders or groups through MCP never changes the selection in the UI.
+
+### Per-terminal environment
+
+Every terminal the app starts (shells and command runs) gets:
+
+| Variable | Value |
+| --- | --- |
+| `TERMINALS_MCP_URL` | URL of this instance's MCP server |
+| `TERMINALS_MCP_TOKEN` | Bearer token |
+| `TERMINALS_LOC_ID` | Id of the folder, parent-group subfolder or group the terminal belongs to |
+| `TERMINALS_LOC_PATH` | That location's directory (empty for a manual group) |
+
+They are always set (empty when unknown), so values inherited from another instance never leak through.
+
+### Security
+
+- Listens on 127.0.0.1 only.
+- Every request needs `Authorization: Bearer <token>`, otherwise 401. The token is random, created once and stored as `mcp-token` in the data directory (next to `terminals.json`, so `--data-dir` gets its own). It is compared in constant time.
+- The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), and requests carrying an `Origin` header (browsers) are rejected with 403.
+- Anything running as your user can read the token file; the server is a convenience for your own terminals, not a sandbox.
+
+### Register it in Claude Code (once)
+
+```
+claude mcp add-json --scope user terminals '{"type":"http","url":"${TERMINALS_MCP_URL:-http://127.0.0.1:1/mcp}","headers":{"Authorization":"Bearer ${TERMINALS_MCP_TOKEN:-}","X-Terminals-Location":"${TERMINALS_LOC_ID:-}"}}'
+```
+
+Claude Code expands the variables when it starts, so the server only connects inside this app's terminals; elsewhere the URL falls back to an unreachable port and the server just shows as failed in `/mcp`.
+
 ## Data
 
 Everything is stored in JSON at `%APPDATA%\terminals\terminals.json` (Electron `app.getPath('userData')`, or the `--data-dir`).
@@ -92,6 +147,8 @@ Everything is stored in JSON at `%APPDATA%\terminals\terminals.json` (Electron `
 ```
 
 Files without a `version` field are version 1 (folders, selection and `settings.shell` only). They are migrated on load without losing anything, and a copy is kept next to the file as `terminals.json.v1.bak` first. A file with a newer version than the app supports is not loaded and never overwritten.
+
+The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mcp-server)).
 
 `settings.shell` is the shell executable. Empty means auto: `pwsh.exe` if it is on PATH, else `powershell.exe`. There is no settings UI; edit the file with the app closed.
 
