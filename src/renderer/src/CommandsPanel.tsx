@@ -140,7 +140,7 @@ function CommandsList({
       id: crypto.randomUUID(),
       name: '',
       ownerId: selected.id,
-      mode: 'parallel',
+      mode: 'sequential',
       targets: [{ cwd: selected.path ?? '', steps: [] }]
     })
 

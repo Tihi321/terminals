@@ -340,7 +340,7 @@ function checkMcpLogic(dir: string): CheckResult {
       return fail('header / explicit precedence')
 
     const c = planCommand(state, { name: ' test ', steps: ['yarn lint\nyarn test', '  '] }, 'f1')
-    if (!c.created || c.command.ownerId !== 'f1' || c.command.name !== 'test' || c.command.mode !== 'parallel') return fail('new command ' + JSON.stringify(c))
+    if (!c.created || c.command.ownerId !== 'f1' || c.command.name !== 'test' || c.command.mode !== 'sequential') return fail('new command defaults to sequential ' + JSON.stringify(c))
     if (c.command.targets.length !== 1 || c.command.targets[0].cwd !== p('alpha') || c.command.targets[0].steps.join('|') !== 'yarn lint|yarn test' || c.warnings.length)
       return fail('steps-only target ' + JSON.stringify(c.command.targets))
     if (planCommand(state, { name: 'x', steps: ['a'], scope: 'group' }, 'f1').command.ownerId !== 'g1') return fail('scope group')
@@ -353,7 +353,7 @@ function checkMcpLogic(dir: string): CheckResult {
     if (!err(() => planCommand(state, { id: 'nope', name: 'x' }, 'f1'))?.includes('Unknown command id')) return fail('unknown id')
     if (!err(() => planCommand(state, { name: 'x' }, 'f1'))?.includes('Pass `steps`')) return fail('no steps/targets')
     const u = planCommand(state, { id: 'c1', steps: ['yarn build:all'] }, undefined)
-    if (u.created || u.command.ownerId !== 'f1' || u.command.name !== 'build' || u.command.targets[0].cwd !== p('alpha')) return fail('update keeps owner/name/cwd ' + JSON.stringify(u))
+    if (u.created || u.command.ownerId !== 'f1' || u.command.name !== 'build' || u.command.targets[0].cwd !== p('alpha') || u.command.mode !== 'parallel') return fail('update keeps owner/name/cwd ' + JSON.stringify(u))
     if (!err(() => planCommand(state, { id: 'c2', steps: ['x'] }, undefined))?.includes('2 targets')) return fail('multi-target steps update')
     if (planCommand(state, { name: 'x', targets: [{ cwd: p('missing'), steps: ['a'] }] }, 'f1').warnings.length !== 1) return fail('missing cwd warning')
 

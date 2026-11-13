@@ -187,7 +187,7 @@ export function planCommand(
   const isGlobal = ownerId === 'global'
 
   const name = existing && a.name === undefined ? existing.name : requireName(a.name, 'Command name')
-  const mode = a.mode ?? existing?.mode ?? 'parallel'
+  const mode = a.mode ?? existing?.mode ?? 'sequential'
 
   let targets: CommandTarget[]
   if (a.targets) {
@@ -428,7 +428,7 @@ export const TOOLS: ToolDef[] = [
     shape: {
       id: z.string().optional().describe('Existing command id to update'),
       name: z.string().optional().describe('Required when creating'),
-      mode: z.enum(['parallel', 'sequential']).optional().describe('How targets run. Default parallel'),
+      mode: z.enum(['parallel', 'sequential']).optional().describe('How targets run. Default sequential (kept when updating)'),
       location: locationArg,
       scope: z
         .enum(['location', 'group', 'global'])
