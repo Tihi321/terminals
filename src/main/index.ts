@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -32,6 +32,9 @@ const WINDOW_BG = '#18181b'
 
 const ptys = new Map<string, IPty>()
 let win: BrowserWindow | null = null
+let tray: Tray | null = null
+/** True once the app is really quitting; until then closing the window only hides it. */
+let quitting = false
 const watcher = new DirWatcher((dir) => {
   if (win && !win.isDestroyed()) win.webContents.send('fs:changed', dir)
 })
@@ -76,10 +79,49 @@ function createWindow(): void {
   })
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(__dirname, '../renderer/index.html'))
+  win.on('close', (e) => {
+    // Hide to the tray so the running terminals stay alive.
+    if (quitting) return
+    e.preventDefault()
+    win?.hide()
+  })
   win.on('closed', () => {
     win = null
     watcher.closeAll()
   })
+}
+
+/** Brings the window back from the tray or minimized state, recreating it if it was destroyed. */
+function showWindow(): void {
+  if (!win || win.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+function createTray(): void {
+  tray = new Tray(nativeImage.createFromPath(icon).resize({ width: 16, height: 16 }))
+  tray.setToolTip('Terminals')
+  tray.on('click', () => {
+    if (win && !win.isDestroyed() && win.isVisible() && win.isFocused()) win.hide()
+    else showWindow()
+  })
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Show Terminals', click: showWindow },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: (): void => {
+          quitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
 }
 
 const PASTE_DIR = (): string => join(app.getPath('temp'), 'terminals-paste')
@@ -320,20 +362,23 @@ if (SMOKE) {
 } else if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore()
-      win.focus()
-    }
-  })
+  app.on('second-instance', showWindow)
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     store.loadStore()
     prunePasteDir()
     registerIpc()
     createWindow()
+    createTray()
   })
-  app.on('before-quit', killAllPtys)
+  app.on('before-quit', () => {
+    quitting = true
+    killAllPtys()
+  })
+  app.on('will-quit', () => {
+    tray?.destroy()
+    tray = null
+  })
   app.on('window-all-closed', () => {
     killAllPtys()
     app.quit()
