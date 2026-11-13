@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { AppState, TerminalsApi } from '../shared/types'
+import type { AppState, TerminalsApi, ThemeId } from '../shared/types'
 
 const inv = (channel: string, ...args: unknown[]): Promise<never> => ipcRenderer.invoke(channel, ...args) as Promise<never>
 
@@ -35,6 +35,8 @@ const api: TerminalsApi = {
     }
   },
   setSettings: (patch) => inv('settings:set', patch),
+  initialThemeId: ipcRenderer.sendSync('theme:initial') as ThemeId,
+  listShells: () => inv('settings:shells'),
   setUi: (patch) => inv('ui:set', patch),
   pickFolder: () => inv('dialog:pickFolder'),
 

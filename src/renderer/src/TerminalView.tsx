@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, JSX } from 'react'
-import { formatPaths, getTerm } from './termRegistry'
+import { formatPaths, getTerm, refreshTerm } from './termRegistry'
 
 interface Props {
   id: string
@@ -61,6 +61,7 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId }:
     if (!visible || !el || !entry) return
     // Wait a frame so display:block has been applied before measuring.
     const raf = requestAnimationFrame(() => {
+      refreshTerm(id)
       safeFit(id, el)
       if (focused) entry.term.focus()
     })

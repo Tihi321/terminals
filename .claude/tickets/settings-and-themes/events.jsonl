@@ -1,0 +1,12 @@
+{"ts":"2026-11-13T16:29:30Z","actor":"director-scribe","type":"plan.created","request":"REQ-0001","ticket":"settings-and-themes","detail":"planner wrote plan.md (ts approximate)"}
+{"ts":"2026-11-13T16:32:30Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0001","ticket":"settings-and-themes","detail":"user approved the plan"}
+{"ts":"2026-11-13T16:33:44Z","actor":"implement","type":"implement.started","request":"REQ-0001","ticket":"settings-and-themes","detail":"branch feature/settings-and-themes from master 183e3c9"}
+{"ts":"2026-11-13T16:33:49Z","actor":"implement","type":"slice.started","request":"REQ-0001","ticket":"settings-and-themes","detail":"T1 shared schema, themes, main, preload, smoke","data":{"tasks":["T1"]}}
+{"ts":"2026-11-13T16:36:07Z","actor":"implement","type":"slice.done","request":"REQ-0001","ticket":"settings-and-themes","detail":"T1 done; typecheck and smoke pass","data":{"tasks":["T1"]}}
+{"ts":"2026-11-13T16:36:14Z","actor":"implement","type":"slice.started","request":"REQ-0001","ticket":"settings-and-themes","detail":"T2 renderer theming and live terminal options","data":{"tasks":["T2"]}}
+{"ts":"2026-11-13T16:36:14Z","actor":"implement","type":"slice.started","request":"REQ-0001","ticket":"settings-and-themes","detail":"T3 settings dialog and entry points","data":{"tasks":["T3"]}}
+{"ts":"2026-11-13T16:38:00Z","actor":"implement","type":"slice.done","request":"REQ-0001","ticket":"settings-and-themes","detail":"T2 done; A6/A7 greps clean; select chevron literal changed","data":{"tasks":["T2"]}}
+{"ts":"2026-11-13T16:38:14Z","actor":"implement","type":"slice.done","request":"REQ-0001","ticket":"settings-and-themes","detail":"T3 done; dialog, gear button, Ctrl+, wired","data":{"tasks":["T3"]}}
+{"ts":"2026-11-13T16:38:54Z","actor":"implement","type":"verify.passed","request":"REQ-0001","ticket":"settings-and-themes","detail":"typecheck 0, smoke 9 PASS, A6/A7 greps empty, A8 ignored"}
+{"ts":"2026-11-13T16:39:14Z","actor":"implement","type":"changelog.written","request":"REQ-0001","ticket":"settings-and-themes","detail":"changelog.md written; status stays in-progress for checker"}
+{"ts":"2026-11-13T16:52:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0001","ticket":"settings-and-themes","detail":"A1-A8 + A15 PASS; A9-A14 UNTESTED (need running app); 2 should-fix, 4 nits","data":{"verdict":"PASS"}}

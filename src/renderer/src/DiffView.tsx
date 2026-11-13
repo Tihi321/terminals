@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { ExternalLink, Minus, Plus } from 'lucide-react'
 import type { GitDiffRequest, GitFile, GitStatus } from '../../shared/types'
-import { TERM_FONT } from './termRegistry'
 import { absPath, diffModeLabel, parseDiff, splitPath } from './gitUtil'
 import type { DiffLine, DiffSpec } from './gitUtil'
 
@@ -159,7 +158,7 @@ export function DiffView({ spec, fontSize, onChangeSpec }: Props): JSX.Element {
           <ExternalLink size={13} /> Open in editor
         </button>
       </div>
-      <div className="diff-scroll" style={{ fontFamily: TERM_FONT, fontSize }}>
+      <div className="diff-scroll" style={{ fontFamily: 'var(--font-mono)', fontSize }}>
         {error ? (
           <div className="diff-msg error">{error}</div>
         ) : parsed === null ? (

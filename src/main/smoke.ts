@@ -3,10 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
-import { resolveShell, spawnShell, spawnSteps } from './pty'
+import { resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
 import { childId, migrate } from './store'
 import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
+import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_FONT, patchSettings, sanitizeSettings } from '../shared/settings'
+import { THEME_IDS, THEMES, UI_VARS, resolveThemeId } from '../shared/themes'
 import { contextLocation, findLocation, planCommand, planPrompt, ToolError, visibleCommands } from './mcpTools'
 import { hostAllowed, tokenMatches } from './mcp'
 import { canAddPane, closePane, dragDivider, dropOnEdge, fromPersisted, normalize, openToSide } from '../shared/panes'
@@ -94,6 +96,47 @@ function checkMigration(): CheckResult {
     b.snippets.length === 0 &&
     b.folders[0]?.groupId === null
   return { ok, msg: ok ? 'migration: v2 and v1 files migrate with snippets: [] and data kept' : 'migration: unexpected result ' + JSON.stringify({ a, b }) }
+}
+
+/** Check: settings schema defaults, sanitising, save/load round trip, theme completeness and the steps shell. */
+function checkSettings(): CheckResult {
+  const fail = (l: string): CheckResult => ({ ok: false, msg: `settings: check ${l} failed` })
+  if (JSON.stringify(sanitizeSettings(undefined)) !== JSON.stringify(DEFAULT_SETTINGS)) return fail('a')
+  const m = migrate({
+    version: 3,
+    settings: {
+      shell: ' cmd.exe ',
+      terminalFontSize: 99,
+      theme: 'nope',
+      cursorStyle: 'bar',
+      cursorBlink: false,
+      scrollback: -5,
+      terminalFontFamily: 'x;}',
+      extra: 1
+    }
+  } as never).settings
+  const mOk =
+    m.shell === 'cmd.exe' &&
+    m.terminalFontSize === 36 &&
+    m.theme === 'dark' &&
+    m.cursorStyle === 'bar' &&
+    m.cursorBlink === false &&
+    m.scrollback === 0 &&
+    m.terminalFontFamily === DEFAULT_TERMINAL_FONT &&
+    m.editor === 'zed' &&
+    !('extra' in m)
+  if (!mOk) return fail('b')
+  const p = patchSettings(DEFAULT_SETTINGS, { theme: 'light', scrollback: 12000.4, cursorBlink: 'yes', bogus: 1 })
+  const back = migrate({ version: 3, settings: JSON.parse(JSON.stringify(p)) } as never).settings
+  if (JSON.stringify(back) !== JSON.stringify(p) || p.theme !== 'light' || p.scrollback !== 12000 || p.cursorBlink !== true) return fail('c')
+  for (const id of THEME_IDS) {
+    const t = THEMES[id]
+    if (UI_VARS.some((k) => typeof t.ui[k] !== 'string' || !t.ui[k])) return fail('d')
+    if (t.terminal.background !== t.ui['bg-term'] || t.terminal.cursorAccent !== t.ui['bg-term']) return fail('d')
+  }
+  if (resolveThemeId('system', true) !== 'dark' || resolveThemeId('system', false) !== 'light') return fail('d')
+  if (stepsShell('C:\\tools\\bash.exe') !== resolveShell('') || stepsShell('cmd.exe') !== 'cmd.exe') return fail('e')
+  return { ok: true, msg: 'settings: defaults, sanitising, round trip, themes and steps shell OK' }
 }
 
 /** Check: the pane layout migrates (old files load without it, bad data is cleaned) and the pure helpers behave. */
@@ -310,7 +353,7 @@ function checkMcpLogic(dir: string): CheckResult {
     ],
     snippets: [{ id: 's1', name: 'hi', body: 'hello', scope: 'global' }],
     selectedId: null,
-    settings: { shell: '', editor: 'zed', terminalFontSize: 15 },
+    settings: { ...DEFAULT_SETTINGS },
     ui: { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files' },
     resolvedShell: ''
   }
@@ -405,6 +448,7 @@ export async function runSmoke(): Promise<void> {
     await checkSteps(dir, shell, track),
     await checkPtyEnv(dir, shell, track),
     checkMigration(),
+    checkSettings(),
     checkPanes(),
     checkWrite(),
     checkMcpLogic(dir),

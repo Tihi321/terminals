@@ -10,5 +10,6 @@ dist/
 .pnp.*
 *.log
 .claude/temp/
+.claude/director/
 .DS_Store
 release/
