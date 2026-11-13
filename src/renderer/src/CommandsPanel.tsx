@@ -1,9 +1,24 @@
 import { useState } from 'react'
 import type { JSX } from 'react'
-import { Check, Copy, FolderInput, Loader2, Pencil, Play, Plus, RotateCw, Square, Trash2, X, Zap } from 'lucide-react'
+import {
+  Check,
+  ClipboardCopy,
+  ClipboardPaste,
+  Copy,
+  Loader2,
+  Pencil,
+  Play,
+  Plus,
+  RotateCw,
+  Square,
+  Trash2,
+  X,
+  Zap
+} from 'lucide-react'
 import type { AppState, Command, Snippet } from '../../shared/types'
 import { CommandEditor } from './CommandEditor'
-import { CopyToDialog, ownerInfo, remapCommandTargets } from './CopyToDialog'
+import { ownerInfo, remapCommandTargets } from './copyPaste'
+import type { AppClipboard } from './copyPaste'
 import { PromptsPanel } from './PromptsPanel'
 import { baseName } from './locations'
 import type { Loc } from './locations'
@@ -58,6 +73,7 @@ function Status({ run }: { run?: RunInfo }): JSX.Element {
 
 export function CommandsPanel(p: Props): JSX.Element {
   const [sub, setSub] = useState<'commands' | 'prompts'>('commands')
+  const [clipboard, setClipboard] = useState<AppClipboard>(null)
   return (
     <div className="commands">
       <div className="sub-switch">
@@ -78,17 +94,30 @@ export function CommandsPanel(p: Props): JSX.Element {
           onSave={p.onSaveSnippet}
           onDelete={p.onDeleteSnippet}
           onCopy={p.onCopy}
+          clipboard={clipboard}
+          setClipboard={setClipboard}
         />
       ) : (
-        <CommandsList {...p} />
+        <CommandsList {...p} clipboard={clipboard} setClipboard={setClipboard} />
       )}
     </div>
   )
 }
 
-function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, onDuplicate }: Props): JSX.Element {
+function CommandsList({
+  state,
+  selected,
+  runs,
+  onRun,
+  onStop,
+  onSave,
+  onDelete,
+  onDuplicate,
+  clipboard,
+  setClipboard
+}: Props & { clipboard: AppClipboard; setClipboard: (c: AppClipboard) => void }): JSX.Element {
   const [editing, setEditing] = useState<Command | null>(null)
-  const [copying, setCopying] = useState<Command | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
   if (!selected) {
@@ -113,6 +142,17 @@ function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, 
       targets: [{ cwd: selected.path ?? '', steps: [] }]
     })
 
+  const clipped = clipboard?.kind === 'command' ? clipboard.item : null
+  const paste = (): void => {
+    if (!clipped) return
+    onSave({
+      ...clipped,
+      id: crypto.randomUUID(),
+      ownerId: selected.id,
+      targets: remapCommandTargets(clipped.targets, ownerInfo(state, clipped.ownerId), ownerInfo(state, selected.id))
+    })
+  }
+
   const ownerName = (id: string): string | null => {
     if (id === selected.id) return null
     return state.groups.find((g) => g.id === id)?.name ?? null
@@ -124,6 +164,14 @@ function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, 
         <span className="toolbar-title">
           Saved on <b>{selected.name}</b>
         </span>
+        <button
+          className="btn small"
+          onClick={paste}
+          disabled={!clipped}
+          title={clipped ? `Paste "${clipped.name}" here` : 'Copy a command first'}
+        >
+          <ClipboardPaste size={14} /> Paste
+        </button>
         <button className="btn small primary" onClick={create} title="Create a saved command">
           <Plus size={14} /> New
         </button>
@@ -161,8 +209,16 @@ function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, 
                   <button className="icon-btn" title="Duplicate" onClick={() => onDuplicate(c)}>
                     <Copy size={14} />
                   </button>
-                  <button className="icon-btn" title="Copy to…" onClick={() => setCopying(c)}>
-                    <FolderInput size={14} />
+                  <button
+                    className="icon-btn"
+                    title="Copy"
+                    onClick={() => {
+                      setClipboard({ kind: 'command', item: c })
+                      setCopied(c.id)
+                      setTimeout(() => setCopied((x) => (x === c.id ? null : x)), 1200)
+                    }}
+                  >
+                    {copied === c.id ? <Check size={14} /> : <ClipboardCopy size={14} />}
                   </button>
                   {confirmDelete === c.id ? (
                     <button
@@ -202,24 +258,6 @@ function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, 
           )
         })}
       </div>
-      {copying && (
-        <CopyToDialog
-          noun="command"
-          state={state}
-          currentOwnerId={copying.ownerId}
-          onCancel={() => setCopying(null)}
-          onCopy={(destId) => {
-            const src = copying
-            setCopying(null)
-            onSave({
-              ...src,
-              id: crypto.randomUUID(),
-              ownerId: destId,
-              targets: remapCommandTargets(src.targets, ownerInfo(state, src.ownerId), ownerInfo(state, destId))
-            })
-          }}
-        />
-      )}
       {editing && (
         <CommandEditor
           initial={editing}

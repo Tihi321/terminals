@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import type { JSX } from 'react'
-import { Check, ClipboardCopy, CornerDownLeft, FileText, FolderInput, Pencil, Plus, TextCursorInput, Trash2 } from 'lucide-react'
+import { Check, ClipboardCopy, ClipboardPaste, CornerDownLeft, FileText, Pencil, Plus, TextCursorInput, Trash2 } from 'lucide-react'
 import type { AppState, Snippet } from '../../shared/types'
 import type { Loc } from './locations'
-import { CopyToDialog } from './CopyToDialog'
+import type { AppClipboard } from './copyPaste'
 import { SnippetEditor, scopeLabel, visibleSnippets } from './SnippetEditor'
 import { Keys } from './Keys'
 
@@ -14,17 +14,22 @@ interface Props {
   onSave: (s: Snippet) => void
   onDelete: (id: string) => void
   onCopy: (text: string) => void
+  clipboard: AppClipboard
+  setClipboard: (c: AppClipboard) => void
 }
 
-export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCopy }: Props): JSX.Element {
+export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCopy, clipboard, setClipboard }: Props): JSX.Element {
   const [editing, setEditing] = useState<Snippet | null>(null)
-  const [copying, setCopying] = useState<Snippet | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const snippets = visibleSnippets(state, selected)
   const canPaste = !!selected?.path && !selected.missing
 
   const create = (): void => setEditing({ id: crypto.randomUUID(), name: '', body: '', scope: 'global' })
+  const clipped = clipboard?.kind === 'prompt' ? clipboard.item : null
+  const paste = (): void => {
+    if (clipped) onSave({ ...clipped, id: crypto.randomUUID(), scope: selected ? selected.id : 'global' })
+  }
 
   return (
     <>
@@ -38,6 +43,14 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
             <b>Global</b>
           )}
         </span>
+        <button
+          className="btn small"
+          onClick={paste}
+          disabled={!clipped}
+          title={clipped ? `Paste "${clipped.name}" here` : 'Copy a prompt first'}
+        >
+          <ClipboardPaste size={14} /> Paste
+        </button>
         <button className="btn small primary" onClick={create} title="Create a saved prompt">
           <Plus size={14} /> New
         </button>
@@ -70,6 +83,7 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
                   title="Copy"
                   onClick={() => {
                     onCopy(s.body)
+                    setClipboard({ kind: 'prompt', item: s })
                     setCopied(s.id)
                     setTimeout(() => setCopied((c) => (c === s.id ? null : c)), 1200)
                   }}
@@ -78,9 +92,6 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
                 </button>
                 <button className="icon-btn" title="Edit" onClick={() => setEditing(s)}>
                   <Pencil size={14} />
-                </button>
-                <button className="icon-btn" title="Copy to…" onClick={() => setCopying(s)}>
-                  <FolderInput size={14} />
                 </button>
                 {confirmDelete === s.id ? (
                   <button
@@ -116,19 +127,6 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
           </div>
         ))}
       </div>
-      {copying && (
-        <CopyToDialog
-          noun="prompt"
-          state={state}
-          currentOwnerId={copying.scope}
-          onCancel={() => setCopying(null)}
-          onCopy={(destId) => {
-            const src = copying
-            setCopying(null)
-            onSave({ ...src, id: crypto.randomUUID(), scope: destId })
-          }}
-        />
-      )}
       {editing && (
         <SnippetEditor
           initial={editing}
