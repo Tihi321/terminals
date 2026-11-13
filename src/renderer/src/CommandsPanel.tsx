@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import type { JSX } from 'react'
-import { Check, Copy, Loader2, Pencil, Play, Plus, RotateCw, Square, Trash2, X, Zap } from 'lucide-react'
+import { Check, Copy, FolderInput, Loader2, Pencil, Play, Plus, RotateCw, Square, Trash2, X, Zap } from 'lucide-react'
 import type { AppState, Command, Snippet } from '../../shared/types'
 import { CommandEditor } from './CommandEditor'
+import { CopyToDialog, ownerInfo, remapCommandTargets } from './CopyToDialog'
 import { PromptsPanel } from './PromptsPanel'
 import { baseName } from './locations'
 import type { Loc } from './locations'
@@ -87,6 +88,7 @@ export function CommandsPanel(p: Props): JSX.Element {
 
 function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, onDuplicate }: Props): JSX.Element {
   const [editing, setEditing] = useState<Command | null>(null)
+  const [copying, setCopying] = useState<Command | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
   if (!selected) {
@@ -159,6 +161,9 @@ function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, 
                   <button className="icon-btn" title="Duplicate" onClick={() => onDuplicate(c)}>
                     <Copy size={14} />
                   </button>
+                  <button className="icon-btn" title="Copy to…" onClick={() => setCopying(c)}>
+                    <FolderInput size={14} />
+                  </button>
                   {confirmDelete === c.id ? (
                     <button
                       className="btn small danger"
@@ -197,6 +202,24 @@ function CommandsList({ state, selected, runs, onRun, onStop, onSave, onDelete, 
           )
         })}
       </div>
+      {copying && (
+        <CopyToDialog
+          noun="command"
+          state={state}
+          currentOwnerId={copying.ownerId}
+          onCancel={() => setCopying(null)}
+          onCopy={(destId) => {
+            const src = copying
+            setCopying(null)
+            onSave({
+              ...src,
+              id: crypto.randomUUID(),
+              ownerId: destId,
+              targets: remapCommandTargets(src.targets, ownerInfo(state, src.ownerId), ownerInfo(state, destId))
+            })
+          }}
+        />
+      )}
       {editing && (
         <CommandEditor
           initial={editing}

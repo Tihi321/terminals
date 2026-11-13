@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import type { JSX } from 'react'
-import { Check, ClipboardCopy, CornerDownLeft, FileText, Pencil, Plus, TextCursorInput, Trash2 } from 'lucide-react'
+import { Check, ClipboardCopy, CornerDownLeft, FileText, FolderInput, Pencil, Plus, TextCursorInput, Trash2 } from 'lucide-react'
 import type { AppState, Snippet } from '../../shared/types'
 import type { Loc } from './locations'
+import { CopyToDialog } from './CopyToDialog'
 import { SnippetEditor, scopeLabel, visibleSnippets } from './SnippetEditor'
 import { Keys } from './Keys'
 
@@ -17,6 +18,7 @@ interface Props {
 
 export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCopy }: Props): JSX.Element {
   const [editing, setEditing] = useState<Snippet | null>(null)
+  const [copying, setCopying] = useState<Snippet | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const snippets = visibleSnippets(state, selected)
@@ -77,6 +79,9 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
                 <button className="icon-btn" title="Edit" onClick={() => setEditing(s)}>
                   <Pencil size={14} />
                 </button>
+                <button className="icon-btn" title="Copy to…" onClick={() => setCopying(s)}>
+                  <FolderInput size={14} />
+                </button>
                 {confirmDelete === s.id ? (
                   <button
                     className="btn small danger"
@@ -111,6 +116,19 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
           </div>
         ))}
       </div>
+      {copying && (
+        <CopyToDialog
+          noun="prompt"
+          state={state}
+          currentOwnerId={copying.scope}
+          onCancel={() => setCopying(null)}
+          onCopy={(destId) => {
+            const src = copying
+            setCopying(null)
+            onSave({ ...src, id: crypto.randomUUID(), scope: destId })
+          }}
+        />
+      )}
       {editing && (
         <SnippetEditor
           initial={editing}
