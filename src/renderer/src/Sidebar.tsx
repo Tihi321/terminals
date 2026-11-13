@@ -24,8 +24,7 @@ import {
   SquareTerminal,
   Code,
   Terminal,
-  Trash2,
-  X
+  Trash2
 } from 'lucide-react'
 import type { AppState, ChildView, FolderView, GroupView } from '../../shared/types'
 import { ContextMenu } from './ContextMenu'
@@ -337,14 +336,9 @@ export function Sidebar(p: Props): JSX.Element {
         onDrop: (e) => drop(f, e)
       }}
       actions={
-        <>
-          <button className="icon-btn" title="New terminal" disabled={f.missing} onClick={() => p.onOpenTerminal(f.id)}>
-            <Terminal size={14} />
-          </button>
-          <button className="icon-btn danger" title="Remove folder (closes its terminals)" onClick={() => p.onRemoveFolder(f.id)}>
-            <X size={14} />
-          </button>
-        </>
+        <button className="icon-btn" title="New terminal" disabled={f.missing} onClick={() => p.onOpenTerminal(f.id)}>
+          <Terminal size={14} />
+        </button>
       }
     />
   )
