@@ -34,6 +34,37 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
     initial.targets.map((t) => ({ cwd: t.cwd, steps: t.steps.join('\n') }))
   )
 
+  const [ownerId, setOwnerId] = useState(initial.ownerId)
+  const isGlobal = ownerId === 'global'
+
+  const scopes: { id: string; label: string }[] = []
+  const addScope = (id: string | null | undefined, label: string): void => {
+    if (id && !scopes.some((s) => s.id === id)) scopes.push({ id, label })
+  }
+  if (selected) {
+    addScope(selected.id, `This folder (${selected.name})`)
+    if (selected.groupId) {
+      const g = state.groups.find((x) => x.id === selected.groupId)
+      addScope(selected.groupId, `Group ${g?.name ?? selected.groupId}`)
+    }
+  }
+  if (initial.ownerId !== 'global') {
+    const g = state.groups.find((x) => x.id === initial.ownerId)
+    const f = state.folders.find((x) => x.id === initial.ownerId)
+    addScope(initial.ownerId, `Only ${g?.name ?? f?.name ?? initial.ownerId}`)
+  }
+  addScope('global', 'Global (all folders)')
+
+  const changeScope = (id: string): void => {
+    setOwnerId(id)
+    setTargets((ts) =>
+      ts.map((t, i) => {
+        if (id === 'global') return i === 0 ? { ...t, cwd: '' } : t
+        return t.cwd === '' ? { ...t, cwd: selected?.path ?? '' } : t
+      })
+    )
+  }
+
   const options = useMemo<Option[]>(() => {
     const out: Option[] = []
     const seen = new Set<string>()
@@ -76,7 +107,8 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
       .map((s) => s.trim())
       .filter(Boolean)
   }))
-  const valid = name.trim().length > 0 && parsed.length > 0 && parsed.every((t) => t.cwd && t.steps.length > 0)
+  const valid =
+    name.trim().length > 0 && parsed.length > 0 && parsed.every((t, i) => (t.cwd || (isGlobal && i === 0)) && t.steps.length > 0)
 
   const sections = [...new Set(options.map((o) => o.section))]
 
@@ -93,6 +125,16 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
           <label className="field">
             <span>Name</span>
             <input autoFocus value={name} placeholder="Build all repos" onChange={(e) => setName(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Available in</span>
+            <select value={ownerId} onChange={(e) => changeScope(e.target.value)}>
+              {scopes.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
           </label>
           <div className="field">
             <span>Mode</span>
@@ -113,10 +155,16 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
             <span>Targets</span>
             <div className="targets">
               {targets.map((t, i) => {
+                const selectedFolderTarget = isGlobal && i === 0
                 const match = options.find((o) => lc(o.path) === lc(t.cwd))
                 return (
                   <div key={i} className="target">
                     <div className="target-head">
+                      {selectedFolderTarget ? (
+                        <select value="" disabled>
+                          <option value="">Selected folder</option>
+                        </select>
+                      ) : (
                       <select
                         value={match ? match.path : CUSTOM}
                         onChange={(e) => update(i, { cwd: e.target.value === CUSTOM ? '' : e.target.value })}
@@ -134,6 +182,7 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
                         ))}
                         <option value={CUSTOM}>Custom path...</option>
                       </select>
+                      )}
                       <button
                         className="icon-btn danger"
                         title="Remove target"
@@ -143,7 +192,8 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
                         <Trash2 size={15} />
                       </button>
                     </div>
-                    {!match && (
+                    {selectedFolderTarget && <div className="target-path">Runs in the folder selected when you press Run</div>}
+                    {!selectedFolderTarget && !match && (
                       <div className="target-custom">
                         <input
                           value={t.cwd}
@@ -161,7 +211,7 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
                         </button>
                       </div>
                     )}
-                    {match && <div className="target-path">{match.path}</div>}
+                    {!selectedFolderTarget && match && <div className="target-path">{match.path}</div>}
                     <textarea
                       rows={3}
                       spellCheck={false}
@@ -186,7 +236,7 @@ export function CommandEditor({ initial, state, selected, onSave, onCancel }: Pr
           <button
             className="btn primary"
             disabled={!valid}
-            onClick={() => onSave({ id: initial.id, ownerId: initial.ownerId, name: name.trim(), mode, targets: parsed })}
+            onClick={() => onSave({ id: initial.id, ownerId, name: name.trim(), mode, targets: parsed })}
           >
             Save
           </button>

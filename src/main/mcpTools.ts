@@ -158,7 +158,7 @@ export interface SaveCommandArgs {
   name?: string
   mode?: 'parallel' | 'sequential'
   location?: string
-  scope?: 'location' | 'group'
+  scope?: 'location' | 'group' | 'global'
   steps?: string[]
   targets?: CommandTarget[]
 }
@@ -172,16 +172,19 @@ export function planCommand(
   const existing = a.id !== undefined ? state.commands.find((c) => c.id === a.id) : undefined
   if (a.id !== undefined && !existing) throw new ToolError(`Unknown command id ${a.id}. Omit id to create a new command.`)
   if (a.targets && a.steps) throw new ToolError('Pass either `steps` or `targets`, not both')
-  const needLoc = !existing || a.location !== undefined || a.scope !== undefined
+  const toGlobal = a.scope === 'global'
+  const needLoc = !toGlobal && (!existing || a.location !== undefined || a.scope !== undefined)
   const loc = needLoc ? contextLocation(state, a.location, header) : null
 
   let ownerId = existing?.ownerId ?? ''
-  if (loc) {
+  if (toGlobal) ownerId = 'global'
+  else if (loc) {
     if (a.scope === 'group' && loc.kind !== 'parent' && loc.kind !== 'manual') {
       if (!loc.groupId) throw new ToolError(`${loc.name} (${loc.id}) is not in a group; use scope "location"`)
       ownerId = loc.groupId
     } else ownerId = loc.id
   }
+  const isGlobal = ownerId === 'global'
 
   const name = existing && a.name === undefined ? existing.name : requireName(a.name, 'Command name')
   const mode = a.mode ?? existing?.mode ?? 'parallel'
@@ -189,11 +192,19 @@ export function planCommand(
   let targets: CommandTarget[]
   if (a.targets) {
     if (a.targets.length === 0) throw new ToolError('`targets` must contain at least one target')
-    targets = a.targets.map((t, i) => ({ cwd: absPath(t.cwd, `targets[${i}].cwd`), steps: cleanSteps(t.steps, `targets[${i}]`) }))
+    targets = a.targets.map((t, i) => ({
+      // Global commands may leave the first target's cwd empty: it runs in whichever folder is selected.
+      cwd: isGlobal && i === 0 && t.cwd.trim() === '' ? '' : absPath(t.cwd, `targets[${i}].cwd`),
+      steps: cleanSteps(t.steps, `targets[${i}]`)
+    }))
   } else if (a.steps) {
     const steps = cleanSteps(a.steps, 'The command')
     let cwd: string
-    if (existing && a.location === undefined) {
+    if (isGlobal) {
+      if (existing && a.location === undefined && existing.targets.length !== 1)
+        throw new ToolError(`Command ${existing.id} has ${existing.targets.length} targets; pass \`targets\` to change its steps`)
+      cwd = ''
+    } else if (existing && a.location === undefined) {
       if (existing.targets.length !== 1)
         throw new ToolError(`Command ${existing.id} has ${existing.targets.length} targets; pass \`targets\` to change its steps`)
       cwd = existing.targets[0].cwd
@@ -204,13 +215,34 @@ export function planCommand(
     }
     targets = [{ cwd, steps }]
   } else if (existing) {
-    targets = existing.targets
+    targets = existing.targets.map((t) => ({ cwd: t.cwd, steps: [...t.steps] }))
+    if (isGlobal) {
+      if (targets.length > 0) targets[0].cwd = ''
+    } else if (targets.some((t) => !t.cwd)) {
+      // Moving a global command onto a location: '' targets follow that location's folder.
+      const at = loc ?? contextLocation(state, a.location, header)
+      if (!at.path) throw new ToolError(`${at.name} is a manual group with no directory of its own; pass \`targets\` with an explicit cwd`)
+      for (const t of targets) if (!t.cwd) t.cwd = at.path
+    }
   } else {
     throw new ToolError('Pass `steps` (run in the location\'s folder) or `targets` ([{ cwd, steps }])')
   }
 
-  const warnings = targets.filter((t) => !isDir(t.cwd)).map((t) => `cwd does not exist (yet): ${t.cwd}`)
+  const warnings = targets.filter((t) => t.cwd && !isDir(t.cwd)).map((t) => `cwd does not exist (yet): ${t.cwd}`)
   return { command: { id: existing?.id ?? randomUUID(), name, ownerId, mode, targets }, created: !existing, warnings }
+}
+
+/** Commands visible at a location: its own, its group's and global ones, each tagged with scopeKind. */
+export function visibleCommands(
+  state: AppState,
+  loc: { id: string; groupId?: string | null }
+): (Command & { inherited: boolean; scopeKind: 'location' | 'group' | 'global' })[] {
+  const own = state.commands.filter((c) => c.ownerId === loc.id).map((c) => ({ ...c, inherited: false, scopeKind: 'location' as const }))
+  const inherited = loc.groupId
+    ? state.commands.filter((c) => c.ownerId === loc.groupId).map((c) => ({ ...c, inherited: true, scopeKind: 'group' as const }))
+    : []
+  const global = state.commands.filter((c) => c.ownerId === 'global').map((c) => ({ ...c, inherited: true, scopeKind: 'global' as const }))
+  return [...own, ...inherited, ...global]
 }
 
 export interface SavePromptArgs {
@@ -379,33 +411,32 @@ export const TOOLS: ToolDef[] = [
   }),
   defineTool({
     name: 'list_commands',
-    description: "Saved commands of a location, plus those inherited from its group (flagged inherited: true).",
+    description:
+      "Saved commands visible at a location: its own, those inherited from its group (inherited: true) and global ones (scopeKind 'global'; their first target has cwd '' = the folder selected at run time).",
     shape: { location: locationArg },
     mutates: false,
     run: (a, ctx) => {
       const s = store.getState()
       const loc = contextLocation(s, a.location, ctx.headerLocation)
-      const own = s.commands.filter((c) => c.ownerId === loc.id).map((c) => ({ ...c, inherited: false }))
-      const inherited = loc.groupId ? s.commands.filter((c) => c.ownerId === loc.groupId).map((c) => ({ ...c, inherited: true })) : []
-      return { location: { id: loc.id, name: loc.name }, commands: [...own, ...inherited] }
+      return { location: { id: loc.id, name: loc.name }, commands: visibleCommands(s, loc) }
     }
   }),
   defineTool({
     name: 'save_command',
     description:
-      'Create (no id) or update (id) a saved command. Give `steps` to run them in the location\'s folder, or `targets` for several folders. Omitted fields keep their value on update. Does not run anything.',
+      'Create (no id) or update (id) a saved command. Give `steps` to run them in the location\'s folder, or `targets` for several folders. With scope "global" the command is available in every folder and `steps` run in whichever folder is selected when it is run (cwd ""). Omitted fields keep their value on update. Does not run anything.',
     shape: {
       id: z.string().optional().describe('Existing command id to update'),
       name: z.string().optional().describe('Required when creating'),
       mode: z.enum(['parallel', 'sequential']).optional().describe('How targets run. Default parallel'),
       location: locationArg,
       scope: z
-        .enum(['location', 'group'])
+        .enum(['location', 'group', 'global'])
         .optional()
-        .describe('Save on the location itself (default) or on its group, so every folder in the group sees it'),
+        .describe('Save on the location itself (default), on its group so every folder in the group sees it, or globally for every folder'),
       steps: stepsArg.optional(),
       targets: z
-        .array(z.object({ cwd: z.string().describe('Absolute directory'), steps: stepsArg }))
+        .array(z.object({ cwd: z.string().describe('Absolute directory ("" for the first target of a global command: the selected folder)'), steps: stepsArg }))
         .optional()
         .describe('One entry per folder')
     },

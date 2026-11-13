@@ -424,6 +424,12 @@ export function App(): JSX.Element {
       const locId = st?.selectedId
       if (!locId || cmd.targets.length === 0) return
       if (runsRef.current[cmd.id]?.status === 'running') return
+      // Targets with an empty cwd (global commands) run in the selected location's folder.
+      if (cmd.targets.some((t) => !t.cwd)) {
+        const selPath = st ? buildLocs(st).get(locId)?.path : null
+        if (!selPath) return
+        cmd = { ...cmd, targets: cmd.targets.map((t) => (t.cwd ? t : { ...t, cwd: selPath })) }
+      }
       // Replace the previous run's finished tabs.
       const prev = latestRun.current[cmd.id]
       if (prev) for (const t of tabsRef.current.filter((x) => x.run?.runId === prev)) closeTab(t.id)

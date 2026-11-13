@@ -131,7 +131,9 @@ function CommandsList({
     )
   }
 
-  const commands = state.commands.filter((c) => c.ownerId === selected.id || (selected.groupId && c.ownerId === selected.groupId))
+  const commands = state.commands.filter(
+    (c) => c.ownerId === 'global' || c.ownerId === selected.id || (selected.groupId && c.ownerId === selected.groupId)
+  )
 
   const create = (): void =>
     setEditing({
@@ -145,6 +147,18 @@ function CommandsList({
   const clipped = clipboard?.kind === 'command' ? clipboard.item : null
   const paste = (): void => {
     if (!clipped) return
+    if (clipped.ownerId === 'global') {
+      // Pasting a global command onto a location: '' targets follow that location's folder.
+      // Without a folder (manual group) the pasted copy has nowhere to run, so it stays global.
+      const dest = selected.path
+      onSave({
+        ...clipped,
+        id: crypto.randomUUID(),
+        ownerId: dest ? selected.id : 'global',
+        targets: clipped.targets.map((t) => ({ cwd: t.cwd || dest || '', steps: [...t.steps] }))
+      })
+      return
+    }
     onSave({
       ...clipped,
       id: crypto.randomUUID(),
@@ -154,6 +168,7 @@ function CommandsList({
   }
 
   const ownerName = (id: string): string | null => {
+    if (id === 'global') return 'Global'
     if (id === selected.id) return null
     return state.groups.find((g) => g.id === id)?.name ?? null
   }
@@ -189,6 +204,7 @@ function CommandsList({
           const run = runs[c.id]
           const running = run?.status === 'running'
           const from = ownerName(c.ownerId)
+          const needsPath = c.targets.some((t) => !t.cwd)
           return (
             <div key={c.id} className={`cmd-row ${run ? (run.stopped && !running ? 'is-stopped' : `is-${run.status}`) : ''}`}>
               <div className="cmd-main">
@@ -196,8 +212,12 @@ function CommandsList({
                   <span className="cmd-title">{c.name}</span>
                   {from && <span className="cmd-owner">{from}</span>}
                 </div>
-                <div className="cmd-sub" title={c.targets.map((t) => `${t.cwd}\n  ${t.steps.join('\n  ')}`).join('\n')}>
-                  <span className="mode">{c.mode}</span> · {c.targets.map((t) => `${baseName(t.cwd)} (${t.steps.length})`).join(', ')}
+                <div
+                  className="cmd-sub"
+                  title={c.targets.map((t) => `${t.cwd || 'Selected folder'}\n  ${t.steps.join('\n  ')}`).join('\n')}
+                >
+                  <span className="mode">{c.mode}</span> ·{' '}
+                  {c.targets.map((t) => `${t.cwd ? baseName(t.cwd) : 'selected folder'} (${t.steps.length})`).join(', ')}
                 </div>
               </div>
               <div className="cmd-foot">
@@ -246,8 +266,14 @@ function CommandsList({
                     <button
                       className="btn small primary"
                       onClick={() => onRun(c)}
-                      title={run ? 'Run again' : 'Run'}
-                      disabled={c.targets.length === 0}
+                      title={
+                        needsPath && !selected.path
+                          ? `${selected.name} has no folder of its own; select a folder to run this global command`
+                          : run
+                            ? 'Run again'
+                            : 'Run'
+                      }
+                      disabled={c.targets.length === 0 || (needsPath && !selected.path)}
                     >
                       {run ? <RotateCw size={13} /> : <Play size={13} />} {run ? 'Run again' : 'Run'}
                     </button>

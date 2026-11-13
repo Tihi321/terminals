@@ -7,7 +7,7 @@ import { resolveShell, spawnShell, spawnSteps } from './pty'
 import { childId, migrate } from './store'
 import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
-import { contextLocation, findLocation, planCommand, planPrompt, ToolError } from './mcpTools'
+import { contextLocation, findLocation, planCommand, planPrompt, ToolError, visibleCommands } from './mcpTools'
 import { hostAllowed, tokenMatches } from './mcp'
 import { canAddPane, closePane, dragDivider, dropOnEdge, fromPersisted, normalize, openToSide } from '../shared/panes'
 import { gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage } from './gitcli'
@@ -356,6 +356,24 @@ function checkMcpLogic(dir: string): CheckResult {
     if (u.created || u.command.ownerId !== 'f1' || u.command.name !== 'build' || u.command.targets[0].cwd !== p('alpha')) return fail('update keeps owner/name/cwd ' + JSON.stringify(u))
     if (!err(() => planCommand(state, { id: 'c2', steps: ['x'] }, undefined))?.includes('2 targets')) return fail('multi-target steps update')
     if (planCommand(state, { name: 'x', targets: [{ cwd: p('missing'), steps: ['a'] }] }, 'f1').warnings.length !== 1) return fail('missing cwd warning')
+
+    const gl = planCommand(state, { name: 'lint', steps: ['yarn lint'], scope: 'global' }, 'f1')
+    if (!gl.created || gl.command.ownerId !== 'global' || gl.command.targets.length !== 1 || gl.command.targets[0].cwd !== '' || gl.warnings.length)
+      return fail('global save ' + JSON.stringify(gl))
+    if (planCommand(state, { name: 'lint', steps: ['x'], scope: 'global' }, undefined).command.ownerId !== 'global') return fail('global needs no location')
+    const glt = planCommand(state, { name: 'two', scope: 'global', targets: [{ cwd: '', steps: ['a'] }, { cwd: p('beta'), steps: ['b'] }] }, undefined)
+    if (glt.command.targets[0].cwd !== '' || glt.command.targets[1].cwd !== p('beta')) return fail('global targets ' + JSON.stringify(glt.command.targets))
+    if (!err(() => planCommand(state, { name: 'x', scope: 'global', targets: [{ cwd: p('beta'), steps: ['a'] }, { cwd: '', steps: ['b'] }] }, undefined))?.includes('absolute'))
+      return fail('empty cwd only allowed on first global target')
+    const withGlobal: AppState = { ...state, commands: [...state.commands, gl.command] }
+    const gu = planCommand(withGlobal, { id: gl.command.id, steps: ['yarn lint:fix'] }, undefined)
+    if (gu.command.ownerId !== 'global' || gu.command.targets[0].cwd !== '') return fail('global update keeps scope ' + JSON.stringify(gu))
+    const moved = planCommand(withGlobal, { id: gl.command.id, location: 'f2' }, undefined)
+    if (moved.command.ownerId !== 'f2' || moved.command.targets[0].cwd !== p('beta')) return fail('global moved to folder ' + JSON.stringify(moved))
+    const vis = visibleCommands(withGlobal, { id: 'f1', groupId: 'g1' })
+    const kinds = vis.map((x) => `${x.id}:${x.scopeKind}`).join(',')
+    if (kinds !== `c1:location,c2:group,${gl.command.id}:global`) return fail('list includes global ' + kinds)
+    if (visibleCommands(withGlobal, { id: 'f2', groupId: null }).map((x) => x.id).join(',') !== gl.command.id) return fail('list global only for ungrouped folder')
 
     if (planPrompt(state, { name: 'n', body: 'b' }, 'f2').prompt.scope !== 'f2') return fail('prompt default scope')
     if (planPrompt(state, { name: 'n', body: 'b', scope: 'GLOBAL' }, 'f2').prompt.scope !== 'global') return fail('prompt global scope')

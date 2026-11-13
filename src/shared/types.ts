@@ -70,7 +70,7 @@ export interface GroupView {
 }
 
 export interface CommandTarget {
-  /** Absolute directory the steps run in. */
+  /** Absolute directory the steps run in. '' (global commands only) means the folder selected when the command runs. */
   cwd: string
   steps: string[]
 }
@@ -78,7 +78,7 @@ export interface CommandTarget {
 export interface Command {
   id: string
   name: string
-  /** Folder, child or group id. */
+  /** Folder, child or group id, or 'global' for a command available in every folder. */
   ownerId: string
   mode: 'parallel' | 'sequential'
   targets: CommandTarget[]
