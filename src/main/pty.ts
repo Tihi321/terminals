@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { delimiter, join, basename } from 'node:path'
 import * as pty from '@lydell/node-pty'
+import type { ShellOption } from '../shared/types'
 
 export function findOnPath(exe: string): string | null {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
@@ -13,8 +14,31 @@ export function findOnPath(exe: string): string | null {
 
 /** Resolve the configured shell. Empty/"auto" -> pwsh.exe if on PATH, else powershell.exe. */
 export function resolveShell(configured: string): string {
-  if (configured && configured !== 'auto') return configured
+  if (configured && configured !== 'auto') {
+    if (!/[\\/]/.test(configured)) return findOnPath(configured) ?? configured
+    return configured
+  }
   return findOnPath('pwsh.exe') ?? findOnPath('powershell.exe') ?? 'powershell.exe'
+}
+
+/** True for shells buildRunArgs can run saved-command steps in (PowerShell flavours and cmd). */
+export function isRunnableShell(shell: string): boolean {
+  return /pwsh|powershell/i.test(shell) || /(^|[\\/])cmd(\.exe)?$/i.test(shell)
+}
+
+/** Shell for saved-command steps: the configured one when buildRunArgs supports it, else automatic. */
+export function stepsShell(shell: string): string {
+  return isRunnableShell(shell) ? shell : resolveShell('')
+}
+
+/** Known shells for the default-shell picker. */
+export function listShells(): ShellOption[] {
+  return [
+    { value: '', label: 'Automatic (PowerShell 7, else Windows PowerShell)', available: true },
+    { value: 'pwsh.exe', label: 'PowerShell 7 (pwsh)', available: !!findOnPath('pwsh.exe') },
+    { value: 'powershell.exe', label: 'Windows PowerShell', available: !!findOnPath('powershell.exe') },
+    { value: 'cmd.exe', label: 'Command Prompt (cmd)', available: !!findOnPath('cmd.exe') }
+  ]
 }
 
 export function shellLabel(shell: string): string {

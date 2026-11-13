@@ -24,6 +24,7 @@ import {
   type UiState
 } from '../shared/types'
 import { sanitizePersisted } from '../shared/panes'
+import { DEFAULT_SETTINGS, patchSettings, sanitizeSettings } from '../shared/settings'
 import { resolveShell } from './pty'
 import { readGit } from './git'
 
@@ -50,7 +51,6 @@ interface Persisted {
   ui: UiState
 }
 
-const DEFAULT_SETTINGS: Settings = { shell: '', editor: 'zed', terminalFontSize: 15 }
 const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files' }
 
 function emptyData(): Persisted {
@@ -135,12 +135,7 @@ export function migrate(raw: Record<string, unknown>): Persisted {
     .map(sanitizeSnippet)
     .filter((s): s is Snippet => !!s)
   d.selectedId = typeof raw.selectedId === 'string' ? raw.selectedId : null
-  const s = (raw.settings ?? {}) as Partial<Settings>
-  d.settings = {
-    shell: typeof s.shell === 'string' ? s.shell : '',
-    editor: typeof s.editor === 'string' && s.editor.trim() ? s.editor.trim() : DEFAULT_SETTINGS.editor,
-    terminalFontSize: num(s.terminalFontSize, DEFAULT_SETTINGS.terminalFontSize, 8, 40)
-  }
+  d.settings = sanitizeSettings(raw.settings)
   const u = (raw.ui ?? {}) as Partial<UiState>
   d.ui = {
     sidebarWidth: num(u.sidebarWidth, DEFAULT_UI.sidebarWidth, 180, 600),
@@ -267,6 +262,10 @@ export function getState(): AppState {
     ui: data.ui,
     resolvedShell: resolveShell(data.settings.shell)
   }
+}
+
+export function getSettings(): Settings {
+  return data.settings
 }
 
 export function getShell(): string {
@@ -525,10 +524,7 @@ function insertFolders(paths: string[], groupId: string | null, beforeId?: strin
 }
 
 export function setSettings(patch: Partial<Settings>): AppState {
-  const s = data.settings
-  if (typeof patch.shell === 'string') s.shell = patch.shell
-  if (typeof patch.editor === 'string' && patch.editor.trim()) s.editor = patch.editor.trim()
-  if (patch.terminalFontSize !== undefined) s.terminalFontSize = num(patch.terminalFontSize, s.terminalFontSize, 8, 40)
+  data.settings = patchSettings(data.settings, patch)
   save()
   return getState()
 }

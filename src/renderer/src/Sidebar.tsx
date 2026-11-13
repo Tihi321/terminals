@@ -20,6 +20,7 @@ import {
   TriangleAlert,
   Pencil,
   RefreshCw,
+  Settings as SettingsIcon,
   SquareArrowOutUpRight,
   SquareTerminal,
   Code,
@@ -57,6 +58,7 @@ interface Props {
   onOpenExplorer: (path: string) => void
   onOpenEditor: (path: string) => void
   onCopy: (text: string) => void
+  onOpenSettings: () => void
 }
 
 interface MenuState {
@@ -509,6 +511,9 @@ export function Sidebar(p: Props): JSX.Element {
           </button>
           <button className="icon-btn" onClick={p.onRefresh} title="Rescan folders">
             <RefreshCw size={16} />
+          </button>
+          <button className="icon-btn" onClick={p.onOpenSettings} title="Settings (Ctrl+,)">
+            <SettingsIcon size={16} />
           </button>
         </div>
       </div>

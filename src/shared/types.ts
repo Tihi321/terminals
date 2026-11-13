@@ -1,12 +1,30 @@
 /** Current on-disk schema version. Files without a `version` field are version 1. */
 export const SCHEMA_VERSION = 3
 
+export type ThemeId = 'dark' | 'light' | 'fjord' | 'sandstone'
+export type ThemeSetting = ThemeId | 'system'
+export type CursorStyle = 'block' | 'bar' | 'underline'
+
 export interface Settings {
-  /** Shell executable. Empty string = auto (pwsh.exe if on PATH, else powershell.exe). */
+  /** Shell executable. '' = auto (pwsh.exe if on PATH, else powershell.exe). Applies to new terminals only. */
   shell: string
-  /** Editor executable resolved on PATH (default "zed"). Falls back to shell.openPath. */
+  /** Editor executable resolved on PATH (default "zed"). */
   editor: string
   terminalFontSize: number
+  theme: ThemeSetting
+  /** CSS font-family list for terminals, diff and file viewers. */
+  terminalFontFamily: string
+  cursorStyle: CursorStyle
+  cursorBlink: boolean
+  scrollback: number
+}
+
+/** One entry of the default-shell picker. value '' = automatic. */
+export interface ShellOption {
+  value: string
+  label: string
+  /** False when the executable is not on PATH (shown disabled). Always true for ''. */
+  available: boolean
 }
 
 /** Side-by-side panes: location ids in order, width fractions (sum 1) and the focused index. */
@@ -229,6 +247,10 @@ export interface TerminalsApi {
   /** Real filesystem path of a dropped File (File.path is gone in Electron 32+). */
   getPathForFile(file: File): string
   setSettings(patch: Partial<Settings>): Promise<AppState>
+  /** Concrete theme main resolved when the window was created ('system' already resolved). Paints the first frame. */
+  readonly initialThemeId: ThemeId
+  /** Known shells for the default-shell picker, with PATH availability. */
+  listShells(): Promise<ShellOption[]>
   setUi(patch: Partial<UiState>): Promise<AppState>
   pickFolder(): Promise<string | null>
 

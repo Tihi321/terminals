@@ -3,33 +3,7 @@
  * Spacing runs on a 4px grid. Radii: 4 (chips), 6 (controls, rows), 8 (inputs, menus), 12 (dialogs).
  */
 :root {
-  /* Surfaces, darkest to lightest */
-  --bg-inset: #0e0e10;
-  --bg-chrome: #131315;
-  --bg-term: #18181b;
-  --bg-raised: #1e1e22;
-  --bg-overlay: #222227;
-  --hover: rgba(255, 255, 255, 0.045);
-  --active: rgba(255, 255, 255, 0.075);
-  --line: #242428;
-  --line-strong: #303036;
-
-  /* Text */
-  --text: #ececef;
-  --text-2: #a4a4ad;
-  --text-3: #707079;
-
-  /* One accent, three states */
-  --accent: #e8a54f;
-  --accent-hover: #f0b468;
-  --accent-ink: #1d1407;
-  --accent-soft: rgba(232, 165, 79, 0.13);
-  --accent-line: rgba(232, 165, 79, 0.5);
-  --success: #8cc792;
-  --success-soft: rgba(140, 199, 146, 0.12);
-  --danger: #ee7d76;
-  --danger-soft: rgba(238, 125, 118, 0.12);
-
+  /* Colours (--bg-*, --text*, --accent*, ...) come from src/shared/themes.ts via applyTheme(). */
   --r-xs: 4px;
   --r-sm: 6px;
   --r-md: 8px;
@@ -39,7 +13,6 @@
   --font-ui: 'Geist Variable', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, monospace;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-  --shadow-pop: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -8px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.35);
 
   --z-resize: 5;
   --z-modal: 50;
@@ -110,7 +83,7 @@ textarea::placeholder {
 input:hover,
 select:hover,
 textarea:hover {
-  border-color: #3a3a41;
+  border-color: var(--line-hover);
 }
 input:focus,
 select:focus,
@@ -122,7 +95,7 @@ textarea:focus {
 select {
   appearance: none;
   padding-right: 30px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a4a4ad' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239a9aa4' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
 }
@@ -198,8 +171,8 @@ kbd,
   justify-content: center;
   border-radius: 5px;
   color: var(--accent-ink);
-  background: linear-gradient(160deg, #f1b866, #d9923a);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+  background: var(--accent-grad);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tint) 8%, transparent) inset;
 }
 .titlebar-name {
   font-weight: 600;
@@ -258,8 +231,8 @@ kbd,
   transition: background 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease), transform 0.1s var(--ease);
 }
 .btn:hover:not(:disabled) {
-  background: #26262b;
-  border-color: #3b3b42;
+  background: var(--control-hover);
+  border-color: var(--line-hover);
 }
 .btn:active:not(:disabled) {
   transform: translateY(1px);
@@ -286,7 +259,7 @@ kbd,
 }
 .btn.danger:hover:not(:disabled) {
   background: var(--danger-soft);
-  border-color: rgba(238, 125, 118, 0.45);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
 
 .icon-btn {
@@ -452,7 +425,7 @@ kbd,
   opacity: 0.7;
 }
 .row.missing .row-sub.missing {
-  color: rgba(238, 125, 118, 0.85);
+  color: color-mix(in srgb, var(--danger) 85%, transparent);
 }
 .row.dim {
   opacity: 0.5;
@@ -578,7 +551,7 @@ kbd,
 }
 .drop-zone.active {
   border-color: var(--accent-line);
-  background: rgba(232, 165, 79, 0.05);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .resize-handle {
@@ -646,7 +619,7 @@ kbd,
 }
 .tab:hover {
   color: var(--text-2);
-  background: rgba(255, 255, 255, 0.025);
+  background: color-mix(in srgb, var(--tint) 2.5%, transparent);
 }
 .tab.active {
   color: var(--text);
@@ -863,7 +836,7 @@ kbd,
   color: var(--text-2);
   padding: 24px;
   padding-bottom: 8vh;
-  background: radial-gradient(ellipse 60% 50% at 50% 42%, rgba(255, 255, 255, 0.025), transparent 70%);
+  background: radial-gradient(ellipse 60% 50% at 50% 42%, color-mix(in srgb, var(--tint) 2.5%, transparent), transparent 70%);
 }
 .empty-icon {
   width: 52px;
@@ -873,7 +846,7 @@ kbd,
   justify-content: center;
   margin-bottom: 10px;
   color: var(--text-2);
-  background: linear-gradient(180deg, #232328, #1b1b1f);
+  background: var(--tile-grad);
   border: 1px solid var(--line-strong);
   border-radius: 14px;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 8px 24px -10px rgba(0, 0, 0, 0.7);
@@ -881,7 +854,7 @@ kbd,
 .empty-icon.warn {
   color: var(--danger) !important;
   background: var(--danger-soft);
-  border-color: rgba(238, 125, 118, 0.3);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
 .empty h2 {
   margin: 0;
@@ -1096,22 +1069,22 @@ kbd,
   flex: none;
 }
 .ic-folder {
-  color: #8f9db5;
+  color: var(--ic-folder);
 }
 .ic-code {
-  color: #74bfc4;
+  color: var(--ic-code);
 }
 .ic-json {
-  color: #d9b469;
+  color: var(--ic-json);
 }
 .ic-image {
-  color: #c49bd6;
+  color: var(--ic-image);
 }
 .ic-archive {
-  color: #d69a6c;
+  color: var(--ic-archive);
 }
 .ic-text {
-  color: #9d9da6;
+  color: var(--ic-text);
 }
 .file-name {
   font-size: 12.5px;
@@ -1269,10 +1242,10 @@ kbd,
 .cmd-actions .btn.primary {
   background: var(--accent-soft);
   color: var(--accent);
-  box-shadow: inset 0 0 0 1px rgba(232, 165, 79, 0.28);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .cmd-actions .btn.primary:hover:not(:disabled) {
-  background: rgba(232, 165, 79, 0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .cmd-actions .btn.primary:disabled {
   background: var(--active);
@@ -1284,7 +1257,7 @@ kbd,
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(8, 8, 10, 0.62);
+  background: var(--scrim);
   backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
@@ -1382,7 +1355,7 @@ kbd,
   color: var(--text-2);
 }
 .segmented button.active {
-  background: #2a2a30;
+  background: var(--control-active);
   color: var(--text);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 1px 3px rgba(0, 0, 0, 0.4);
 }
@@ -1480,13 +1453,13 @@ kbd,
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--tint) 8%, transparent);
   border-radius: 5px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: color-mix(in srgb, var(--tint) 16%, transparent);
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track,
@@ -1496,7 +1469,7 @@ kbd,
 
 /* ---------- Drag and drop from Explorer ---------- */
 .tree.drop-active {
-  background: rgba(232, 165, 79, 0.045);
+  background: color-mix(in srgb, var(--accent) 4.5%, transparent);
   box-shadow: inset 0 0 0 1px var(--accent-line);
 }
 /* The Explorer drop outlines the whole tree; don't also outline the "Folders" drop zone inside it. */
@@ -1510,7 +1483,7 @@ kbd,
   inset: -2px 6px 8px -6px;
   border: 1.5px dashed var(--accent-line);
   border-radius: var(--r-lg);
-  background: rgba(19, 19, 21, 0.82);
+  background: color-mix(in srgb, var(--bg-chrome) 82%, transparent);
   backdrop-filter: blur(2px);
   pointer-events: none;
   z-index: 20;
@@ -1696,7 +1669,7 @@ kbd,
   height: 16px;
   flex: none;
   padding: 0;
-  border: 1px solid #44444c;
+  border: 1px solid var(--control-border);
   border-radius: var(--r-xs);
   background: var(--bg-inset);
   color: var(--accent-ink);
@@ -1742,7 +1715,7 @@ kbd,
   color: var(--accent);
 }
 .git-letter.ren {
-  color: #8f9db5;
+  color: var(--ic-folder);
 }
 .git-ficon {
   display: inline-flex;
@@ -2132,13 +2105,13 @@ kbd,
   padding-right: 16px;
 }
 .dl.add {
-  background: rgba(140, 199, 146, 0.11);
+  background: color-mix(in srgb, var(--success) 11%, transparent);
 }
 .dl.add .ds {
   color: var(--success);
 }
 .dl.del {
-  background: rgba(238, 125, 118, 0.11);
+  background: color-mix(in srgb, var(--danger) 11%, transparent);
 }
 .dl.del .ds {
   color: var(--danger);
@@ -2216,7 +2189,7 @@ kbd,
 .file-image img {
   max-width: 100%;
   height: auto;
-  background: repeating-conic-gradient(#222227 0% 25%, #1b1b1f 0% 50%) 0 0 / 16px 16px;
+  background: repeating-conic-gradient(var(--checker-a) 0% 25%, var(--checker-b) 0% 50%) 0 0 / 16px 16px;
 }
 .dl.hunk {
   background: var(--hover);

@@ -33,7 +33,10 @@ import { Keys } from './Keys'
 import { visibleSnippets } from './SnippetEditor'
 import type { RunInfo } from './CommandsPanel'
 import { baseName, buildLocs } from './locations'
-import { createTerm, getTerm, pasteInto, setTermHooks, setTerminalFontSize, DEFAULT_FONT_SIZE } from './termRegistry'
+import { createTerm, getTerm, pasteInto, setTermHooks } from './termRegistry'
+import { SettingsDialog } from './SettingsDialog'
+import { useAppearance } from './appearance'
+import { DEFAULT_SETTINGS, FONT_SIZE_MAX, FONT_SIZE_MIN } from '../../shared/settings'
 
 interface RunCtl {
   cmd: Command
@@ -83,6 +86,8 @@ export function App(): JSX.Element {
   const latestRun = useRef<Record<string, string>>({})
   const counters = useRef<Record<string, number>>({})
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  useAppearance(state?.settings)
   const [paneState, setPaneState] = useState<PaneState | null>(null)
   const panesRef = useRef<PaneState | null>(null)
   const panesEl = useRef<HTMLDivElement>(null)
@@ -119,7 +124,6 @@ export function App(): JSX.Element {
       const stored = toPersisted(ps)
       if (stored && JSON.stringify(stored) !== JSON.stringify(s.ui.panes)) void window.api.setUi({ panes: stored })
       setWidths({ sb: s.ui.sidebarWidth, panel: s.ui.panelWidth })
-      setTerminalFontSize(s.settings.terminalFontSize)
     })
     // Rescan parent folders and re-check existence when coming back to the window.
     const onFocus = (): void => void window.api.getState().then(setState)
@@ -461,10 +465,9 @@ export function App(): JSX.Element {
 
   const zoom = useCallback(
     async (dir: -1 | 0 | 1) => {
-      const cur = stateRef.current?.settings.terminalFontSize ?? DEFAULT_FONT_SIZE
-      const next = dir === 0 ? DEFAULT_FONT_SIZE : Math.min(36, Math.max(8, cur + dir))
+      const cur = stateRef.current?.settings.terminalFontSize ?? DEFAULT_SETTINGS.terminalFontSize
+      const next = dir === 0 ? DEFAULT_SETTINGS.terminalFontSize : Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, cur + dir))
       if (next === cur) return
-      setTerminalFontSize(next)
       setState(await window.api.setSettings({ terminalFontSize: next }))
     },
     [setState]
@@ -519,6 +522,7 @@ export function App(): JSX.Element {
       onZoom: (d) => void zoom(d),
       onTogglePanel: (t) => void togglePanel(t),
       onSnippetPicker: () => setPickerOpen(true),
+      onOpenSettings: () => setSettingsOpen((o) => !o),
       onToggleSidebar: () => void toggleSidebar()
     })
   }, [handleExit, zoom, togglePanel, toggleSidebar])
@@ -542,6 +546,9 @@ export function App(): JSX.Element {
       } else if (e.shiftKey && k === 'p') {
         e.preventDefault()
         setPickerOpen(true)
+      } else if (!e.shiftKey && k === ',') {
+        e.preventDefault()
+        setSettingsOpen((o) => !o)
       } else if (k === '=' || k === '+' || k === '-' || k === '0') {
         e.preventDefault()
         void zoom(k === '0' ? 0 : k === '-' ? -1 : 1)
@@ -663,6 +670,7 @@ export function App(): JSX.Element {
         <div className="sidebar-wrap" style={{ width: widths.sb }}>
           <Sidebar
             state={state}
+            onOpenSettings={() => setSettingsOpen(true)}
             counts={counts}
             onSelect={(id) => void select(id)}
             onOpenTerminal={(id) => void openTerminal(id)}
@@ -978,6 +986,13 @@ export function App(): JSX.Element {
             setPickerOpen(false)
             void insertSnippet(s.body, false)
           }}
+        />
+      )}
+      {settingsOpen && state && (
+        <SettingsDialog
+          settings={state.settings}
+          onChange={(patch) => void window.api.setSettings(patch).then(setState)}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>

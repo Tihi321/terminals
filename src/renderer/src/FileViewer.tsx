@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { JSX, KeyboardEvent } from 'react'
 import { ExternalLink, Pencil } from 'lucide-react'
 import type { FileContent } from '../../shared/types'
-import { TERM_FONT } from './termRegistry'
 import { splitPath } from './gitUtil'
 import { relPath } from './locations'
 
@@ -313,7 +312,7 @@ export function FileViewer({ path, root, fontSize }: Props): JSX.Element {
       <div
         ref={scrollRef}
         className={'diff-scroll' + (editing ? ' editing' : '')}
-        style={{ fontFamily: TERM_FONT, fontSize }}
+        style={{ fontFamily: 'var(--font-mono)', fontSize }}
         tabIndex={editing ? -1 : 0}
         onKeyDown={editing ? undefined : onViewKey}
       >

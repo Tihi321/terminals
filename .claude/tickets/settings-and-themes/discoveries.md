@@ -1,0 +1,1 @@
+- 2026-11-13 implementer: `fnm exec --using default yarn <script>` fails with "program not found"; `fnm exec --using default bash -c 'yarn <script>'` works (package.json) - suggested: update the CLAUDE.md/plan Node hint

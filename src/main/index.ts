@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import icon from '../../build/icon.png?asset'
 import type { IPty } from '@lydell/node-pty'
 import type { Command, PasteContent, PtyCreateRequest, Settings, Snippet, UiState } from '../shared/types'
-import { spawnShell, spawnSteps } from './pty'
+import { listShells, spawnShell, spawnSteps, stepsShell } from './pty'
+import { getTheme, resolveThemeId, windowColors, type Theme } from '../shared/themes'
 import * as store from './store'
 import { runSmoke } from './smoke'
 import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } from './fsops'
@@ -28,9 +29,6 @@ if (dataDir) {
 }
 
 const SMOKE = process.argv.includes('--smoke') || process.env.TERMINALS_SMOKE === '1'
-/** Keep in sync with --bg-chrome and --bg-term in the renderer's styles.css. */
-const BAR_COLOR = '#131315'
-const WINDOW_BG = '#18181b'
 
 const ptys = new Map<string, IPty>()
 /** Null until the MCP server listens (or when it failed to start). */
@@ -54,7 +52,24 @@ function killAllPtys(): void {
   ptys.clear()
 }
 
+function currentTheme(): Theme {
+  return getTheme(resolveThemeId(store.getSettings().theme, nativeTheme.shouldUseDarkColors))
+}
+
+/** Re-colours the native window background and title bar overlay to match the current theme. */
+function applyWindowTheme(): void {
+  if (!win || win.isDestroyed()) return
+  const c = windowColors(currentTheme())
+  win.setBackgroundColor(c.background)
+  try {
+    win.setTitleBarOverlay({ color: c.titleBar, symbolColor: c.symbol, height: 36 })
+  } catch {
+    /* overlay unsupported */
+  }
+}
+
 function createWindow(): void {
+  const c = windowColors(currentTheme())
   win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -62,10 +77,10 @@ function createWindow(): void {
     minHeight: 440,
     title: 'Terminals',
     icon,
-    backgroundColor: WINDOW_BG,
+    backgroundColor: c.background,
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: BAR_COLOR, symbolColor: '#a4a4ad', height: 36 },
+    titleBarOverlay: { color: c.titleBar, symbolColor: c.symbol, height: 36 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -267,7 +282,15 @@ function registerIpc(): void {
   ipcMain.handle('folders:addPaths', (_e, paths: string[], groupId: string | null, beforeId?: string) =>
     store.addFolderPaths(Array.isArray(paths) ? paths : [], typeof groupId === 'string' ? groupId : null, beforeId)
   )
-  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => store.setSettings(patch))
+  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
+    const s = store.setSettings(patch)
+    applyWindowTheme()
+    return s
+  })
+  ipcMain.handle('settings:shells', () => listShells())
+  ipcMain.on('theme:initial', (e) => {
+    e.returnValue = resolveThemeId(store.getSettings().theme, nativeTheme.shouldUseDarkColors)
+  })
   ipcMain.handle('ui:set', (_e, patch: Partial<UiState>) => store.setUi(patch))
   ipcMain.handle('dialog:pickFolder', () => pickFolder())
 
@@ -354,7 +377,7 @@ function registerIpc(): void {
     try {
       const env = ptyEnv(req.locId)
       const p = Array.isArray(req.steps)
-        ? spawnSteps(store.getShell(), req.steps.map(String), req.cwd, cols, rows, handlers, env)
+        ? spawnSteps(stepsShell(store.getShell()), req.steps.map(String), req.cwd, cols, rows, handlers, env)
         : spawnShell(store.getShell(), req.cwd, cols, rows, handlers, env)
       ptys.set(req.id, p)
       return { ok: true }
@@ -392,6 +415,7 @@ if (SMOKE) {
     store.loadStore()
     prunePasteDir()
     registerIpc()
+    nativeTheme.on('updated', applyWindowTheme)
     // Before the window, so the first terminals already get the MCP env vars.
     try {
       mcp = await startMcpServer({ dataDir: app.getPath('userData'), version: app.getVersion(), onChange: pushState })
