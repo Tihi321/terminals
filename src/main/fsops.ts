@@ -1,8 +1,8 @@
 import { shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, statSync, watch, type FSWatcher } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, truncateSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
-import type { DirEntry, FileContent, Result } from '../shared/types'
+import type { DirEntry, FileContent, Result, WriteResult } from '../shared/types'
 import { findOnPath } from './pty'
 
 const IGNORED = new Set(['.git', 'node_modules'])
@@ -32,7 +32,28 @@ export function readFileContent(path: string): Result<{ content: FileContent }> 
     if (st.size > TEXT_LIMIT) return { ok: true, content: { kind: 'binary', reason: 'large' } }
     const buf = readFileSync(path)
     if (buf.subarray(0, 8192).includes(0)) return { ok: true, content: { kind: 'binary', reason: 'binary' } }
-    return { ok: true, content: { kind: 'text', text: buf.toString('utf8') } }
+    return { ok: true, content: { kind: 'text', text: buf.toString('utf8'), mtimeMs: st.mtimeMs } }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * Overwrites an existing regular file with UTF-8 text (the caller owns any BOM / line endings in `text`).
+ * Written in place rather than via temp file + rename: rename fails on Windows when the file is open elsewhere
+ * and would drop symlinks, hard links and attributes. If the mtime no longer matches `expectedMtimeMs`
+ * (and `force` is false) nothing is written and `conflict` is set.
+ */
+export function writeTextFile(path: string, text: string, expectedMtimeMs: number, force: boolean): WriteResult {
+  try {
+    const st = statSync(path)
+    if (!st.isFile()) return { ok: false, error: 'Not a file' }
+    if (!force && st.mtimeMs !== expectedMtimeMs) {
+      return { ok: false, error: 'The file changed on disk since it was opened', conflict: true }
+    }
+    writeFileSync(path, text, { encoding: 'utf8', flag: 'r+' })
+    truncateSync(path, Buffer.byteLength(text, 'utf8'))
+    return { ok: true, mtimeMs: statSync(path).mtimeMs }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }

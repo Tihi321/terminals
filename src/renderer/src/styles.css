@@ -2143,6 +2143,71 @@ kbd,
 .dl.del .ds {
   color: var(--danger);
 }
+.diff-scroll:focus {
+  outline: none;
+}
+.diff-scroll.editing {
+  display: flex;
+  overflow: hidden;
+  user-select: auto;
+}
+.diff-dirty {
+  align-self: center;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+}
+.diff-hint {
+  align-self: center;
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.diff-prompt {
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.diff-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+}
+.edit-gutter {
+  flex: none;
+  width: 6ch;
+  overflow: hidden;
+  padding: 0 1ch 44px 0;
+  box-sizing: border-box;
+  text-align: right;
+  white-space: pre;
+  color: var(--text-3);
+  opacity: 0.7;
+  user-select: none;
+}
+.edit-area {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0 16px 24px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: auto;
+  white-space: pre;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+  tab-size: 4;
+}
 .file-image {
   padding: 16px;
   display: flex;

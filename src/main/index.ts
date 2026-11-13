@@ -9,7 +9,7 @@ import type { Command, PasteContent, PtyCreateRequest, Settings, Snippet, UiStat
 import { spawnShell, spawnSteps } from './pty'
 import * as store from './store'
 import { runSmoke } from './smoke'
-import { DirWatcher, listDir, openInEditor, readFileContent } from './fsops'
+import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } from './fsops'
 import * as gitcli from './gitcli'
 import type { GitDiffRequest } from '../shared/types'
 
@@ -233,6 +233,11 @@ function registerIpc(): void {
   )
   ipcMain.handle('fs:read', (_e, p: string) =>
     allowed(p) ? readFileContent(resolve(p)) : { ok: false as const, error: 'Path is outside the saved folders' }
+  )
+  ipcMain.handle('fs:write', (_e, p: string, text: string, mtimeMs: number, force: boolean) =>
+    allowed(p)
+      ? writeTextFile(resolve(p), String(text), Number(mtimeMs), !!force)
+      : { ok: false as const, error: 'Path is outside the saved folders' }
   )
   ipcMain.on('fs:watch', (_e, paths: string[]) => {
     watcher.sync((Array.isArray(paths) ? paths : []).filter(allowed).map((p) => resolve(p)))

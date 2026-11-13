@@ -122,9 +122,12 @@ export interface PtyCreateRequest {
 
 /** In-app file viewer payload: text, an image as a data URL, or a marker for binary/too-large files. */
 export type FileContent =
-  | { kind: 'text'; text: string }
+  | { kind: 'text'; text: string; /** Modification time at read, handed back to `writeFile` to detect outside changes. */ mtimeMs: number }
   | { kind: 'image'; dataUrl: string }
   | { kind: 'binary'; reason: 'binary' | 'large' }
+
+/** Result of saving a text file; `conflict` means the file changed on disk since it was read (nothing was written). */
+export type WriteResult = { ok: true; mtimeMs: number } | { ok: false; error: string; conflict?: boolean }
 
 export interface DirEntry {
   name: string
@@ -232,6 +235,8 @@ export interface TerminalsApi {
   revealInExplorer(path: string): Promise<void>
   listDir(path: string, showIgnored: boolean): Promise<Result<{ entries: DirEntry[] }>>
   readFile(path: string): Promise<Result<{ content: FileContent }>>
+  /** Overwrites an existing text file. Refused with `conflict` when its mtime differs from `expectedMtimeMs`, unless `force`. */
+  writeFile(path: string, text: string, expectedMtimeMs: number, force: boolean): Promise<WriteResult>
   watchDirs(paths: string[]): void
   onFsChanged(cb: (dir: string) => void): () => void
 

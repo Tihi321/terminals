@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps } from './pty'
 import { migrate } from './store'
+import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION } from '../shared/types'
 import { canAddPane, closePane, dragDivider, dropOnEdge, fromPersisted, normalize, openToSide } from '../shared/panes'
 import { gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage } from './gitcli'
@@ -184,13 +185,45 @@ async function checkGit(): Promise<CheckResult> {
   }
 }
 
+/** Check: writeTextFile saves in place, keeps CRLF/BOM text as given, refuses stale mtimes unless forced, and never creates files. */
+function checkWrite(): CheckResult {
+  const d = mkdtempSync(join(tmpdir(), 'terminals-smoke-write-'))
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'write: ' + m })
+  try {
+    const f = join(d, 'a.txt')
+    writeFileSync(f, '\uFEFFone\r\ntwo\r\n')
+    const read = readFileContent(f)
+    if (!read.ok || read.content.kind !== 'text') return fail('read ' + JSON.stringify(read))
+    const m0 = read.content.mtimeMs
+    const crlf = '\uFEFFone\r\nTWO\r\nthree\r\n'
+    const w = writeTextFile(f, crlf, m0, false)
+    if (!w.ok) return fail('first write ' + JSON.stringify(w))
+    if (readFileSync(f, 'utf8') !== crlf) return fail('CRLF/BOM did not round-trip')
+    writeTextFile(f, 'short', w.mtimeMs, false)
+    if (readFileSync(f, 'utf8') !== 'short') return fail('file not truncated')
+    utimesSync(f, new Date(), new Date(Date.now() + 5000))
+    const stale = writeTextFile(f, 'stale', w.mtimeMs, false)
+    if (stale.ok || !stale.conflict || readFileSync(f, 'utf8') !== 'short') return fail('stale mtime should be refused ' + JSON.stringify(stale))
+    const forced = writeTextFile(f, 'forced', w.mtimeMs, true)
+    if (!forced.ok || readFileSync(f, 'utf8') !== 'forced') return fail('force should override ' + JSON.stringify(forced))
+    const missing = join(d, 'nope.txt')
+    if (writeTextFile(missing, 'x', 0, true).ok || existsSync(missing)) return fail('missing path should be refused and not created')
+    if (writeTextFile(d, 'x', 0, true).ok) return fail('directory should be refused')
+    return { ok: true, msg: 'write: in-place save, CRLF+BOM round-trip, stale mtime refused, force overrides, missing path refused' }
+  } catch (err) {
+    return fail(String(err))
+  } finally {
+    rmSync(d, { recursive: true, force: true })
+  }
+}
+
 export async function runSmoke(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'terminals-smoke-'))
   const shell = resolveShell('')
   const ptys: IPty[] = []
   const track = (p: IPty): void => void ptys.push(p)
 
-  const results = [await checkInteractive(dir, shell, track), await checkSteps(dir, shell, track), checkMigration(), checkPanes(), await checkGit()]
+  const results = [await checkInteractive(dir, shell, track), await checkSteps(dir, shell, track), checkMigration(), checkPanes(), checkWrite(), await checkGit()]
   for (const r of results) console.log(r.ok ? `PASS: ${r.msg}` : `FAIL: ${r.msg}`)
   const ok = results.every((r) => r.ok)
 
