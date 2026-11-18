@@ -13,7 +13,9 @@ import { contextLocation, findLocation, planCommand, planPrompt, ToolError, visi
 import { hostAllowed, tokenMatches } from './mcp'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
 import { activateIn, moveTab, reconcileActive, shiftTab } from '../shared/tabs'
-import { planRestore, restorePaths, sanitizeTabs, type RestoreCtx } from '../shared/session'
+import { planRestore, restorePaths, sanitizeTabs, toPersistedTabs, type RestoreCtx } from '../shared/session'
+import { checkElevatedRequest, elevatedCommand, gsudoCandidates, parseSudoMode, resolveElevator } from './elevation'
+import { elevationFailed } from '../shared/elevation'
 import type { PersistedTab } from '../shared/types'
 import { gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage } from './gitcli'
 
@@ -279,7 +281,8 @@ function checkSession(): CheckResult {
     { id: 'd1', locId: 'B', kind: 'diff', title: 'diff', cwd: 'C:\\b', diff: { folder: 'C:\\b', mode: 'unstaged', path: 'z.ts' } },
     { id: 'z1', locId: 'Z', kind: 'shell', title: 'PS 1', cwd: 'C:\\z' },
     { id: 'c2', locId: 'A', kind: 'command', title: 'dead', cwd: 'C:\\a', run: { commandId: 'deleted', runId: 'r2', target: 0 } },
-    { id: 's2', locId: 'A', kind: 'shell', title: 'PS 2', cwd: 'C:\\a' }
+    { id: 's2', locId: 'A', kind: 'shell', title: 'PS 2', cwd: 'C:\\a' },
+    { id: 'e1', locId: 'A', kind: 'shell', title: 'Admin PS 1', cwd: 'C:\\a', shell: 'pwsh.exe', elevated: true }
   ]
   const dirty = sanitizeTabs([
     ...good,
@@ -289,9 +292,14 @@ function checkSession(): CheckResult {
     { ...good[0], id: 'k1', kind: 'weird' },
     { ...good[0], id: 'k2', cwd: '' },
     { id: 'k3', locId: 'A', kind: 'diff', title: 't', cwd: 'C:\\b', diff: { folder: 'C:\\b', mode: 'commit', path: 'p' } },
-    { id: 'k4', locId: 'A', kind: 'command', title: 't', cwd: 'C:\\a', run: { commandId: 'c', runId: 'r', target: -1 } }
+    { id: 'k4', locId: 'A', kind: 'command', title: 't', cwd: 'C:\\a', run: { commandId: 'c', runId: 'r', target: -1 } },
+    { ...good[0], id: 'k5', elevated: 'yes' }
   ])
-  if (ids(dirty) !== ids(good)) return fail('sanitizeTabs kept ' + ids(dirty))
+  if (ids(dirty) !== ids(good) + ',k5') return fail('sanitizeTabs kept ' + ids(dirty))
+  const byId = (id: string): PersistedTab | undefined => dirty.find((t) => t.id === id)
+  if (byId('e1')?.elevated !== true || byId('k5')?.elevated !== undefined) return fail('sanitizeTabs elevated: true kept, other values dropped')
+  if (sanitizeTabs([{ ...good[2], elevated: true }])[0]?.elevated !== undefined) return fail('sanitizeTabs should drop elevated on a non-shell tab')
+  if (toPersistedTabs([{ ...good[7], kind: 'shell', elevated: true }], {})[0]?.elevated !== true) return fail('toPersistedTabs should carry elevated')
   const existing = new Set(['C:\\a\\sub', 'C:\\a', 'C:\\a\\x.ts', 'C:\\b', 'C:\\z'])
   if (!restorePaths(good).includes('C:\\a\\x.ts')) return fail('restorePaths')
   let n = 0
@@ -307,12 +315,49 @@ function checkSession(): CheckResult {
   }
   const plan = planRestore(good, ctx)
   const got = plan.tabs.map((t) => t.id).join()
-  if (got !== 's1,f1,d1,s2') return fail('plan tabs (order, missing folder/file, deleted command) ' + got)
+  if (got !== 's1,f1,d1,s2,e1') return fail('plan tabs (order, missing folder/file, deleted command) ' + got)
   if (plan.tabs[0].cwd !== 'C:\\a\\sub' || plan.tabs[0].fallbackCwd !== 'C:\\a') return fail('shell should fall back to startCwd ' + JSON.stringify(plan.tabs[0]))
   if (plan.runs.length !== 1 || plan.runs[0].commandId !== 'cmd1' || plan.runs[0].anchor !== plan.idMap.f1 || plan.runs[0].snapshotIds[0] !== 'c1')
     return fail('run anchor ' + JSON.stringify(plan.runs))
   if (plan.idMap.s1 !== plan.tabs[0].newId || plan.idMap.f2 !== undefined) return fail('idMap ' + JSON.stringify(plan.idMap))
+  if (plan.tabs[4].elevated !== true) return fail('planRestore should carry elevated ' + JSON.stringify(plan.tabs[4]))
   return { ok: true, msg: 'session: sanitizeTabs drops bad entries; planRestore keeps order, skips missing folder/file/command, falls back cwd, anchors runs' }
+}
+
+/** Check: elevator lookup order, sudo mode parsing, elevated command line and failure rule. Injected deps only; nothing elevates or reads the registry. */
+function checkElevation(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'elevation: ' + m })
+  const base = { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' }
+  const gsudoPath = 'C:\\tools\\gsudo.exe'
+  const sudoPath = 'C:\\Windows\\System32\\sudo.exe'
+  const only = (...ps: string[]) => (p: string): boolean => ps.includes(p)
+  const a = resolveElevator({ env: { ...base, PATH: 'C:\\x;"C:\\tools"' }, exists: only(gsudoPath, sudoPath), sudoMode: () => 'normal' })
+  if (a?.tool !== 'gsudo' || a.path !== gsudoPath) return fail('gsudo on PATH should win over sudo ' + JSON.stringify(a))
+  const b = resolveElevator({ env: { ...base, PATH: '' }, exists: only('C:\\Program Files\\gsudo\\Current\\gsudo.exe'), sudoMode: () => 'disabled' })
+  if (b?.tool !== 'gsudo') return fail('gsudo in Program Files with an empty PATH ' + JSON.stringify(b))
+  const c = resolveElevator({ env: base, exists: only(sudoPath), sudoMode: () => 'normal' })
+  if (c?.tool !== 'sudo' || c.path !== sudoPath) return fail('sudo in normal mode ' + JSON.stringify(c))
+  for (const mode of ['disabled', 'forceNewWindow', 'disableInput', 'unknown'] as const)
+    if (resolveElevator({ env: base, exists: only(sudoPath), sudoMode: () => mode })) return fail('sudo must be unused in mode ' + mode)
+  if (resolveElevator({ env: { ...base, PATH: 'C:\\x' }, exists: only('C:\\x\\sudo.exe'), sudoMode: () => 'normal' })) return fail('sudo must come only from System32')
+  if (gsudoCandidates({ PATH: 'rel;C:\\p' }).some((p) => !/^[A-Za-z]:\\/.test(p))) return fail('candidates must be absolute')
+
+  if (parseSudoMode('    Enabled    REG_DWORD    0x3\r\n') !== 'normal' || parseSudoMode('Enabled    REG_DWORD    0x0') !== 'disabled' || parseSudoMode('nope') !== 'unknown')
+    return fail('parseSudoMode')
+
+  const pwsh = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+  const g = { tool: 'gsudo', path: gsudoPath } as const
+  const cmd = elevatedCommand(pwsh, g)
+  if (cmd?.file !== gsudoPath || cmd.args.join('|') !== `--direct|${pwsh}|-NoLogo`) return fail('gsudo command ' + JSON.stringify(cmd))
+  if (elevatedCommand('cmd.exe', g)?.args.join('|') !== '--direct|cmd.exe') return fail('cmd gets no -NoLogo')
+  if (elevatedCommand(pwsh, { tool: 'sudo', path: sudoPath })?.args.join('|') !== `${pwsh}|-NoLogo`) return fail('sudo has no gsudo flag')
+  if (elevatedCommand('C:\\bin\\bash.exe', g) !== null) return fail('non-runnable shell must give null')
+  if (elevatedCommand('C:\\x\\pwsh-tools\\payload.exe', g) !== null) return fail('lookalike shell basename must give null')
+  if (!checkElevatedRequest({ elevated: true, steps: [] }) || checkElevatedRequest({ elevated: true }) !== null || checkElevatedRequest({ steps: ['x'] }) !== null)
+    return fail('checkElevatedRequest')
+  if (!elevationFailed(999, 60000) || !elevationFailed(1223, 60000) || !elevationFailed(1, 500) || elevationFailed(1, 60000) || elevationFailed(0, 100))
+    return fail('elevationFailed')
+  return { ok: true, msg: 'elevation: gsudo before sudo, sudo only in normal mode from System32, sudo mode parsing, fixed elevated command line, steps rejected, failure rule' }
 }
 
 /** Check 4: the git status/diff/stage/commit/log layer against a throwaway repo. */
@@ -583,6 +628,7 @@ export async function runSmoke(): Promise<void> {
     checkPanes(),
     checkTabs(),
     checkSession(),
+    checkElevation(),
     checkWrite(),
     checkMcpLogic(dir),
     await checkGit()

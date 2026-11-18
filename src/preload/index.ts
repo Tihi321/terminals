@@ -73,6 +73,7 @@ const api: TerminalsApi = {
   clipboardReadForPaste: () => inv('clipboard:readForPaste'),
   clipboardWrite: (text) => inv('clipboard:write', text),
   ptyCreate: (req) => inv('pty:create', req),
+  getElevator: () => inv('pty:elevator'),
   ptyWrite: (id, data) => ipcRenderer.send('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
   ptyKill: (id) => ipcRenderer.send('pty:kill', id),

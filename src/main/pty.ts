@@ -103,6 +103,19 @@ export function spawnShell(
   return spawnPty(shell, [], cwd, cols, rows, handlers, extraEnv)
 }
 
+/** Elevated shell: `file` is the resolved elevator and `args` its fixed command line (see elevation.ts). */
+export function spawnElevated(
+  file: string,
+  args: string[],
+  cwd: string,
+  cols: number,
+  rows: number,
+  handlers: PtyHandlers,
+  extraEnv: Record<string, string> = {}
+): pty.IPty {
+  return spawnPty(file, args, cwd, cols, rows, handlers, extraEnv)
+}
+
 /** Non-interactive run of a list of steps; exits with the failing step's code (or 0). */
 export function spawnSteps(
   shell: string,

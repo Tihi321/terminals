@@ -53,6 +53,8 @@ export interface PersistedTab {
   file?: string
   preview?: boolean
   run?: { commandId: string; runId: string; target: number }
+  /** shell only: started elevated; restored as a not-started placeholder. */
+  elevated?: boolean
 }
 
 export interface UiState {
@@ -165,6 +167,15 @@ export interface PtyCreateRequest {
   shell?: string
   /** Used when `cwd` fails the existence/roots check. */
   fallbackCwd?: string
+  /** Start the shell elevated. Main builds the command from the validated shell and the elevator it finds; only `true` counts. */
+  elevated?: boolean
+}
+
+/** Elevator status for the UI. The path stays in main. */
+export interface ElevatorInfo {
+  available: boolean
+  tool: 'gsudo' | 'sudo' | null
+  hint: string
 }
 
 /** In-app file viewer payload: text, an image as a data URL, or a marker for binary/too-large files. */
@@ -317,6 +328,7 @@ export interface TerminalsApi {
   clipboardReadForPaste(): Promise<PasteContent>
   clipboardWrite(text: string): Promise<void>
   ptyCreate(req: PtyCreateRequest): Promise<Result>
+  getElevator(): Promise<ElevatorInfo>
   ptyWrite(id: string, data: string): void
   ptyResize(id: string, cols: number, rows: number): void
   ptyKill(id: string): void

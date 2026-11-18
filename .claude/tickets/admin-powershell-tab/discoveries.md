@@ -1,0 +1,2 @@
+- 2026-11-18 implementer: the pty:create steps branch spawns with `stepsShell(store.getShell())` and ignores the requested `req.shell` (existing behaviour) (src/main/index.ts) - suggested: confirm this is intended; if it is, document it
+- 2026-11-18 implementer: `fnm exec --using default yarn` fails with "program not found" on this machine, while yarn on PATH works (C:/Users/Infplane/.claude/CLAUDE.md) - suggested: change the Node note to say "use PATH yarn first"

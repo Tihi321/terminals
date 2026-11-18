@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url'
 import icon from '../../build/icon.png?asset'
 import type { IPty } from '@lydell/node-pty'
 import type { Command, PasteContent, PtyCreateRequest, Settings, Snippet, UiState } from '../shared/types'
-import { listShells, resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
+import { listShells, resolveShell, spawnElevated, spawnShell, spawnSteps, stepsShell } from './pty'
+import { checkElevatedRequest, elevatedCommand, readSudoMode, resolveElevator } from './elevation'
+import { GSUDO_HINT } from '../shared/elevation'
+import type { ElevatorInfo } from '../shared/types'
 import { getTheme, resolveThemeId, windowColors, type Theme } from '../shared/themes'
 import * as store from './store'
 import { runSmoke } from './smoke'
@@ -43,6 +46,11 @@ const watcher = new DirWatcher((dir) => {
   if (win && !win.isDestroyed()) win.webContents.send('fs:changed', dir)
 })
 
+/** Ids of ptys running an elevated shell; they get a graceful exit before the console is closed. */
+const elevatedIds = new Set<string>()
+/** webContents id -> time of its last elevated create attempt (rate limit). */
+const lastElevatedCreate = new Map<number, number>()
+
 function killAllPtys(): void {
   for (const p of ptys.values()) {
     try {
@@ -53,6 +61,34 @@ function killAllPtys(): void {
   }
   ptys.clear()
   owners.clear()
+  elevatedIds.clear()
+}
+
+/**
+ * Removes the pty from the maps at once (frees the id, drops further writes), then kills it. An elevated shell
+ * first gets Ctrl+C and `exit` so it can quit on its own; the real kill follows 400 ms later.
+ */
+function releasePty(id: string): void {
+  const p = ptys.get(id)
+  ptys.delete(id)
+  disown(id)
+  const elevated = elevatedIds.delete(id)
+  if (!p) return
+  const kill = (): void => {
+    try {
+      p.kill()
+    } catch {
+      /* already dead */
+    }
+  }
+  if (!elevated) return kill()
+  try {
+    p.write('\x03')
+    p.write('exit\r')
+  } catch {
+    /* already dead */
+  }
+  setTimeout(kill, 400)
 }
 
 function disown(id: string): void {
@@ -66,15 +102,7 @@ function killPtysOf(wcId: number): void {
   const set = owners.get(wcId)
   if (!set) return
   owners.delete(wcId)
-  for (const id of set) {
-    const p = ptys.get(id)
-    ptys.delete(id)
-    try {
-      p?.kill()
-    } catch {
-      /* already dead */
-    }
-  }
+  for (const id of [...set]) releasePty(id)
 }
 
 function currentTheme(): Theme {
@@ -394,7 +422,17 @@ function registerIpc(): void {
     (Array.isArray(paths) ? paths.slice(0, 500) : []).map((p) => typeof p === 'string' && store.isInsideRoots(p) && existsSync(p))
   )
 
+  ipcMain.handle('pty:elevator', (): ElevatorInfo => {
+    const elev = resolveElevator({ env: process.env, exists: existsSync, sudoMode: readSudoMode })
+    if (!elev) return { available: false, tool: null, hint: 'Install gsudo: ' + GSUDO_HINT }
+    return { available: true, tool: elev.tool, hint: elev.tool === 'gsudo' ? 'Runs via gsudo' : 'Runs via Windows sudo' }
+  })
   ipcMain.handle('pty:create', (e, req: PtyCreateRequest) => {
+    const wantElevated = req?.elevated === true
+    if (wantElevated) {
+      const stepsError = checkElevatedRequest(req)
+      if (stepsError) return { ok: false, error: stepsError }
+    }
     const cwdError = (c: unknown): string | null => {
       if (typeof c !== 'string' || !existsSync(c) || !statSync(c).isDirectory()) return 'Folder does not exist'
       if (!store.isInsideRoots(c) && !store.isCommandCwd(c)) return 'Folder is not a saved folder'
@@ -415,13 +453,34 @@ function registerIpc(): void {
       (wanted === configured.toLowerCase() ||
         listShells().some((s) => s.available && s.value !== '' && resolveShell(s.value).toLowerCase() === wanted))
     const shellExe = shellOk ? (req.shell as string) : configured
+    let elevatedCmd: { file: string; args: string[] } | null = null
+    if (wantElevated) {
+      const now = Date.now()
+      const last = lastElevatedCreate.get(e.sender.id)
+      if (last !== undefined && now - last < 1500) return { ok: false, error: 'Please wait before starting another admin terminal' }
+      const elev = resolveElevator({ env: process.env, exists: existsSync, sudoMode: readSudoMode })
+      if (!elev) return { ok: false, error: 'No elevator found. Install gsudo: ' + GSUDO_HINT }
+      lastElevatedCreate.set(e.sender.id, now)
+      elevatedCmd = elevatedCommand(resolveShell(shellExe), elev)
+      if (!elevatedCmd) return { ok: false, error: 'Admin terminals need PowerShell or cmd as the shell' }
+    }
+    // Only the instance still registered under this id may clean up: a late exit of an old pty (delayed kill)
+    // must not remove a newer pty that reuses the id.
+    let spawned: IPty | null = null
     const handlers = {
       onData: (data: string): void => {
         if (!e.sender.isDestroyed()) e.sender.send('pty:data', req.id, data)
       },
       onExit: (code: number): void => {
-        ptys.delete(req.id)
-        disown(req.id)
+        const current = ptys.get(req.id)
+        // A different pty now owns the id (retry reused it): this is a stale exit, ignore it entirely.
+        if (current !== undefined && current !== spawned) return
+        // current === spawned: normal exit, clean up. current === undefined: released by kill; still report the exit.
+        if (current !== undefined) {
+          ptys.delete(req.id)
+          disown(req.id)
+          elevatedIds.delete(req.id)
+        }
         if (!e.sender.isDestroyed()) e.sender.send('pty:exit', req.id, code)
       }
     }
@@ -429,10 +488,14 @@ function registerIpc(): void {
     const rows = Math.max(req.rows, 1)
     try {
       const env = ptyEnv(req.locId)
-      const p = Array.isArray(req.steps)
-        ? spawnSteps(stepsShell(store.getShell()), req.steps.map(String), cwd as string, cols, rows, handlers, env)
-        : spawnShell(shellExe, cwd as string, cols, rows, handlers, env)
+      const p = elevatedCmd
+        ? spawnElevated(elevatedCmd.file, elevatedCmd.args, cwd as string, cols, rows, handlers, env)
+        : Array.isArray(req.steps)
+          ? spawnSteps(stepsShell(store.getShell()), req.steps.map(String), cwd as string, cols, rows, handlers, env)
+          : spawnShell(shellExe, cwd as string, cols, rows, handlers, env)
+      spawned = p
       ptys.set(req.id, p)
+      if (elevatedCmd) elevatedIds.add(req.id)
       const mine = owners.get(e.sender.id) ?? new Set<string>()
       mine.add(req.id)
       owners.set(e.sender.id, mine)
@@ -441,23 +504,20 @@ function registerIpc(): void {
       return { ok: false, error: String(err) }
     }
   })
-  ipcMain.on('pty:write', (_e, id: string, data: string) => ptys.get(id)?.write(String(data)))
-  ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => {
+  const ownsPty = (wcId: number, id: unknown): id is string => typeof id === 'string' && !!owners.get(wcId)?.has(id)
+  ipcMain.on('pty:write', (e, id: string, data: string) => {
+    if (ownsPty(e.sender.id, id)) ptys.get(id)?.write(String(data))
+  })
+  ipcMain.on('pty:resize', (e, id: string, cols: number, rows: number) => {
+    if (!ownsPty(e.sender.id, id)) return
     try {
       if (cols > 0 && rows > 0) ptys.get(id)?.resize(Math.floor(cols), Math.floor(rows))
     } catch {
       /* pty may have just exited */
     }
   })
-  ipcMain.on('pty:kill', (_e, id: string) => {
-    const p = ptys.get(id)
-    ptys.delete(id)
-    disown(id)
-    try {
-      p?.kill()
-    } catch {
-      /* already dead */
-    }
+  ipcMain.on('pty:kill', (e, id: string) => {
+    if (ownsPty(e.sender.id, id)) releasePty(id)
   })
 }
 

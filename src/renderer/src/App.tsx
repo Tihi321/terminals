@@ -1,7 +1,8 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
-import type { AppState, Command, GitDiffRequest } from '../../shared/types'
+import { FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, Shield, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
+import type { AppState, Command, ElevatorInfo, GitDiffRequest } from '../../shared/types'
+import { GSUDO_HINT } from '../../shared/elevation'
 import { Sidebar } from './Sidebar'
 import { TerminalView } from './TerminalView'
 import { FileTree } from './FileTree'
@@ -56,6 +57,30 @@ const mkId = (): string => crypto.randomUUID()
 function shellLabel(shell: string): string {
   const base = shell.split(/[\\/]/).pop() ?? shell
   return base.replace(/\.exe$/i, '') || 'shell'
+}
+
+/** Button that starts an admin shell; disabled with the install hint when no elevator is available. Asks main on mount. */
+function StartAdminButton({ onStart, className }: { onStart: () => void; className?: string }): JSX.Element {
+  const [info, setInfo] = useState<ElevatorInfo | null>(null)
+  useEffect(() => {
+    let alive = true
+    window.api
+      .getElevator()
+      .then((r) => alive && setInfo(r))
+      .catch(() => alive && setInfo({ available: false, tool: null, hint: `Install gsudo: ${GSUDO_HINT}` }))
+    return () => {
+      alive = false
+    }
+  }, [])
+  const unavailable = info !== null && !info.available
+  return (
+    <>
+      <button className={className ?? 'btn primary'} disabled={info === null || unavailable} title={info?.hint} onClick={onStart}>
+        <Shield size={14} /> Start as admin
+      </button>
+      {unavailable && <span className="admin-hint">Install gsudo: {GSUDO_HINT}</span>}
+    </>
+  )
 }
 
 function ResizeHandle({ onDrag, onEnd }: { onDrag: (clientX: number) => void; onEnd: () => void }): JSX.Element {
@@ -245,7 +270,7 @@ export function App(): JSX.Element {
   }
 
   const newTab = useCallback(
-    (locId: string, cwdOverride?: string, paneId?: string): string | undefined => {
+    (locId: string, cwdOverride?: string, paneId?: string, elevated?: boolean): string | undefined => {
       const st = stateRef.current
       if (!st) return undefined
       const loc = buildLocs(st).get(locId)
@@ -253,13 +278,40 @@ export function App(): JSX.Element {
       if (!loc || !cwd || (loc.missing && !cwdOverride)) return undefined
       const id = crypto.randomUUID()
       const n = (counters.current[locId] = (counters.current[locId] ?? 0) + 1)
-      createTerm(id)
-      const title = cwdOverride ? baseName(cwdOverride) : `${shellLabel(st.resolvedShell)} ${n}`
-      commitTabs((t) => [...t, { id, locId, cwd, title, kind: 'shell', exited: false, shell: st.resolvedShell, startCwd: cwd }])
+      createTerm(id, elevated ? { elevated: true } : {})
+      const title = elevated
+        ? `Admin ${shellLabel(st.resolvedShell)} ${n}`
+        : cwdOverride
+          ? baseName(cwdOverride)
+          : `${shellLabel(st.resolvedShell)} ${n}`
+      commitTabs((t) => [
+        ...t,
+        { id, locId, cwd, title, kind: 'shell', exited: false, shell: st.resolvedShell, startCwd: cwd, ...(elevated ? { elevated: true } : {}) }
+      ])
       showTab(id, paneId)
       return id
     },
     [commitTabs, showTab]
+  )
+
+  /** New admin tab: the TerminalView mounts and requests an elevated pty (the click that opened the menu is the consent). */
+  const newAdminTab = useCallback((locId: string, paneId?: string) => newTab(locId, undefined, paneId, true), [newTab])
+
+  /** "Start as admin": starts a restored placeholder, or retries an elevated tab whose elevation failed. */
+  const startAdmin = useCallback(
+    (id: string) => {
+      const tab = tabsRef.current.find((t) => t.id === id)
+      if (!tab || !tab.elevated) return
+      if (tab.pending) {
+        createTerm(id, { elevated: true })
+        commitTabs((all) => all.map((t) => (t.id === id ? { ...t, pending: false } : t)))
+      } else if (tab.exited) {
+        getTerm(id)?.dispose()
+        createTerm(id, { elevated: true })
+        commitTabs((all) => all.map((t) => (t.id === id ? { ...t, exited: false, attempt: (t.attempt ?? 0) + 1 } : t)))
+      }
+    },
+    [commitTabs]
   )
 
   const openTerminal = useCallback(
@@ -428,7 +480,7 @@ export function App(): JSX.Element {
       const tab = tabsRef.current.find((t) => t.id === id)
       if (!tab) return
       if (tab.run?.status === 'running') stopRun(tab.run.commandId)
-      if (tab.kind === 'shell' || tab.kind === 'command') {
+      if ((tab.kind === 'shell' || tab.kind === 'command') && !tab.pending) {
         window.api.ptyKill(id)
         getTerm(id)?.dispose()
       }
@@ -521,7 +573,11 @@ export function App(): JSX.Element {
             const restoredTabs: Tab[] = plan.tabs.map((t) => {
               const tab: Tab = { id: t.newId, locId: t.locId, cwd: t.cwd, title: t.title, kind: t.kind, exited: false }
               if (t.kind === 'shell') {
-                createTerm(t.newId)
+                // An admin tab comes back as a placeholder: no process and no UAC until "Start as admin".
+                if (t.elevated) {
+                  tab.elevated = true
+                  tab.pending = true
+                } else createTerm(t.newId)
                 tab.shell = t.shell
                 tab.startCwd = t.startCwd
                 if (t.fallbackCwd) fallbackById.current[t.newId] = t.fallbackCwd
@@ -633,7 +689,7 @@ export function App(): JSX.Element {
       const locId = stateRef.current?.selectedId
       if (!locId) return
       const paneId = focusedPaneId()
-      const live = (t: Tab): boolean => t.locId === locId && t.kind === 'shell' && !t.exited
+      const live = (t: Tab): boolean => t.locId === locId && t.kind === 'shell' && !t.exited && !t.elevated && !t.pending
       const activeId = paneId ? activeRef.current[paneId] : undefined
       const tab = tabsRef.current.find((t) => t.id === activeId && live(t)) ?? tabsRef.current.find(live)
       let id = tab?.id
@@ -746,7 +802,7 @@ export function App(): JSX.Element {
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
     for (const t of tabs) {
-      const live = t.kind === 'shell' ? !t.exited : t.run?.status === 'running'
+      const live = t.kind === 'shell' ? !t.exited && !t.pending : t.run?.status === 'running'
       if (live) c[t.locId] = (c[t.locId] ?? 0) + 1
     }
     return c
@@ -963,6 +1019,8 @@ export function App(): JSX.Element {
                         onPin={(id) => commitTabs((all) => all.map((x) => (x.id === id ? { ...x, preview: false } : x)))}
                         onRunAgain={runCommand}
                         onNew={() => newTab(loc.id, undefined, p.id)}
+                        onNewAdmin={() => newAdminTab(loc.id, p.id)}
+                        getElevator={() => window.api.getElevator()}
                         onDragEnd={() => {
                           tabDrag.tab = null
                           setDropHint(null)
@@ -1075,23 +1133,45 @@ export function App(): JSX.Element {
               .map((t) => {
                 const pi = paneIndexOfTab.get(t.id)
                 const visible = pi !== undefined
+                const style =
+                  pi === undefined
+                    ? undefined
+                    : { left: `calc(${startPct(pi)}% + 14px)`, width: `calc(${ps.fractions[pi] * 100}% - 16px)` }
+                if (t.pending) {
+                  if (!visible) return null
+                  return (
+                    <div key={t.id} className="admin-placeholder" style={style}>
+                      <span className="empty-icon warn">
+                        <Shield size={24} strokeWidth={1.75} />
+                      </span>
+                      <h2>Administrator terminal (not started)</h2>
+                      <p>
+                        <span className="path-chip">{t.cwd}</span>
+                      </p>
+                      <StartAdminButton onStart={() => startAdmin(t.id)} />
+                    </div>
+                  )
+                }
                 return (
-                  <TerminalView
-                    key={t.id}
-                    id={t.id}
-                    cwd={t.cwd}
-                    shell={t.shell}
-                    fallbackCwd={fallbackById.current[t.id]}
-                    steps={t.steps}
-                    locId={t.locId}
-                    visible={visible}
-                    focused={visible && pi === ps.focused}
-                    style={
-                      pi === undefined
-                        ? undefined
-                        : { left: `calc(${startPct(pi)}% + 14px)`, width: `calc(${ps.fractions[pi] * 100}% - 16px)` }
-                    }
-                  />
+                  <div key={`${t.id}:${t.attempt ?? 0}`} style={{ display: 'contents' }}>
+                    <TerminalView
+                      id={t.id}
+                      elevated={t.elevated}
+                      cwd={t.cwd}
+                      shell={t.shell}
+                      fallbackCwd={fallbackById.current[t.id]}
+                      steps={t.steps}
+                      locId={t.locId}
+                      visible={visible}
+                      focused={visible && pi === ps.focused}
+                      style={style}
+                    />
+                    {t.elevated && t.exited && visible && (
+                      <div className="admin-retry" style={style}>
+                        <StartAdminButton className="btn small" onStart={() => startAdmin(t.id)} />
+                      </div>
+                    )}
+                  </div>
                 )
               })}
             {ps.panes.slice(0, -1).map((p, i) => (

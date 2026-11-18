@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, fontStack } from '../../shared/settings'
 import { getTheme } from '../../shared/themes'
 import type { TerminalPalette } from '../../shared/themes'
 import type { CursorStyle } from '../../shared/types'
+import { elevationFailed } from '../../shared/elevation'
 
 /**
  * Non-React registry of live xterm instances. They live for the whole lifetime of a
@@ -20,6 +21,10 @@ export interface TermEntry {
   command: boolean
   /** Set when the user stopped the run, so the exit handler does not print a second line. */
   stopped: boolean
+  /** Administrator shell: a fast or cancelled exit prints the elevation-failed message. */
+  elevated: boolean
+  /** Set when the pty request settles; elevated exits are judged against it. */
+  startedAt: number
   /** Font changed while hidden: re-measure the cell size when shown. */
   remeasure: boolean
   /** Resolves once the pty has been requested (success or failure). */
@@ -167,10 +172,13 @@ function ensureListeners(): void {
   window.api.onPtyExit((id, code) => {
     const e = entries.get(id)
     if (e) {
+      const elevFail = e.elevated && !e.stopped && elevationFailed(code, Date.now() - e.startedAt)
       // Written on exit (not at stop time) so it lands after any output still in flight from the pty.
       e.term.write(
         e.stopped
           ? '\r\n\x1b[1;31m✗ stopped\x1b[0m\r\n'
+          : elevFail
+          ? `\r\n\x1b[31mElevation was cancelled or failed (exit ${code}). Use "Start as admin" to try again.\x1b[0m\r\n`
           : e.command
           ? code === 0
             ? '\r\n\x1b[1;32m✓ done\x1b[0m\r\n'
@@ -206,7 +214,7 @@ export function pasteInto(id: string, text: string, enter = false): boolean {
   return true
 }
 
-export function createTerm(id: string, opts: { command?: boolean } = {}): TermEntry {
+export function createTerm(id: string, opts: { command?: boolean; elevated?: boolean } = {}): TermEntry {
   ensureListeners()
   const term = new Terminal({
     fontFamily: current.fontFamily,
@@ -308,8 +316,8 @@ export function createTerm(id: string, opts: { command?: boolean } = {}): TermEn
   term.onData((d) => window.api.ptyWrite(id, d))
   term.onResize(({ cols, rows }) => window.api.ptyResize(id, cols, rows))
 
-  let markReady = (): void => {}
-  const ready = new Promise<void>((res) => (markReady = res))
+  let resolveReady = (): void => {}
+  const ready = new Promise<void>((res) => (resolveReady = res))
   const entry: TermEntry = {
     id,
     term,
@@ -317,9 +325,14 @@ export function createTerm(id: string, opts: { command?: boolean } = {}): TermEn
     started: false,
     command: !!opts.command,
     stopped: false,
+    elevated: !!opts.elevated,
+    startedAt: Date.now(),
     remeasure: false,
     ready,
-    markReady,
+    markReady: () => {
+      entry.startedAt = Date.now()
+      resolveReady()
+    },
     dispose: () => {
       term.dispose()
       entries.delete(id)

@@ -8,6 +8,8 @@ export interface MenuItem {
   danger?: boolean
   disabled?: boolean
   separator?: boolean
+  /** Native tooltip, e.g. why an item is disabled. */
+  title?: string
 }
 
 interface Props {
@@ -64,6 +66,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
             key={i}
             className={`ctx-item ${it.danger ? 'danger' : ''}`}
             disabled={it.disabled}
+            title={it.title}
             onClick={() => {
               onClose()
               it.onClick?.()

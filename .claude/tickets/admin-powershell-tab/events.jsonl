@@ -1,0 +1,12 @@
+{"ts":"2026-11-18T18:20:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"planner returned the admin terminal plan"}
+{"ts":"2026-11-18T18:25:00Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"user approved the plan"}
+{"ts":"2026-11-18T17:49:00Z","actor":"implement","type":"implement.started","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"branch feature/admin-powershell-tab from feature/tab-reorder-and-same-folder-split"}
+{"ts":"2026-11-18T17:49:00Z","actor":"implement","type":"slice.started","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"T1 shared contracts and pure elevation logic","data":{"tasks":["T1"]}}
+{"ts":"2026-11-18T17:51:02Z","actor":"implement","type":"slice.done","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"T1 done; smoke passes, typecheck only misses preload getElevator","data":{"tasks":["T1"]}}
+{"ts":"2026-11-18T17:51:02Z","actor":"implement","type":"slice.started","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"T2 main wiring","data":{"tasks":["T2"]}}
+{"ts":"2026-11-18T17:51:02Z","actor":"implement","type":"slice.started","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"T3 renderer","data":{"tasks":["T3"]}}
+{"ts":"2026-11-18T17:52:26Z","actor":"implement","type":"slice.done","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"T2 done; node typecheck and smoke pass","data":{"tasks":["T2"]}}
+{"ts":"2026-11-18T17:54:00Z","actor":"implement","type":"slice.done","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"T3 done after 1 correction round (D9 message)","data":{"tasks":["T3"]}}
+{"ts":"2026-11-18T17:55:15Z","actor":"implement","type":"verify.passed","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"typecheck, smoke, build, dist:dir exit 0; A7/A8/A11 untested"}
+{"ts":"2026-11-18T17:55:45Z","actor":"implement","type":"changelog.written","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"changelog written; status stays in-progress for the director checker"}
+{"ts":"2026-11-18T19:10:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"must-fix: pty:exit suppressed after kill (no '✗ stopped' on Stop); missing D7 tooltip","data":{"verdict":"FAIL"}}

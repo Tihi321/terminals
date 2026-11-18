@@ -18,6 +18,8 @@ interface Props {
   shell?: string
   /** Restored shell tabs: cwd to use when `cwd` is no longer usable. */
   fallbackCwd?: string
+  /** Shell tabs: start the shell as administrator (main resolves the elevator; nothing else is sent). */
+  elevated?: boolean
 }
 
 function safeFit(id: string, el: HTMLElement): void {
@@ -31,7 +33,7 @@ function safeFit(id: string, el: HTMLElement): void {
 }
 
 /** Hosts a long-lived xterm instance. Mounted for the tab's whole life, hidden via CSS when inactive. */
-export function TerminalView({ id, cwd, visible, focused, style, steps, locId, shell, fallbackCwd }: Props): JSX.Element {
+export function TerminalView({ id, cwd, visible, focused, style, steps, locId, shell, fallbackCwd, elevated }: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -43,7 +45,17 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
       entry.term.open(el)
       safeFit(id, el)
       void window.api
-        .ptyCreate({ id, cwd, cols: entry.term.cols, rows: entry.term.rows, steps, locId, shell, fallbackCwd })
+        .ptyCreate({
+          id,
+          cwd,
+          cols: entry.term.cols,
+          rows: entry.term.rows,
+          steps,
+          locId,
+          shell,
+          fallbackCwd,
+          ...(elevated ? { elevated: true } : {})
+        })
         .then((r) => {
           entry.markReady()
           if (!r.ok) {

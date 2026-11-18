@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import { FileDiff, FileText, Plus, RotateCw, Terminal, X, Zap } from 'lucide-react'
-import type { Command } from '../../shared/types'
+import { ChevronDown, FileDiff, FileText, Plus, RotateCw, Shield, ShieldAlert, Terminal, X, Zap } from 'lucide-react'
+import type { Command, ElevatorInfo } from '../../shared/types'
+import { GSUDO_HINT } from '../../shared/elevation'
+import { ContextMenu } from './ContextMenu'
+import type { MenuItem } from './ContextMenu'
 import type { DiffSpec } from './gitUtil'
 import type { Loc } from './locations'
 
@@ -26,6 +29,12 @@ export interface Tab {
   file?: string
   /** Diff/file tabs: replaced by the next single-click diff (italic title) until pinned. */
   preview?: boolean
+  /** Shell tabs: started (or to be started) as administrator. Saved in the session. */
+  elevated?: boolean
+  /** Elevated shell restored from a session: no term/pty until "Start as admin" is clicked. Not saved. */
+  pending?: boolean
+  /** Bumped on an elevated retry so the TerminalView remounts. */
+  attempt?: number
   run?: { commandId: string; runId: string; status: 'running' | 'success' | 'failed'; exitCode?: number; target?: number }
 }
 
@@ -48,6 +57,10 @@ interface Props {
   onPin: (id: string) => void
   onRunAgain: (cmd: Command) => void
   onNew: () => void
+  /** Start the default shell elevated (UAC prompt). */
+  onNewAdmin: () => void
+  /** Asked each time the new-terminal menu opens. */
+  getElevator: () => Promise<ElevatorInfo>
   onDragEnd: () => void
   /** Tabs of this folder that are active in another pane. */
   shownElsewhere: Set<string>
@@ -62,6 +75,32 @@ export function TabBar(p: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   const [marker, setMarker] = useState<{ x: number; beforeId: string | null } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const newDisabled = p.loc.missing || !p.loc.path
+
+  const openNewMenu = async (x: number, y: number): Promise<void> => {
+    let info: ElevatorInfo | null = null
+    try {
+      info = await p.getElevator()
+    } catch {
+      info = null
+    }
+    const available = !!info?.available
+    setMenu({
+      x,
+      y,
+      items: [
+        { label: 'New terminal', icon: <Terminal size={14} />, onClick: p.onNew },
+        {
+          label: available ? 'New admin terminal' : `New admin terminal — install gsudo: ${GSUDO_HINT}`,
+          icon: <Shield size={14} />,
+          disabled: !available,
+          title: info?.hint,
+          onClick: p.onNewAdmin
+        }
+      ]
+    })
+  }
 
   useEffect(() => {
     ref.current?.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -113,7 +152,7 @@ export function TabBar(p: Props): JSX.Element {
         return (
           <div
             key={t.id}
-            className={`tab ${t.id === p.activeId ? 'active' : ''} ${t.exited ? 'exited' : ''} ${t.preview ? 'preview' : ''} ${p.shownElsewhere.has(t.id) ? 'elsewhere' : ''}`}
+            className={`tab ${t.id === p.activeId ? 'active' : ''} ${t.exited ? 'exited' : ''} ${t.elevated ? 'admin' : ''} ${t.preview ? 'preview' : ''} ${p.shownElsewhere.has(t.id) ? 'elsewhere' : ''}`}
             data-tab-id={t.id}
             draggable
             onDragStart={(e) => {
@@ -129,7 +168,7 @@ export function TabBar(p: Props): JSX.Element {
             onClick={() => p.onActivate(t.id)}
             onDoubleClick={() => t.preview && p.onPin(t.id)}
             onAuxClick={(e) => e.button === 1 && p.onClose(t.id)}
-            title={`${t.file ? t.file : t.diff ? `${t.diff.path}\n${t.cwd}` : `${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}`}${p.shownElsewhere.has(t.id) ? '\n(shown in another pane)' : ''}`}
+            title={`${t.file ? t.file : t.diff ? `${t.diff.path}\n${t.cwd}` : `${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}${t.elevated ? '\n(administrator)' : ''}`}${p.shownElsewhere.has(t.id) ? '\n(shown in another pane)' : ''}`}
           >
             {t.kind === 'command' ? (
               <Zap size={13} className="tab-icon" />
@@ -137,6 +176,8 @@ export function TabBar(p: Props): JSX.Element {
               <FileDiff size={13} className="tab-icon" />
             ) : t.kind === 'file' ? (
               <FileText size={13} className="tab-icon" />
+            ) : t.elevated ? (
+              t.pending ? <Shield size={13} className="tab-icon admin" /> : <ShieldAlert size={13} className="tab-icon admin" />
             ) : (
               <Terminal size={13} className="tab-icon" />
             )}
@@ -171,9 +212,32 @@ export function TabBar(p: Props): JSX.Element {
         )
       })}
       {marker && <div className="tab-drop-marker" style={{ left: marker.x }} />}
-      <button className="tab-new" title="New terminal (Ctrl+Shift+T)" disabled={p.loc.missing || !p.loc.path} onClick={p.onNew}>
+      <button
+        className="tab-new"
+        title="New terminal (Ctrl+Shift+T)"
+        disabled={newDisabled}
+        onClick={p.onNew}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          if (newDisabled) return
+          const r = e.currentTarget.getBoundingClientRect()
+          void openNewMenu(r.left, r.bottom + 2)
+        }}
+      >
         <Plus size={16} />
       </button>
+      <button
+        className="tab-new-more"
+        title="New terminal options"
+        disabled={newDisabled}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect()
+          void openNewMenu(r.left, r.bottom + 2)
+        }}
+      >
+        <ChevronDown size={12} />
+      </button>
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
     </div>
   )
 }
