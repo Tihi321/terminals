@@ -14,6 +14,10 @@ interface Props {
   steps?: string[]
   /** Location the tab belongs to; passed to the pty for the MCP server's per-terminal context. */
   locId: string
+  /** Restored shell tabs: executable to start (main validates it). */
+  shell?: string
+  /** Restored shell tabs: cwd to use when `cwd` is no longer usable. */
+  fallbackCwd?: string
 }
 
 function safeFit(id: string, el: HTMLElement): void {
@@ -27,7 +31,7 @@ function safeFit(id: string, el: HTMLElement): void {
 }
 
 /** Hosts a long-lived xterm instance. Mounted for the tab's whole life, hidden via CSS when inactive. */
-export function TerminalView({ id, cwd, visible, focused, style, steps, locId }: Props): JSX.Element {
+export function TerminalView({ id, cwd, visible, focused, style, steps, locId, shell, fallbackCwd }: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -39,7 +43,7 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId }:
       entry.term.open(el)
       safeFit(id, el)
       void window.api
-        .ptyCreate({ id, cwd, cols: entry.term.cols, rows: entry.term.rows, steps, locId })
+        .ptyCreate({ id, cwd, cols: entry.term.cols, rows: entry.term.rows, steps, locId, shell, fallbackCwd })
         .then((r) => {
           entry.markReady()
           if (!r.ok) {

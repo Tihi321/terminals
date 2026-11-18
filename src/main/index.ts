@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import icon from '../../build/icon.png?asset'
 import type { IPty } from '@lydell/node-pty'
 import type { Command, PasteContent, PtyCreateRequest, Settings, Snippet, UiState } from '../shared/types'
-import { listShells, spawnShell, spawnSteps, stepsShell } from './pty'
+import { listShells, resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
 import { getTheme, resolveThemeId, windowColors, type Theme } from '../shared/themes'
 import * as store from './store'
 import { runSmoke } from './smoke'
@@ -31,6 +31,8 @@ if (dataDir) {
 const SMOKE = process.argv.includes('--smoke') || process.env.TERMINALS_SMOKE === '1'
 
 const ptys = new Map<string, IPty>()
+/** webContents id -> ids of the ptys it created, so a reloaded or destroyed renderer does not leave shells behind. */
+const owners = new Map<number, Set<string>>()
 /** Null until the MCP server listens (or when it failed to start). */
 let mcp: McpInfo | null = null
 let win: BrowserWindow | null = null
@@ -50,6 +52,29 @@ function killAllPtys(): void {
     }
   }
   ptys.clear()
+  owners.clear()
+}
+
+function disown(id: string): void {
+  for (const [wc, set] of owners) {
+    if (set.delete(id) && set.size === 0) owners.delete(wc)
+  }
+}
+
+/** Kills and forgets every pty created by the given webContents. */
+function killPtysOf(wcId: number): void {
+  const set = owners.get(wcId)
+  if (!set) return
+  owners.delete(wcId)
+  for (const id of set) {
+    const p = ptys.get(id)
+    ptys.delete(id)
+    try {
+      p?.kill()
+    } catch {
+      /* already dead */
+    }
+  }
 }
 
 function currentTheme(): Theme {
@@ -88,6 +113,14 @@ function createWindow(): void {
       sandbox: true
     }
   })
+  // A reload, a crashed renderer or a destroyed window ends that renderer's ptys (the restored session starts new ones).
+  // The id is captured now because webContents.id cannot be read after destroy.
+  const wcId = win.webContents.id
+  win.webContents.on('did-start-navigation', (e) => {
+    if (e.isMainFrame && !e.isSameDocument) killPtysOf(wcId)
+  })
+  win.webContents.on('render-process-gone', () => killPtysOf(wcId))
+  win.webContents.on('destroyed', () => killPtysOf(wcId))
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
@@ -357,18 +390,38 @@ function registerIpc(): void {
   ipcMain.handle('clipboard:readForPaste', () => readForPaste())
   ipcMain.handle('clipboard:write', (_e, text: string) => clipboard.writeText(String(text)))
 
+  ipcMain.handle('fs:exists', (_e, paths: string[]) =>
+    (Array.isArray(paths) ? paths.slice(0, 500) : []).map((p) => typeof p === 'string' && store.isInsideRoots(p) && existsSync(p))
+  )
+
   ipcMain.handle('pty:create', (e, req: PtyCreateRequest) => {
-    if (typeof req?.cwd !== 'string' || !existsSync(req.cwd) || !statSync(req.cwd).isDirectory())
-      return { ok: false, error: 'Folder does not exist' }
-    if (!store.isInsideRoots(req.cwd) && !store.isCommandCwd(req.cwd))
-      return { ok: false, error: 'Folder is not a saved folder' }
+    const cwdError = (c: unknown): string | null => {
+      if (typeof c !== 'string' || !existsSync(c) || !statSync(c).isDirectory()) return 'Folder does not exist'
+      if (!store.isInsideRoots(c) && !store.isCommandCwd(c)) return 'Folder is not a saved folder'
+      return null
+    }
+    let cwd = req?.cwd
+    const err = cwdError(cwd)
+    if (err) {
+      if (!Array.isArray(req?.steps) && typeof req?.fallbackCwd === 'string' && cwdError(req.fallbackCwd) === null) cwd = req.fallbackCwd
+      else return { ok: false, error: err }
+    }
     if (ptys.has(req.id)) return { ok: false, error: 'Duplicate terminal id' }
+    // Only the configured shell or a known available one may be requested by the renderer.
+    const configured = store.getShell()
+    const wanted = typeof req.shell === 'string' ? req.shell.toLowerCase() : ''
+    const shellOk =
+      wanted !== '' &&
+      (wanted === configured.toLowerCase() ||
+        listShells().some((s) => s.available && s.value !== '' && resolveShell(s.value).toLowerCase() === wanted))
+    const shellExe = shellOk ? (req.shell as string) : configured
     const handlers = {
       onData: (data: string): void => {
         if (!e.sender.isDestroyed()) e.sender.send('pty:data', req.id, data)
       },
       onExit: (code: number): void => {
         ptys.delete(req.id)
+        disown(req.id)
         if (!e.sender.isDestroyed()) e.sender.send('pty:exit', req.id, code)
       }
     }
@@ -377,9 +430,12 @@ function registerIpc(): void {
     try {
       const env = ptyEnv(req.locId)
       const p = Array.isArray(req.steps)
-        ? spawnSteps(stepsShell(store.getShell()), req.steps.map(String), req.cwd, cols, rows, handlers, env)
-        : spawnShell(store.getShell(), req.cwd, cols, rows, handlers, env)
+        ? spawnSteps(stepsShell(store.getShell()), req.steps.map(String), cwd as string, cols, rows, handlers, env)
+        : spawnShell(shellExe, cwd as string, cols, rows, handlers, env)
       ptys.set(req.id, p)
+      const mine = owners.get(e.sender.id) ?? new Set<string>()
+      mine.add(req.id)
+      owners.set(e.sender.id, mine)
       return { ok: true }
     } catch (err) {
       return { ok: false, error: String(err) }
@@ -396,6 +452,7 @@ function registerIpc(): void {
   ipcMain.on('pty:kill', (_e, id: string) => {
     const p = ptys.get(id)
     ptys.delete(id)
+    disown(id)
     try {
       p?.kill()
     } catch {

@@ -1,0 +1,14 @@
+{"ts":"2026-11-18T17:05:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"planner returned plan rev 2"}
+{"ts":"2026-11-18T17:14:00Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"user approved plan rev 2"}
+{"ts":"2026-11-18T17:15:06Z","actor":"implement","type":"implement.started","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"branch feature/tab-reorder-and-same-folder-split from origin/master 69add63"}
+{"ts":"2026-11-18T17:15:10Z","actor":"implement","type":"slice.started","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T1 shared types, pure logic, smoke checks","data":{"tasks":["T1"]}}
+{"ts":"2026-11-18T17:20:10Z","actor":"implement","type":"slice.done","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T1 done; pure checks pass via temp emit","data":{"tasks":["T1"]}}
+{"ts":"2026-11-18T17:20:16Z","actor":"implement","type":"slice.started","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T2 main process and preload","data":{"tasks":["T2"]}}
+{"ts":"2026-11-18T17:20:16Z","actor":"implement","type":"slice.started","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T3 renderer pieces outside App.tsx","data":{"tasks":["T3"]}}
+{"ts":"2026-11-18T17:22:12Z","actor":"implement","type":"slice.done","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T2 done; node tsc ok, smoke 11 PASS","data":{"tasks":["T2"]}}
+{"ts":"2026-11-18T17:22:20Z","actor":"implement","type":"slice.done","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T3 done; web tsc errors only in App.tsx","data":{"tasks":["T3"]}}
+{"ts":"2026-11-18T17:22:20Z","actor":"implement","type":"slice.started","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T4 App integration and restore","data":{"tasks":["T4"]}}
+{"ts":"2026-11-18T17:26:21Z","actor":"implement","type":"slice.done","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"T4 done; both tsc pass, smoke 11 PASS","data":{"tasks":["T4"]}}
+{"ts":"2026-11-18T17:27:12Z","actor":"implement","type":"verify.passed","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"yarn typecheck exit 0; yarn smoke 11/11 PASS","data":{"smoke_pass":11}}
+{"ts":"2026-11-18T17:27:32Z","actor":"implement","type":"changelog.written","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"changelog.md written; status left in-progress for checker"}
+{"ts":"2026-11-18T17:55:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"PASS; A9-A10 manual checks UNTESTED","data":{"verdict":"PASS"}}

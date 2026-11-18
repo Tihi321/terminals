@@ -577,6 +577,7 @@ kbd,
   background: var(--bg-term);
 }
 .tabbar {
+  position: relative;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -639,6 +640,19 @@ kbd,
   text-decoration: line-through;
   text-decoration-color: var(--text-3);
   color: var(--text-3);
+}
+.tab.elsewhere .tab-title {
+  opacity: 0.55;
+}
+.tab-drop-marker {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
 }
 .tab-icon {
   flex: none;

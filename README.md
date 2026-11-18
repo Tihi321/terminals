@@ -157,7 +157,7 @@ The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mc
 - Terminals stay alive when you switch folders or tabs; inactive ones are only hidden.
 - When a shell exits, its tab stays open marked "exited" (close it with the x). Exited tabs are not counted in the sidebar badge.
 - Removing a folder or group kills its terminals and deletes the commands saved on it. Removing a manual group keeps its folders.
-- All ptys are killed when the app quits.
+- All ptys are killed when the app quits; the terminals are started again on the next launch (see [Session restore](#session-restore)).
 - Closing a running command tab stops the whole run.
 
 ## Keyboard shortcuts
@@ -172,6 +172,19 @@ The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mc
 | Ctrl+C | Copy if there is a selection, otherwise sent to the shell |
 | Ctrl+V | Paste from clipboard |
 | Ctrl+Shift+C | Copy selection |
+| Alt+Shift+Left / Alt+Shift+Right | Move the active tab one place left / right in its folder |
 | Middle-click a tab | Close it |
+| Drag a tab within the tab bar | Reorder it |
+| Drag a tab onto the left/right half of a pane | Split: opens the tab in a new pane (up to 4), also for a tab of the same folder |
 | Double-click a folder/group name | Rename |
 | Drag a folder | Reorder, or move into/out of a manual group |
+
+## Session restore
+
+The tabs, their order in each folder, the pane layout (including several panes of one folder) and each pane's active tab come back after a restart.
+
+- Shell tabs start again in their folder, or in the directory they were opened in; the last directory is used only when the shell reports it (OSC 7 or OSC 9;9). Title and shell executable are kept.
+- File viewer and diff tabs reopen, with their pinned/preview state.
+- Command tabs are run again on launch, so a command that starts a server starts it again.
+- Skipped: tabs of a folder that is gone or missing, file tabs whose file is gone, diff tabs whose folder is gone, and command tabs whose saved command was deleted.
+- Scrollback and terminal output are not restored.

@@ -24,6 +24,7 @@ import {
   type UiState
 } from '../shared/types'
 import { sanitizePersisted } from '../shared/panes'
+import { sanitizeTabs } from '../shared/session'
 import { DEFAULT_SETTINGS, patchSettings, sanitizeSettings } from '../shared/settings'
 import { resolveShell } from './pty'
 import { readGit } from './git'
@@ -51,7 +52,7 @@ interface Persisted {
   ui: UiState
 }
 
-const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files' }
+const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [] }
 
 function emptyData(): Persisted {
   return {
@@ -143,7 +144,9 @@ export function migrate(raw: Record<string, unknown>): Persisted {
     sidebarCollapsed: !!u.sidebarCollapsed,
     panes: sanitizePersisted(u.panes),
     panelOpen: !!u.panelOpen,
-    panelTab: u.panelTab === 'commands' || u.panelTab === 'git' ? u.panelTab : 'files'
+    panelTab: u.panelTab === 'commands' || u.panelTab === 'git' ? u.panelTab : 'files',
+    // v3 -> v4 added ui.tabs (saved session) and panes.active
+    tabs: sanitizeTabs(u.tabs)
   }
   // Drop dangling group references rather than losing the folder.
   const groupIds = new Set(d.groups.map((g) => g.id))
@@ -535,6 +538,7 @@ export function setUi(patch: Partial<UiState>): AppState {
   if (patch.panelWidth !== undefined) u.panelWidth = num(patch.panelWidth, u.panelWidth, 220, 900)
   if (patch.sidebarCollapsed !== undefined) u.sidebarCollapsed = !!patch.sidebarCollapsed
   if (patch.panes !== undefined) u.panes = sanitizePersisted(patch.panes)
+  if (patch.tabs !== undefined) u.tabs = sanitizeTabs(patch.tabs)
   if (patch.panelOpen !== undefined) u.panelOpen = !!patch.panelOpen
   if (patch.panelTab === 'files' || patch.panelTab === 'commands' || patch.panelTab === 'git') u.panelTab = patch.panelTab
   save()

@@ -40,6 +40,10 @@ export interface TermHooks {
   onSnippetPicker: () => void
   onToggleSidebar: () => void
   onOpenSettings: () => void
+  /** Alt+Shift+Left/Right: move the focused pane's active tab one place. */
+  onMoveTab: (dir: -1 | 1) => void
+  /** The shell reported its working directory (OSC 7 or OSC 9;9). */
+  onCwd: (id: string, cwd: string) => void
 }
 let hooks: TermHooks = {
   onNewTab: () => {},
@@ -49,7 +53,9 @@ let hooks: TermHooks = {
   onTogglePanel: () => {},
   onSnippetPicker: () => {},
   onToggleSidebar: () => {},
-  onOpenSettings: () => {}
+  onOpenSettings: () => {},
+  onMoveTab: () => {},
+  onCwd: () => {}
 }
 export function setTermHooks(h: TermHooks): void {
   hooks = h
@@ -219,6 +225,11 @@ export function createTerm(id: string, opts: { command?: boolean } = {}): TermEn
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true
     const k = ev.key.toLowerCase()
+    if (ev.altKey && ev.shiftKey && !ev.ctrlKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+      ev.preventDefault()
+      hooks.onMoveTab(ev.key === 'ArrowLeft' ? -1 : 1)
+      return false
+    }
     if (ev.ctrlKey && ev.shiftKey && k === 't') {
       ev.preventDefault()
       hooks.onNewTab()
@@ -267,6 +278,30 @@ export function createTerm(id: string, opts: { command?: boolean } = {}): TermEn
       void pasteClipboard(term)
       return false
     }
+    return true
+  })
+
+  // Working-directory reports, used to restore a shell where it was. Default pwsh/cmd send neither.
+  term.parser.registerOscHandler(7, (data) => {
+    const m = /^file:\/\/[^/]*(\/.*)$/i.exec(data)
+    if (!m) return false
+    let p: string
+    try {
+      p = decodeURIComponent(m[1])
+    } catch {
+      return false
+    }
+    if (/^\/[a-zA-Z]:/.test(p)) p = p.slice(1)
+    p = p.replace(/\//g, '\\')
+    if (!p) return false
+    hooks.onCwd(id, p)
+    return true
+  })
+  term.parser.registerOscHandler(9, (data) => {
+    if (!data.startsWith('9;')) return false
+    const p = data.slice(2).replace(/^"(.*)"$/, '$1')
+    if (!p) return false
+    hooks.onCwd(id, p)
     return true
   })
 

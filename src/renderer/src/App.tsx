@@ -12,7 +12,7 @@ import { FileViewer } from './FileViewer'
 import { diffTitle } from './gitUtil'
 import type { DiffSpec } from './gitUtil'
 import { SnippetPicker } from './SnippetPicker'
-import { TabBar, TAB_DRAG_TYPE, LOC_DRAG_TYPE, locDrag } from './TabBar'
+import { TabBar, TAB_DRAG_TYPE, LOC_DRAG_TYPE, locDrag, tabDrag } from './TabBar'
 import type { Tab } from './TabBar'
 import {
   canAddPane,
@@ -21,14 +21,19 @@ import {
   dropOnEdge,
   focusLoc,
   fromPersisted,
-  indexOfLoc,
+  MAX_PANES,
   normalize,
   openToSide,
   paneAt,
+  paneShows,
+  splitBeside,
   startOf,
   toPersisted
 } from '../../shared/panes'
 import type { PaneState, Side } from '../../shared/panes'
+import { activateIn, moveTab, neighbourTab, paneOfTab, reconcileActive, shiftTab, takenBy } from '../../shared/tabs'
+import type { ActiveMap } from '../../shared/tabs'
+import { planRestore, restorePaths, toPersistedTabs } from '../../shared/session'
 import { Keys } from './Keys'
 import { visibleSnippets } from './SnippetEditor'
 import type { RunInfo } from './CommandsPanel'
@@ -79,7 +84,18 @@ export function App(): JSX.Element {
   const stateRef = useRef<AppState | null>(null)
   const [tabs, setTabs] = useState<Tab[]>([])
   const tabsRef = useRef<Tab[]>([])
-  const [activeByLoc, setActiveByLoc] = useState<Record<string, string>>({})
+  const [activeByPane, setActiveByPane] = useState<ActiveMap>({})
+  /** Reconciled active tab per pane (D2); what rendering, shortcuts, drops and saving read. */
+  const activeRef = useRef<ActiveMap>({})
+  /** Last tab activated per folder; a pane repointed to a folder shows it. */
+  const lastByLoc = useRef<Record<string, string>>({})
+  /** Last cwd a shell reported through OSC 7 / 9;9. */
+  const cwdById = useRef<Record<string, string>>({})
+  /** Restored shells: folder path to fall back to when their cwd cannot be used. */
+  const fallbackById = useRef<Record<string, string>>({})
+  const restoreStarted = useRef(false)
+  const restored = useRef(false)
+  const saveTimer = useRef<number | undefined>(undefined)
   const [runs, setRunsRaw] = useState<Record<string, RunInfo>>({})
   const runsRef = useRef<Record<string, RunInfo>>({})
   const runCtl = useRef(new Map<string, RunCtl>())
@@ -92,7 +108,6 @@ export function App(): JSX.Element {
   const panesRef = useRef<PaneState | null>(null)
   const panesEl = useRef<HTMLDivElement>(null)
   const lastSelected = useRef<string | null>(null)
-  const dragTab = useRef<Tab | null>(null)
   const [dropHint, setDropHint] = useState<{ index: number; side: Side } | null>(null)
   const [widths, setWidths] = useState<{ sb: number; panel: number } | null>(null)
   const widthsRef = useRef(widths)
@@ -112,24 +127,41 @@ export function App(): JSX.Element {
   }, [])
   const refresh = useCallback(async () => setState(await window.api.getState()), [setState])
 
-  useEffect(() => {
-    void window.api.getState().then((s) => {
-      setState(s)
-      const valid = new Set(buildLocs(s).keys())
-      let ps = fromPersisted(s.ui.panes, valid, s.selectedId, mkId)
-      if (s.selectedId && valid.has(s.selectedId)) ps = focusLoc(ps, s.selectedId)
-      lastSelected.current = s.selectedId
-      panesRef.current = ps
-      setPaneState(ps)
-      const stored = toPersisted(ps)
-      if (stored && JSON.stringify(stored) !== JSON.stringify(s.ui.panes)) void window.api.setUi({ panes: stored })
-      setWidths({ sb: s.ui.sidebarWidth, panel: s.ui.panelWidth })
-    })
-    // Rescan parent folders and re-check existence when coming back to the window.
-    const onFocus = (): void => void window.api.getState().then(setState)
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [setState])
+  const setActive = useCallback((next: ActiveMap) => {
+    activeRef.current = next
+    setActiveByPane(next)
+  }, [])
+
+  /** Debounced session save (D8). Does nothing until the restore has finished, so an early save cannot wipe the saved session. */
+  const scheduleSave = useCallback(() => {
+    if (!restored.current) return
+    window.clearTimeout(saveTimer.current)
+    saveTimer.current = window.setTimeout(() => {
+      const cur = panesRef.current
+      if (!cur) return
+      const panes = toPersisted(cur, activeRef.current)
+      void window.api.setUi({ ...(panes ? { panes } : {}), tabs: toPersistedTabs(tabsRef.current, cwdById.current) })
+    }, 300)
+  }, [])
+
+  /** Makes a tab active in the first pane that applies (D15); always remembers it as its folder's last tab. */
+  const showTab = useCallback(
+    (tabId: string, paneId?: string) => {
+      const tab = tabsRef.current.find((t) => t.id === tabId)
+      const cur = panesRef.current
+      if (!tab || !cur) return
+      lastByLoc.current[tab.locId] = tabId
+      const shows = (id: string | undefined): string | undefined =>
+        id && cur.panes.some((p) => p.id === id && p.locId === tab.locId) ? id : undefined
+      const target =
+        shows(paneId) ??
+        shows(paneOfTab(activeRef.current, tabId)) ??
+        shows(cur.panes[cur.focused]?.id) ??
+        cur.panes.find((p) => p.locId === tab.locId)?.id
+      if (target) setActive(activateIn(cur.panes, tabsRef.current, activeRef.current, target, tabId))
+    },
+    [setActive]
+  )
 
   const selectedId = state?.selectedId ?? null
   const locs = useMemo(() => (state ? buildLocs(state) : new Map()), [state])
@@ -141,10 +173,8 @@ export function App(): JSX.Element {
   const setPanes = useCallback((next: PaneState, persist = true) => {
     panesRef.current = next
     setPaneState(next)
-    if (!persist) return
-    const p = toPersisted(next)
-    if (p) void window.api.setUi({ panes: p })
-  }, [])
+    if (persist) scheduleSave()
+  }, [scheduleSave])
 
   /** Applies a layout and makes the store's selection follow the focused pane (selectedId == focused pane's location). */
   const commitPanes = useCallback(
@@ -199,18 +229,23 @@ export function App(): JSX.Element {
     const el = panesEl.current
     const cur = panesRef.current
     if (!el || !cur) return null
+    // The tab bar is its own drop target (reorder); only the terminal area splits.
+    if (e.target instanceof Element && e.target.closest('.pane-head')) return null
     const types = e.dataTransfer.types
-    const tab = types.includes(TAB_DRAG_TYPE) ? dragTab.current : null
+    const tab = types.includes(TAB_DRAG_TYPE) ? tabDrag.tab : null
     const locId = tab ? tab.locId : types.includes(LOC_DRAG_TYPE) ? locDrag.id : null
     if (!locId) return null
     const r = el.getBoundingClientRect()
     const { index, within } = paneAt(cur.fractions, (e.clientX - r.left) / r.width)
-    if (indexOfLoc(cur, locId) === index || !canAddPane(cur, locId)) return null
+    if (tab) {
+      if (cur.panes.length >= MAX_PANES) return null
+      if (paneShows(cur, index, locId) && tabsRef.current.filter((t) => t.locId === locId).length <= 1) return null
+    } else if (paneShows(cur, index, locId) || !canAddPane(cur, locId)) return null
     return { index, side: within < 0.5 ? 'left' : 'right', locId, tabId: tab?.id }
   }
 
   const newTab = useCallback(
-    (locId: string, cwdOverride?: string): string | undefined => {
+    (locId: string, cwdOverride?: string, paneId?: string): string | undefined => {
       const st = stateRef.current
       if (!st) return undefined
       const loc = buildLocs(st).get(locId)
@@ -220,11 +255,11 @@ export function App(): JSX.Element {
       const n = (counters.current[locId] = (counters.current[locId] ?? 0) + 1)
       createTerm(id)
       const title = cwdOverride ? baseName(cwdOverride) : `${shellLabel(st.resolvedShell)} ${n}`
-      commitTabs((t) => [...t, { id, locId, cwd, title, kind: 'shell', exited: false }])
-      setActiveByLoc((a) => ({ ...a, [locId]: id }))
+      commitTabs((t) => [...t, { id, locId, cwd, title, kind: 'shell', exited: false, shell: st.resolvedShell, startCwd: cwd }])
+      showTab(id, paneId)
       return id
     },
-    [commitTabs]
+    [commitTabs, showTab]
   )
 
   const openTerminal = useCallback(
@@ -246,7 +281,7 @@ export function App(): JSX.Element {
       const existing = tabsRef.current.find((t) => t.locId === locId && t.diff && same(t.diff, spec))
       if (existing) {
         if (pin && existing.preview) commitTabs((all) => all.map((t) => (t.id === existing.id ? { ...t, preview: false } : t)))
-        setActiveByLoc((a) => ({ ...a, [locId]: existing.id }))
+        showTab(existing.id)
         return
       }
       const preview = tabsRef.current.find((t) => t.locId === locId && t.diff && t.preview)
@@ -254,14 +289,14 @@ export function App(): JSX.Element {
         commitTabs((all) =>
           all.map((t) => (t.id === preview.id ? { ...t, diff: spec, title: diffTitle(spec), cwd: folder, preview: !pin } : t))
         )
-        setActiveByLoc((a) => ({ ...a, [locId]: preview.id }))
+        showTab(preview.id)
         return
       }
       const id = crypto.randomUUID()
       commitTabs((t) => [...t, { id, locId, cwd: folder, title: diffTitle(spec), kind: 'diff', exited: false, diff: spec, preview: !pin }])
-      setActiveByLoc((a) => ({ ...a, [locId]: id }))
+      showTab(id)
     },
-    [commitTabs]
+    [commitTabs, showTab]
   )
 
   /** Opens a read-only file tab for the selected location; the same file focuses its existing tab. */
@@ -273,20 +308,20 @@ export function App(): JSX.Element {
       const existing = tabsRef.current.find((t) => t.locId === locId && t.file === path)
       if (existing) {
         if (pin && existing.preview) commitTabs((all) => all.map((t) => (t.id === existing.id ? { ...t, preview: false } : t)))
-        setActiveByLoc((a) => ({ ...a, [locId]: existing.id }))
+        showTab(existing.id)
         return
       }
       const preview = tabsRef.current.find((t) => t.locId === locId && t.file && t.preview)
       if (preview) {
         commitTabs((all) => all.map((t) => (t.id === preview.id ? { ...t, file: path, title: name, preview: !pin } : t)))
-        setActiveByLoc((a) => ({ ...a, [locId]: preview.id }))
+        showTab(preview.id)
         return
       }
       const id = crypto.randomUUID()
       commitTabs((t) => [...t, { id, locId, cwd: path, title: name, kind: 'file', exited: false, file: path, preview: !pin }])
-      setActiveByLoc((a) => ({ ...a, [locId]: id }))
+      showTab(id)
     },
-    [commitTabs]
+    [commitTabs, showTab]
   )
 
   /** A diff tab changed what it shows (e.g. after staging). */
@@ -321,7 +356,7 @@ export function App(): JSX.Element {
   )
 
   const startTarget = useCallback(
-    (runId: string, index: number) => {
+    (runId: string, index: number, anchor?: string | null) => {
       const ctl = runCtl.current.get(runId)
       if (!ctl) return
       const target = ctl.cmd.targets[index]
@@ -339,12 +374,13 @@ export function App(): JSX.Element {
           kind: 'command',
           exited: false,
           steps: target.steps,
-          run: { commandId: ctl.cmd.id, runId, status: 'running' }
+          run: { commandId: ctl.cmd.id, runId, status: 'running', target: index }
         }
       ])
-      setActiveByLoc((a) => (ctl.cmd.mode === 'sequential' || index === 0 ? { ...a, [ctl.locId]: id } : a))
+      if (anchor) commitTabs((t) => (t.some((x) => x.id === anchor) ? moveTab(t, id, anchor) : t))
+      if (ctl.cmd.mode === 'sequential' || index === 0) showTab(id)
     },
-    [commitTabs]
+    [commitTabs, showTab]
   )
 
   const handleExit = useCallback(
@@ -396,17 +432,24 @@ export function App(): JSX.Element {
         window.api.ptyKill(id)
         getTerm(id)?.dispose()
       }
+      // The pane that showed it gets its neighbour (skipping tabs shown elsewhere) or the empty state (D14).
       const all = tabsRef.current
-      setActiveByLoc((a) => {
-        if (a[tab.locId] !== id) return a
-        const siblings = all.filter((t) => t.locId === tab.locId)
-        const idx = siblings.findIndex((t) => t.id === id)
-        const next = siblings[idx + 1] ?? siblings[idx - 1]
-        const copy = { ...a }
-        if (next) copy[tab.locId] = next.id
-        else delete copy[tab.locId]
-        return copy
-      })
+      const act = activeRef.current
+      const pane = paneOfTab(act, id)
+      if (pane) {
+        const n = neighbourTab(all, id, takenBy(act, pane))
+        const copy = { ...act }
+        if (n) copy[pane] = n
+        else delete copy[pane]
+        setActive(copy)
+      }
+      if (lastByLoc.current[tab.locId] === id) {
+        const n = neighbourTab(all, id, new Set())
+        if (n) lastByLoc.current[tab.locId] = n
+        else delete lastByLoc.current[tab.locId]
+      }
+      delete cwdById.current[id]
+      delete fallbackById.current[id]
       commitTabs((t) => t.filter((x) => x.id !== id))
       if (tab.run && !tabsRef.current.some((t) => t.run?.runId === tab.run?.runId)) {
         const { runId, commandId } = tab.run
@@ -419,20 +462,20 @@ export function App(): JSX.Element {
         })
       }
     },
-    [commitTabs, setRuns, stopRun]
+    [commitTabs, setActive, setRuns, stopRun]
   )
 
   const runCommand = useCallback(
-    (cmd: Command) => {
+    (cmd: Command, runLocId?: string | null, anchor?: string | null) => {
       const st = stateRef.current
-      const locId = st?.selectedId
+      const locId = runLocId ?? st?.selectedId
       if (!locId || cmd.targets.length === 0) return
       if (runsRef.current[cmd.id]?.status === 'running') return
       // Targets with an empty cwd (global commands) run in the selected location's folder.
       if (cmd.targets.some((t) => !t.cwd)) {
-        const selPath = st ? buildLocs(st).get(locId)?.path : null
-        if (!selPath) return
-        cmd = { ...cmd, targets: cmd.targets.map((t) => (t.cwd ? t : { ...t, cwd: selPath })) }
+        const locPath = st ? buildLocs(st).get(locId)?.path : null
+        if (!locPath) return
+        cmd = { ...cmd, targets: cmd.targets.map((t) => (t.cwd ? t : { ...t, cwd: locPath })) }
       }
       // Replace the previous run's finished tabs.
       const prev = latestRun.current[cmd.id]
@@ -441,11 +484,104 @@ export function App(): JSX.Element {
       runCtl.current.set(runId, { cmd, locId, nextIndex: 0, stopped: false })
       latestRun.current[cmd.id] = runId
       setRuns((r) => ({ ...r, [cmd.id]: { runId, status: 'running', done: 0, total: cmd.targets.length } }))
-      if (cmd.mode === 'parallel') cmd.targets.forEach((_, i) => startTarget(runId, i))
-      else startTarget(runId, 0)
+      if (cmd.mode === 'parallel') cmd.targets.forEach((_, i) => startTarget(runId, i, anchor))
+      else startTarget(runId, 0, anchor)
     },
     [closeTab, setRuns, startTarget]
   )
+
+  useEffect(() => {
+    // Restore once; React StrictMode runs this effect twice in dev.
+    if (!restoreStarted.current) {
+      restoreStarted.current = true
+      void (async () => {
+        const s = await window.api.getState()
+        setState(s)
+        const locMap = buildLocs(s)
+        const valid = new Set(locMap.keys())
+        const r = fromPersisted(s.ui.panes, valid, s.selectedId, mkId)
+        let ps = r.state
+        if (s.selectedId && valid.has(s.selectedId)) ps = focusLoc(ps, s.selectedId)
+        lastSelected.current = s.selectedId
+        panesRef.current = ps
+        setPaneState(ps)
+        setWidths({ sb: s.ui.sidebarWidth, panel: s.ui.panelWidth })
+        try {
+          const saved = s.ui.tabs ?? []
+          if (saved.length > 0) {
+            const paths = restorePaths(saved)
+            const flags = await window.api.pathsExist(paths)
+            const existing = new Set(paths.filter((_, i) => flags[i]))
+            const plan = planRestore(saved, {
+              locs: locMap,
+              commandIds: new Set(s.commands.map((c) => c.id)),
+              exists: (p) => existing.has(p),
+              mkId
+            })
+            const restoredTabs: Tab[] = plan.tabs.map((t) => {
+              const tab: Tab = { id: t.newId, locId: t.locId, cwd: t.cwd, title: t.title, kind: t.kind, exited: false }
+              if (t.kind === 'shell') {
+                createTerm(t.newId)
+                tab.shell = t.shell
+                tab.startCwd = t.startCwd
+                if (t.fallbackCwd) fallbackById.current[t.newId] = t.fallbackCwd
+                // New tabs continue the numbering ("PowerShell 3").
+                const n = /\s(\d+)$/.exec(t.title)
+                if (n) counters.current[t.locId] = Math.max(counters.current[t.locId] ?? 0, Number(n[1]))
+              } else if (t.kind === 'diff' && t.diff) {
+                const d = t.diff
+                tab.diff =
+                  d.mode === 'commit' && d.hash
+                    ? { folder: d.folder, mode: 'commit', path: d.path, hash: d.hash }
+                    : d.mode === 'commit'
+                      ? undefined
+                      : { folder: d.folder, mode: d.mode, path: d.path }
+                tab.preview = t.preview
+              } else if (t.kind === 'file') {
+                tab.file = t.file
+                tab.preview = t.preview
+              }
+              return tab
+            })
+            commitTabs((t) => [...t, ...restoredTabs])
+            for (const run of plan.runs) {
+              const cmd = s.commands.find((c) => c.id === run.commandId)
+              if (cmd) runCommand(cmd, run.locId, run.anchor)
+            }
+            // Pane -> active tab. A command tab maps to the new tab of the same run target.
+            const next: ActiveMap = {}
+            lastByLoc.current = {} // the run starts above set it as a side effect of showTab
+            r.active.forEach((snap, i) => {
+              const pane = ps.panes[i]
+              if (!snap || !pane) return
+              let tid: string | undefined = plan.idMap[snap]
+              if (!tid) {
+                for (const run of plan.runs) {
+                  const hit = Object.entries(run.snapshotIds).find(([, sid]) => sid === snap)
+                  const runId = latestRun.current[run.commandId]
+                  if (hit && runId) tid = tabsRef.current.find((t) => t.run?.runId === runId && t.run.target === Number(hit[0]))?.id
+                }
+              }
+              if (!tid) return
+              next[pane.id] = tid
+              const tab = tabsRef.current.find((t) => t.id === tid)
+              if (tab) lastByLoc.current[tab.locId] = tid
+            })
+            setActive(next)
+          }
+        } catch (err) {
+          console.error('Session restore failed', err)
+        } finally {
+          restored.current = true
+          scheduleSave()
+        }
+      })()
+    }
+    // Rescan parent folders and re-check existence when coming back to the window.
+    const onFocus = (): void => void window.api.getState().then(setState)
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [setState, commitTabs, runCommand, setActive, scheduleSave])
 
   const togglePanel = useCallback(
     async (tab: 'files' | 'commands' | 'git') => {
@@ -473,26 +609,40 @@ export function App(): JSX.Element {
     [setState]
   )
 
-  const activeTabId = selectedId ? activeByLoc[selectedId] : undefined
-  const activeRef = useRef(activeByLoc)
-  activeRef.current = activeByLoc
+  // The effective active tab per pane (D2): every render reconciles the stored map against the panes and tabs.
+  const active = paneState ? reconcileActive(paneState.panes, paneState.focused, tabs, activeByPane, lastByLoc.current) : activeByPane
+  activeRef.current = active
+  useEffect(() => {
+    if (active !== activeByPane) setActiveByPane(active)
+  }, [active, activeByPane])
+
+  // Save the session after any change to the tabs, the layout or the active tabs (no-op until the restore has finished).
+  const activeKey = JSON.stringify(active)
+  useEffect(() => {
+    scheduleSave()
+  }, [tabs, paneState, activeKey, scheduleSave])
+
+  const focusedPaneId = (): string | undefined => {
+    const cur = panesRef.current
+    return cur?.panes[cur.focused]?.id
+  }
 
   /** Paste a saved prompt into the selected folder's active shell tab, opening one first when needed. */
   const insertSnippet = useCallback(
     async (body: string, enter: boolean) => {
       const locId = stateRef.current?.selectedId
       if (!locId) return
+      const paneId = focusedPaneId()
       const live = (t: Tab): boolean => t.locId === locId && t.kind === 'shell' && !t.exited
-      const activeId = activeRef.current[locId]
+      const activeId = paneId ? activeRef.current[paneId] : undefined
       const tab = tabsRef.current.find((t) => t.id === activeId && live(t)) ?? tabsRef.current.find(live)
       let id = tab?.id
       let fresh = false
       if (!id) {
-        id = newTab(locId)
+        id = newTab(locId, undefined, paneId)
         fresh = true
-      } else if (id !== activeId) {
-        const target = id
-        setActiveByLoc((a) => ({ ...a, [locId]: target }))
+      } else if (id !== activeId && paneId && !paneOfTab(activeRef.current, id)) {
+        showTab(id, paneId)
       }
       if (!id) return
       const entry = getTerm(id)
@@ -504,20 +654,34 @@ export function App(): JSX.Element {
       }
       pasteInto(id, body, enter)
     },
-    [newTab]
+    [newTab, showTab]
   )
 
   // Latest-handler indirection so the registry hooks and the window listener never go stale.
-  const act = useRef({ newSelected: () => {}, closeActive: () => {} })
+  const act = useRef({ newSelected: () => {}, closeActive: () => {}, moveActive: (_dir: -1 | 1) => {} })
   act.current = {
-    newSelected: () => selectedId && newTab(selectedId),
-    closeActive: () => activeTabId && closeTab(activeTabId)
+    newSelected: () => selectedId && newTab(selectedId, undefined, focusedPaneId()),
+    closeActive: () => {
+      const paneId = focusedPaneId()
+      const id = paneId ? activeRef.current[paneId] : undefined
+      if (id) closeTab(id)
+    },
+    moveActive: (dir) => {
+      const paneId = focusedPaneId()
+      const id = paneId ? activeRef.current[paneId] : undefined
+      if (id) commitTabs((t) => shiftTab(t, id, dir))
+    }
   }
 
   useEffect(() => {
     setTermHooks({
       onNewTab: () => act.current.newSelected(),
       onCloseTab: () => act.current.closeActive(),
+      onMoveTab: (dir) => act.current.moveActive(dir),
+      onCwd: (id, cwd) => {
+        cwdById.current[id] = cwd
+        scheduleSave()
+      },
       onExit: handleExit,
       onZoom: (d) => void zoom(d),
       onTogglePanel: (t) => void togglePanel(t),
@@ -525,11 +689,21 @@ export function App(): JSX.Element {
       onOpenSettings: () => setSettingsOpen((o) => !o),
       onToggleSidebar: () => void toggleSidebar()
     })
-  }, [handleExit, zoom, togglePanel, toggleSidebar])
+  }, [handleExit, zoom, togglePanel, toggleSidebar, scheduleSave])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.defaultPrevented || !e.ctrlKey || e.altKey) return
+      if (e.defaultPrevented) return
+      // Alt+Shift+Left/Right moves the focused pane's active tab; must precede the Ctrl-only early return below.
+      if (e.altKey && e.shiftKey && !e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        // Leave text editing alone (xterm's helper textarea is handled by termRegistry, which prevents default first).
+        const el = e.target as HTMLElement | null
+        if (el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return
+        e.preventDefault()
+        act.current.moveActive(e.key === 'ArrowLeft' ? -1 : 1)
+        return
+      }
+      if (!e.ctrlKey || e.altKey) return
       const k = e.key.toLowerCase()
       if (e.shiftKey && k === 't') {
         e.preventDefault()
@@ -610,8 +784,9 @@ export function App(): JSX.Element {
   const ui = state.ui
   const ps = paneState
   const multi = ps.panes.length > 1
-  const paneIndexOfLoc = new Map<string, number>()
-  ps.panes.forEach((p, i) => p.locId && paneIndexOfLoc.set(p.locId, i))
+  // A tab is active in at most one pane; terminals are positioned over that pane.
+  const paneIndexOfTab = new Map<string, number>()
+  ps.panes.forEach((p, i) => active[p.id] && paneIndexOfTab.set(active[p.id], i))
   const startPct = (i: number): number => startOf(ps.fractions, i) * 100
 
   const addFolder = async (): Promise<void> => setState(await window.api.addFolder())
@@ -733,20 +908,28 @@ export function App(): JSX.Element {
             }}
             onDrop={(e) => {
               const h = dropTargetAt(e)
-              dragTab.current = null
+              tabDrag.tab = null
               locDrag.id = null
               setDropHint(null)
               const cur = panesRef.current
               if (!h || !cur) return
               e.preventDefault()
-              if (h.tabId) setActiveByLoc((a) => ({ ...a, [h.locId]: h.tabId as string }))
-              commitPanes(dropOnEdge(cur, h.locId, h.index, h.side, mkId))
+              if (h.tabId) {
+                // A tab always opens a new pane beside the target (D6); the source pane keeps its place.
+                const next = splitBeside(cur, h.locId, h.index, h.side, mkId)
+                if (next === cur) return
+                commitPanes(next)
+                lastByLoc.current[h.locId] = h.tabId
+                setActive(activateIn(next.panes, tabsRef.current, activeRef.current, next.panes[next.focused].id, h.tabId))
+              } else {
+                commitPanes(dropOnEdge(cur, h.locId, h.index, h.side, mkId))
+              }
             }}
           >
             {ps.panes.map((p, i) => {
               const loc = (p.locId && locs.get(p.locId)) || null
               const paneTabs = tabs.filter((t) => t.locId === p.locId)
-              const paneActive = p.locId ? activeByLoc[p.locId] : undefined
+              const paneActive: string | undefined = active[p.id]
               const diff = paneTabs.find((t) => t.id === paneActive && t.kind === 'diff')
               const fileTab = paneTabs.find((t) => t.id === paneActive && t.kind === 'file')
               const members = loc?.kind === 'manual' ? state.folders.filter((f) => f.groupId === loc.id).length : 0
@@ -763,18 +946,25 @@ export function App(): JSX.Element {
                         tabs={paneTabs}
                         activeId={paneActive}
                         commands={state.commands}
-                        onActivate={(id) => setActiveByLoc((a) => ({ ...a, [loc.id]: id }))}
+                        shownElsewhere={takenBy(active, p.id)}
+                        onActivate={(id) => {
+                          // A tab shown in another pane focuses that pane instead of moving (D4).
+                          const other = paneOfTab(active, id)
+                          if (other && other !== p.id) focusPane(ps.panes.findIndex((x) => x.id === other))
+                          else showTab(id, p.id)
+                        }}
+                        onReorder={(id, before) => {
+                          commitTabs((t) => moveTab(t, id, before))
+                          const owner = paneOfTab(active, id)
+                          if (!owner || owner === p.id) showTab(id, p.id)
+                        }}
+                        onAcceptDrag={() => setDropHint(null)}
                         onClose={closeTab}
                         onPin={(id) => commitTabs((all) => all.map((x) => (x.id === id ? { ...x, preview: false } : x)))}
                         onRunAgain={runCommand}
-                        onNew={() => newTab(loc.id)}
-                        onDragStart={(e, t) => {
-                          dragTab.current = t
-                          e.dataTransfer.setData(TAB_DRAG_TYPE, t.id)
-                          e.dataTransfer.effectAllowed = 'move'
-                        }}
+                        onNew={() => newTab(loc.id, undefined, p.id)}
                         onDragEnd={() => {
-                          dragTab.current = null
+                          tabDrag.tab = null
                           setDropHint(null)
                         }}
                       />
@@ -848,12 +1038,31 @@ export function App(): JSX.Element {
                         </span>
                         <h2>{loc.name}</h2>
                         <p>No terminals open here.</p>
-                        <button className="btn primary" onClick={() => newTab(loc.id)}>
+                        <button className="btn primary" onClick={() => newTab(loc.id, undefined, p.id)}>
                           <Plus size={15} /> New terminal
                         </button>
                         <p className="hint">
                           <Keys combo="Ctrl+Shift+T" />
                         </p>
+                      </div>
+                    )}
+                    {loc && !loc.missing && paneTabs.length > 0 && !paneActive && (
+                      <div className="empty">
+                        <span className="empty-icon">
+                          <SquareTerminal size={24} strokeWidth={1.75} />
+                        </span>
+                        <h2>{loc.name}</h2>
+                        <p>All terminals of this folder are shown in other panes.</p>
+                        {loc.path && (
+                          <>
+                            <button className="btn primary" onClick={() => newTab(loc.id, undefined, p.id)}>
+                              <Plus size={15} /> New terminal
+                            </button>
+                            <p className="hint">
+                              <Keys combo="Ctrl+Shift+T" />
+                            </p>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -864,13 +1073,15 @@ export function App(): JSX.Element {
             {tabs
               .filter((t) => t.kind === 'shell' || t.kind === 'command')
               .map((t) => {
-                const pi = paneIndexOfLoc.get(t.locId)
-                const visible = pi !== undefined && activeByLoc[t.locId] === t.id
+                const pi = paneIndexOfTab.get(t.id)
+                const visible = pi !== undefined
                 return (
                   <TerminalView
                     key={t.id}
                     id={t.id}
                     cwd={t.cwd}
+                    shell={t.shell}
+                    fallbackCwd={fallbackById.current[t.id]}
                     steps={t.steps}
                     locId={t.locId}
                     visible={visible}

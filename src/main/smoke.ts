@@ -11,7 +11,10 @@ import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_FONT, patchSettings, sanitizeSetting
 import { THEME_IDS, THEMES, UI_VARS, resolveThemeId } from '../shared/themes'
 import { contextLocation, findLocation, planCommand, planPrompt, ToolError, visibleCommands } from './mcpTools'
 import { hostAllowed, tokenMatches } from './mcp'
-import { canAddPane, closePane, dragDivider, dropOnEdge, fromPersisted, normalize, openToSide } from '../shared/panes'
+import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
+import { activateIn, moveTab, reconcileActive, shiftTab } from '../shared/tabs'
+import { planRestore, restorePaths, sanitizeTabs, type RestoreCtx } from '../shared/session'
+import type { PersistedTab } from '../shared/types'
 import { gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage } from './gitcli'
 
 interface CheckResult {
@@ -85,17 +88,30 @@ function checkMigration(): CheckResult {
     selectedId: 'f1'
   }
   const v1 = { folders: [{ id: 'f2', path: 'C:\b', name: 'b', order: 0 }] }
+  const v4 = {
+    version: 4,
+    ui: {
+      tabs: [
+        { id: 't1', locId: 'f1', kind: 'shell', title: 'PowerShell 1', cwd: 'C:\\a\\proj' },
+        { id: 't2', locId: 'f1', kind: 'bogus', title: 'x', cwd: 'C:\\a\\proj' }
+      ]
+    }
+  }
   const a = migrate(v2 as never)
   const b = migrate(v1 as never)
+  const c = migrate(v4 as never)
   const ok =
-    SCHEMA_VERSION === 3 &&
+    SCHEMA_VERSION === 4 &&
+    a.ui.tabs.length === 0 &&
+    c.ui.tabs.length === 1 &&
+    c.ui.tabs[0]?.id === 't1' &&
     a.snippets.length === 0 &&
     a.folders.length === 1 &&
     a.commands.length === 1 &&
     a.selectedId === 'f1' &&
     b.snippets.length === 0 &&
     b.folders[0]?.groupId === null
-  return { ok, msg: ok ? 'migration: v2 and v1 files migrate with snippets: [] and data kept' : 'migration: unexpected result ' + JSON.stringify({ a, b }) }
+  return { ok, msg: ok ? 'migration: v2 and v1 files migrate (v4, ui.tabs) with snippets: [] and data kept' : 'migration: unexpected result ' + JSON.stringify({ a, b }) }
 }
 
 /** Check: settings schema defaults, sanitising, save/load round trip, theme completeness and the steps shell. */
@@ -147,21 +163,43 @@ function checkPanes(): CheckResult {
   const old = migrate({ ui: { sidebarWidth: 300 } } as never)
   if (old.ui.panes !== null) return fail('old file should have panes: null')
   const dirty = migrate({
-    ui: { panes: { locIds: ['a', 'b', 'a', 5, 'c', 'd', 'e'], fractions: [1, 1, 1, 1, 1, 1, 1], focused: 3 } }
+    ui: {
+      panes: {
+        locIds: ['a', 'b', 'a', 5, 'c', 'd', 'e'],
+        fractions: [1, 1, 1, 1, 1, 1, 1],
+        focused: 3,
+        active: ['t1', 't2', 't3', 't4', 5, 't6', 't7']
+      }
+    }
   } as never)
   const dp = dirty.ui.panes
-  if (!dp || dp.locIds.join() !== 'a,b,c,d' || dp.focused !== 0 || Math.abs(dp.fractions.reduce((x, y) => x + y, 0) - 1) > 1e-9)
+  if (
+    !dp ||
+    dp.locIds.join() !== 'a,b,a,c' ||
+    dp.focused !== 0 ||
+    Math.abs(dp.fractions.reduce((x, y) => x + y, 0) - 1) > 1e-9 ||
+    (dp.active ?? []).map((a) => a ?? '-').join() !== 't1,t2,t3,-'
+  )
     return fail('dirty layout not cleaned ' + JSON.stringify(dp))
   if (migrate({ ui: { panes: 'nope' } } as never).ui.panes !== null) return fail('garbage should become null')
 
   const valid = new Set(['a', 'b', 'c', 'd', 'e'])
-  const loaded = fromPersisted({ locIds: ['a', 'gone', 'b'], fractions: [0.2, 0.3, 0.5], focused: 2 }, valid, 'a', mk)
-  if (loaded.panes.map((p) => p.locId).join() !== 'a,b' || loaded.focused !== 1 || Math.abs(loaded.fractions[0] - 0.2 / 0.7) > 1e-9)
-    return fail('fromPersisted ' + JSON.stringify(loaded))
+  const loadedAll = fromPersisted({ locIds: ['a', 'gone', 'b'], fractions: [0.2, 0.3, 0.5], focused: 2, active: ['t1', 't2', 't3'] }, valid, 'a', mk)
+  const loaded = loadedAll.state
+  if (
+    loaded.panes.map((p) => p.locId).join() !== 'a,b' ||
+    loaded.focused !== 1 ||
+    Math.abs(loaded.fractions[0] - 0.2 / 0.7) > 1e-9 ||
+    loadedAll.active.join() !== 't1,t3'
+  )
+    return fail('fromPersisted ' + JSON.stringify(loadedAll))
   const fallback = fromPersisted(null, valid, 'c', mk)
-  if (fallback.panes.length !== 1 || fallback.panes[0].locId !== 'c') return fail('fallback pane')
+  if (fallback.state.panes.length !== 1 || fallback.state.panes[0].locId !== 'c' || fallback.active.join() !== '') return fail('fallback pane')
+  const dupes = fromPersisted({ locIds: ['a', 'a'], fractions: [0.5, 0.5], focused: 1, active: ['t1', 't2'] }, valid, 'a', mk)
+  const rt = toPersisted(dupes.state, { [dupes.state.panes[1].id]: 'x' })
+  if (dupes.state.panes.length !== 2 || dupes.active.join() !== 't1,t2' || !rt || rt.active?.join() !== ',x') return fail('same-folder panes ' + JSON.stringify({ dupes, rt }))
 
-  let s = fromPersisted(null, valid, 'a', mk)
+  let s = fromPersisted(null, valid, 'a', mk).state
   s = openToSide(s, 'b', mk)
   if (s.panes.map((p) => p.locId).join() !== 'a,b' || s.focused !== 1 || s.fractions.join() !== '0.5,0.5') return fail('openToSide ' + JSON.stringify(s))
   s = openToSide(s, 'a', mk)
@@ -181,7 +219,100 @@ function checkPanes(): CheckResult {
   if (Math.abs(dd[0] - 0.8) > 1e-9 || Math.abs(dd[1] - 0.2) > 1e-9) return fail('dragDivider clamp ' + JSON.stringify(dd))
   const gone = normalize(s, new Set(['a']), 'a', mk)
   if (gone.panes.length !== 1 || gone.panes[0].locId !== 'a') return fail('normalize drop')
-  return { ok: true, msg: 'panes: migrate cleans/defaults the layout; open/drop/close/divider/normalize helpers behave' }
+  const twin = normalize({ panes: [{ id: 'x', locId: 'a' }, { id: 'y', locId: 'a' }, { id: 'z', locId: 'b' }], fractions: [0.25, 0.25, 0.5], focused: 0 }, valid, 'a', mk)
+  if (twin.panes.map((p) => p.locId).join() !== 'a,a,b') return fail('normalize keeps duplicates')
+  const two = { panes: [{ id: 'x', locId: 'a' }, { id: 'y', locId: 'a' }, { id: 'z', locId: 'b' }], fractions: [0.25, 0.25, 0.5], focused: 1 }
+  if (focusLoc(two, 'a') !== two) return fail('focusLoc should keep a focused duplicate')
+  if (focusLoc({ ...two, focused: 2 }, 'a').focused !== 0) return fail('focusLoc should focus the first match')
+  const self = splitBeside({ panes: [{ id: 'x', locId: 'a' }], fractions: [1], focused: 0 }, 'a', 0, 'right', mk)
+  if (self.panes.map((p) => p.locId).join() !== 'a,a' || self.fractions.join() !== '0.5,0.5' || self.focused !== 1) return fail('splitBeside own folder ' + JSON.stringify(self))
+  const four = { panes: [0, 1, 2, 3].map((i) => ({ id: 'q' + i, locId: 'a' })), fractions: [0.25, 0.25, 0.25, 0.25], focused: 0 }
+  if (splitBeside(four, 'a', 0, 'left', mk) !== four) return fail('splitBeside fifth pane should be refused')
+  return { ok: true, msg: 'panes: migrate cleans/defaults the layout and active ids; open/drop/close/divider/normalize/focus/split helpers behave' }
+}
+
+const ids = (t: { id: string }[]): string => t.map((x) => x.id).join()
+
+/** Check: tab reorder keeps other folders in place, shifting stops at the edges, and the per-pane active map reconciles. */
+function checkTabs(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'tabs: ' + m })
+  const tabs = [
+    { id: 'a1', locId: 'A' },
+    { id: 'b1', locId: 'B' },
+    { id: 'a2', locId: 'A' },
+    { id: 'b2', locId: 'B' },
+    { id: 'a3', locId: 'A' }
+  ]
+  if (ids(moveTab(tabs, 'a3', 'a1')) !== 'a3,b1,a1,b2,a2') return fail('moveTab before ' + ids(moveTab(tabs, 'a3', 'a1')))
+  if (ids(moveTab(tabs, 'a1', null)) !== 'a2,b1,a3,b2,a1') return fail('moveTab to the end ' + ids(moveTab(tabs, 'a1', null)))
+  if (moveTab(tabs, 'a1', 'b2') !== tabs || moveTab(tabs, 'nope', null) !== tabs) return fail('moveTab foreign beforeId / unknown id')
+  if (shiftTab(tabs, 'a1', -1) !== tabs || shiftTab(tabs, 'a3', 1) !== tabs) return fail('shiftTab at an edge')
+  if (ids(shiftTab(tabs, 'a2', 1)) !== 'a1,b1,a3,b2,a2') return fail('shiftTab ' + ids(shiftTab(tabs, 'a2', 1)))
+
+  const panes = [
+    { id: 'p0', locId: 'A' },
+    { id: 'p1', locId: 'A' },
+    { id: 'p2', locId: 'B' }
+  ]
+  const same = { p0: 'a1', p1: 'a1', p2: 'b1' }
+  const r = reconcileActive(panes, 1, tabs, same, {})
+  if (r.p1 !== 'a1' || r.p0 !== 'a2' || r.p2 !== 'b1') return fail('focused pane should win a conflict ' + JSON.stringify(r))
+  const solo = reconcileActive([panes[0], panes[1]], 0, [tabs[0]], {}, {})
+  if (solo.p0 !== 'a1' || 'p1' in solo) return fail('taken-only folder pane should get no entry ' + JSON.stringify(solo))
+  const pref = reconcileActive(panes, 0, tabs, {}, { A: 'a3' })
+  if (pref.p0 !== 'a3' || pref.p1 !== 'a1') return fail('lastByLoc should be preferred ' + JSON.stringify(pref))
+  const valid = { p0: 'a1', p1: 'a2', p2: 'b1' }
+  if (reconcileActive(panes, 0, tabs, valid, {}) !== valid) return fail('valid map should keep its reference')
+  const moved = activateIn(panes, tabs, valid, 'p0', 'a2')
+  if (moved.p0 !== 'a2' || moved.p1 !== 'a3') return fail('activateIn should give the old pane its neighbour ' + JSON.stringify(moved))
+  return { ok: true, msg: 'tabs: moveTab/shiftTab keep other folders in place; reconcileActive and activateIn keep a tab in one pane' }
+}
+
+/** Check: saved tabs are sanitised, and the restore plan keeps order, skips missing things, falls back cwd, anchors runs and maps ids. */
+function checkSession(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'session: ' + m })
+  const good: PersistedTab[] = [
+    { id: 's1', locId: 'A', kind: 'shell', title: 'PS 1', cwd: 'C:\\gone', shell: 'pwsh.exe', startCwd: 'C:\\a\\sub' },
+    { id: 'c1', locId: 'A', kind: 'command', title: 'build', cwd: 'C:\\a', run: { commandId: 'cmd1', runId: 'r1', target: 0 } },
+    { id: 'f1', locId: 'A', kind: 'file', title: 'x.ts', cwd: 'C:\\a\\x.ts', file: 'C:\\a\\x.ts' },
+    { id: 'f2', locId: 'A', kind: 'file', title: 'old.ts', cwd: 'C:\\a\\old.ts', file: 'C:\\a\\old.ts' },
+    { id: 'd1', locId: 'B', kind: 'diff', title: 'diff', cwd: 'C:\\b', diff: { folder: 'C:\\b', mode: 'unstaged', path: 'z.ts' } },
+    { id: 'z1', locId: 'Z', kind: 'shell', title: 'PS 1', cwd: 'C:\\z' },
+    { id: 'c2', locId: 'A', kind: 'command', title: 'dead', cwd: 'C:\\a', run: { commandId: 'deleted', runId: 'r2', target: 0 } },
+    { id: 's2', locId: 'A', kind: 'shell', title: 'PS 2', cwd: 'C:\\a' }
+  ]
+  const dirty = sanitizeTabs([
+    ...good,
+    null,
+    'x',
+    { ...good[0] },
+    { ...good[0], id: 'k1', kind: 'weird' },
+    { ...good[0], id: 'k2', cwd: '' },
+    { id: 'k3', locId: 'A', kind: 'diff', title: 't', cwd: 'C:\\b', diff: { folder: 'C:\\b', mode: 'commit', path: 'p' } },
+    { id: 'k4', locId: 'A', kind: 'command', title: 't', cwd: 'C:\\a', run: { commandId: 'c', runId: 'r', target: -1 } }
+  ])
+  if (ids(dirty) !== ids(good)) return fail('sanitizeTabs kept ' + ids(dirty))
+  const existing = new Set(['C:\\a\\sub', 'C:\\a', 'C:\\a\\x.ts', 'C:\\b', 'C:\\z'])
+  if (!restorePaths(good).includes('C:\\a\\x.ts')) return fail('restorePaths')
+  let n = 0
+  const ctx: RestoreCtx = {
+    locs: new Map([
+      ['A', { path: 'C:\\a', missing: false }],
+      ['B', { path: 'C:\\b', missing: false }],
+      ['Z', { path: 'C:\\z', missing: true }]
+    ]),
+    commandIds: new Set(['cmd1']),
+    exists: (p) => existing.has(p),
+    mkId: () => `n${n++}`
+  }
+  const plan = planRestore(good, ctx)
+  const got = plan.tabs.map((t) => t.id).join()
+  if (got !== 's1,f1,d1,s2') return fail('plan tabs (order, missing folder/file, deleted command) ' + got)
+  if (plan.tabs[0].cwd !== 'C:\\a\\sub' || plan.tabs[0].fallbackCwd !== 'C:\\a') return fail('shell should fall back to startCwd ' + JSON.stringify(plan.tabs[0]))
+  if (plan.runs.length !== 1 || plan.runs[0].commandId !== 'cmd1' || plan.runs[0].anchor !== plan.idMap.f1 || plan.runs[0].snapshotIds[0] !== 'c1')
+    return fail('run anchor ' + JSON.stringify(plan.runs))
+  if (plan.idMap.s1 !== plan.tabs[0].newId || plan.idMap.f2 !== undefined) return fail('idMap ' + JSON.stringify(plan.idMap))
+  return { ok: true, msg: 'session: sanitizeTabs drops bad entries; planRestore keeps order, skips missing folder/file/command, falls back cwd, anchors runs' }
 }
 
 /** Check 4: the git status/diff/stage/commit/log layer against a throwaway repo. */
@@ -354,7 +485,7 @@ function checkMcpLogic(dir: string): CheckResult {
     snippets: [{ id: 's1', name: 'hi', body: 'hello', scope: 'global' }],
     selectedId: null,
     settings: { ...DEFAULT_SETTINGS },
-    ui: { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files' },
+    ui: { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [] },
     resolvedShell: ''
   }
   const fail = (m: string): CheckResult => ({ ok: false, msg: 'mcp logic: ' + m })
@@ -450,6 +581,8 @@ export async function runSmoke(): Promise<void> {
     checkMigration(),
     checkSettings(),
     checkPanes(),
+    checkTabs(),
+    checkSession(),
     checkWrite(),
     checkMcpLogic(dir),
     await checkGit()

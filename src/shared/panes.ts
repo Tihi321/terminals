@@ -38,48 +38,63 @@ export function sanitizePersisted(raw: unknown): PersistedPanes | null {
   if (!Array.isArray(r.locIds)) return null
   const ids = r.locIds as unknown[]
   const keep: number[] = []
-  const seen = new Set<string>()
   ids.forEach((id, i) => {
-    if (typeof id === 'string' && id && !seen.has(id) && keep.length < MAX_PANES) {
-      seen.add(id)
-      keep.push(i)
-    }
+    if (typeof id === 'string' && id && keep.length < MAX_PANES) keep.push(i)
   })
   if (keep.length === 0) return null
   const locIds = keep.map((i) => ids[i] as string)
   const fr = Array.isArray(r.fractions) && r.fractions.length === ids.length ? keep.map((i) => (r.fractions as number[])[i]) : null
   const focusedOld = typeof r.focused === 'number' && Number.isInteger(r.focused) ? r.focused : 0
   const focusedNew = keep.indexOf(focusedOld)
+  const rawActive = Array.isArray(r.active) ? (r.active as unknown[]) : []
+  const active = keep.map((i) => (typeof rawActive[i] === 'string' && rawActive[i] ? (rawActive[i] as string) : null))
   return {
     locIds,
     fractions: normalizeFractions(fr, locIds.length),
-    focused: focusedNew >= 0 ? focusedNew : 0
+    focused: focusedNew >= 0 ? focusedNew : 0,
+    active
   }
 }
 
-export function toPersisted(s: PaneState): PersistedPanes | null {
+/** `active[i]` = tab id active in pane i (from `active`, keyed by pane id), else null. */
+export function toPersisted(s: PaneState, active?: Record<string, string>): PersistedPanes | null {
   const locIds = s.panes.map((p) => p.locId)
   if (locIds.some((l) => l === null)) return null
-  return { locIds: locIds as string[], fractions: s.fractions, focused: s.focused }
+  return {
+    locIds: locIds as string[],
+    fractions: s.fractions,
+    focused: s.focused,
+    active: s.panes.map((p) => active?.[p.id] ?? null)
+  }
 }
 
-export function fromPersisted(p: unknown, valid: Set<string>, fallback: string | null, mkId: () => string): PaneState {
+/** `active` is aligned to `state.panes` (saved tab ids; all null for a fallback pane). */
+export function fromPersisted(
+  p: unknown,
+  valid: Set<string>,
+  fallback: string | null,
+  mkId: () => string
+): { state: PaneState; active: (string | null)[] } {
   const clean = sanitizePersisted(p)
   const base: PaneState = clean
     ? { panes: clean.locIds.map((locId) => ({ id: mkId(), locId })), fractions: clean.fractions, focused: clean.focused }
     : { panes: [], fractions: [], focused: 0 }
-  return normalize(base, valid, fallback, mkId)
+  const state = normalize(base, valid, fallback, mkId)
+  const byId = new Map<string, string | null>()
+  base.panes.forEach((pane, i) => byId.set(pane.id, clean?.active?.[i] ?? null))
+  const active = state.panes.map((pane) => {
+    const old = base.panes.find((b) => b.id === pane.id)
+    // A pane repointed to the fallback location keeps its id but not its saved tab.
+    return old && old.locId === pane.locId ? (byId.get(pane.id) ?? null) : null
+  })
+  return { state, active }
 }
 
-/** Drops panes whose location is gone or duplicated, clamps to MAX_PANES, and guarantees at least one pane. */
+/** Drops panes whose location is gone, clamps to MAX_PANES, and guarantees at least one pane. Several panes may show one location. */
 export function normalize(s: PaneState, valid: Set<string>, fallback: string | null, mkId: () => string): PaneState {
-  const seen = new Set<string>()
   const keep: number[] = []
   s.panes.forEach((p, i) => {
-    if (p.locId && valid.has(p.locId) && !seen.has(p.locId) && keep.length < MAX_PANES) {
-      seen.add(p.locId)
-      keep.push(i)
-    }
+    if (p.locId && valid.has(p.locId) && keep.length < MAX_PANES) keep.push(i)
   })
   if (keep.length === 0) {
     // Nothing valid left: keep one pane (the old one's id, so it does not remount) on the fallback.
@@ -101,10 +116,19 @@ export function indexOfLoc(s: PaneState, locId: string): number {
   return s.panes.findIndex((p) => p.locId === locId)
 }
 
-/** The sidebar selection changed: focus the pane already showing that location, else repoint the focused pane. */
+/** Whether pane `index` shows `locId`. */
+export function paneShows(s: PaneState, index: number, locId: string): boolean {
+  return s.panes[index]?.locId === locId
+}
+
+/**
+ * The sidebar selection changed: keep the focused pane when it already shows that location, else focus the first pane
+ * showing it, else repoint the focused pane.
+ */
 export function focusLoc(s: PaneState, locId: string): PaneState {
+  if (paneShows(s, s.focused, locId)) return s
   const i = indexOfLoc(s, locId)
-  if (i >= 0) return i === s.focused ? s : { ...s, focused: i }
+  if (i >= 0) return { ...s, focused: i }
   return { ...s, panes: s.panes.map((p, j) => (j === s.focused ? { ...p, locId } : p)) }
 }
 
@@ -131,6 +155,22 @@ export function dropOnEdge(s: PaneState, locId: string, target: number, side: Si
     fractions.splice(at, 0, f)
     return { panes, fractions, focused: at }
   }
+  if (s.panes.length >= MAX_PANES || target < 0 || target >= s.panes.length) return s
+  const half = s.fractions[target] / 2
+  const at = side === 'right' ? target + 1 : target
+  const panes = [...s.panes]
+  const fractions = [...s.fractions]
+  fractions[target] = half
+  panes.splice(at, 0, { id: mkId(), locId })
+  fractions.splice(at, 0, half)
+  return { panes, fractions, focused: at }
+}
+
+/**
+ * Opens a new pane for `locId` beside `target` (left or right), taking half of the target's width, and focuses it.
+ * Works even when `target` already shows `locId`. Returns `s` when `target` is out of range or MAX_PANES are open.
+ */
+export function splitBeside(s: PaneState, locId: string, target: number, side: Side, mkId: () => string): PaneState {
   if (s.panes.length >= MAX_PANES || target < 0 || target >= s.panes.length) return s
   const half = s.fractions[target] / 2
   const at = side === 'right' ? target + 1 : target

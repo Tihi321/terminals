@@ -48,6 +48,7 @@ const api: TerminalsApi = {
   listDir: (p, ignored) => inv('fs:list', p, ignored),
   readFile: (p) => inv('fs:read', p),
   writeFile: (p, text, mtimeMs, force) => inv('fs:write', p, text, mtimeMs, force),
+  pathsExist: (paths) => inv('fs:exists', paths),
   watchDirs: (paths) => ipcRenderer.send('fs:watch', paths),
   onFsChanged: (cb) => {
     const h = (_: unknown, dir: string): void => cb(dir)

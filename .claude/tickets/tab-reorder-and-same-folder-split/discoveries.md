@@ -1,0 +1,3 @@
+- 2026-11-18 implementer: v2 migration fixture uses 'C:\a\proj' in a JS string, so backslashes are escapes, not path separators; harmless for the check (src/main/smoke.ts:83) - suggested: use String.raw or doubled backslashes
+- 2026-11-18 implementer: yarn and npx shims are not on the fnm default PATH in worker shells, so `fnm exec --using default yarn ...` fails with "program not found" (package.json) - suggested: enable corepack for the fnm default node or document calling node on package binaries
+- 2026-11-18 implementer: the migration smoke PASS message still says "v2 and v1 files migrate" though it now also checks v4 tab sanitising (src/main/smoke.ts) - suggested: reword the PASS text

@@ -1,5 +1,5 @@
 /** Current on-disk schema version. Files without a `version` field are version 1. */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 export type ThemeId = 'dark' | 'light' | 'fjord' | 'sandstone'
 export type ThemeSetting = ThemeId | 'system'
@@ -32,6 +32,27 @@ export interface PersistedPanes {
   locIds: string[]
   fractions: number[]
   focused: number
+  /** One entry per `locIds` entry: id (in the saved `UiState.tabs` snapshot) of the tab active in that pane, or null. */
+  active?: (string | null)[]
+}
+
+/** A tab saved for restore after a restart. */
+export interface PersistedTab {
+  /** Id inside the saved snapshot; restore gives every tab a fresh id. */
+  id: string
+  locId: string
+  kind: 'shell' | 'command' | 'diff' | 'file'
+  title: string
+  /** shell: last known cwd, else start cwd; command: target cwd; diff: repo folder; file: the file path. */
+  cwd: string
+  /** shell only: executable it ran (AppState.resolvedShell at creation). */
+  shell?: string
+  /** shell only: cwd the tab was started in; fallback when `cwd` cannot be used. */
+  startCwd?: string
+  diff?: { folder: string; mode: 'unstaged' | 'staged' | 'untracked' | 'commit'; path: string; hash?: string }
+  file?: string
+  preview?: boolean
+  run?: { commandId: string; runId: string; target: number }
 }
 
 export interface UiState {
@@ -42,6 +63,8 @@ export interface UiState {
   panes: PersistedPanes | null
   panelOpen: boolean
   panelTab: 'files' | 'commands' | 'git'
+  /** Saved session: every open tab, restored on the next launch. */
+  tabs: PersistedTab[]
 }
 
 export interface Folder {
@@ -138,6 +161,10 @@ export interface PtyCreateRequest {
   steps?: string[]
   /** Folder, child or group id the terminal belongs to; exported to the shell as TERMINALS_LOC_ID for the MCP server. */
   locId?: string
+  /** Shell executable to use. Main honours it only when it is the configured shell or an available known shell. */
+  shell?: string
+  /** Used when `cwd` fails the existence/roots check. */
+  fallbackCwd?: string
 }
 
 /** In-app file viewer payload: text, an image as a data URL, or a marker for binary/too-large files. */
@@ -253,6 +280,8 @@ export interface TerminalsApi {
   listShells(): Promise<ShellOption[]>
   setUi(patch: Partial<UiState>): Promise<AppState>
   pickFolder(): Promise<string | null>
+  /** Which paths exist and lie inside the saved roots (same order as the input). */
+  pathsExist(paths: string[]): Promise<boolean[]>
 
   openInWindowsTerminal(path: string): Promise<void>
   openInExplorer(path: string): Promise<void>
