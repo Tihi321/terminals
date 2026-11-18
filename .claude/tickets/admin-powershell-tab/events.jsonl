@@ -10,3 +10,5 @@
 {"ts":"2026-11-18T17:55:15Z","actor":"implement","type":"verify.passed","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"typecheck, smoke, build, dist:dir exit 0; A7/A8/A11 untested"}
 {"ts":"2026-11-18T17:55:45Z","actor":"implement","type":"changelog.written","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"changelog written; status stays in-progress for the director checker"}
 {"ts":"2026-11-18T19:10:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"must-fix: pty:exit suppressed after kill (no '✗ stopped' on Stop); missing D7 tooltip","data":{"verdict":"FAIL"}}
+{"ts":"2026-11-18T19:20:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"re-check of polish round 1","data":{"verdict":"PASS"}}
+{"ts":"2026-11-18T19:22:00Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0003","ticket":"admin-powershell-tab","detail":"polish round 1 re-check PASS; committed f25c83c, not pushed"}

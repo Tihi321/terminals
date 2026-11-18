@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0003
 repos: [C:/projects/Personal/terminals]
 branch: feature/admin-powershell-tab
