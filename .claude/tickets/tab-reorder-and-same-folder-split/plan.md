@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0002
 repos: [C:/projects/Personal/terminals]
 branch: feature/tab-reorder-and-same-folder-split

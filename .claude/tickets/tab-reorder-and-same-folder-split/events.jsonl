@@ -12,3 +12,4 @@
 {"ts":"2026-11-18T17:27:12Z","actor":"implement","type":"verify.passed","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"yarn typecheck exit 0; yarn smoke 11/11 PASS","data":{"smoke_pass":11}}
 {"ts":"2026-11-18T17:27:32Z","actor":"implement","type":"changelog.written","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"changelog.md written; status left in-progress for checker"}
 {"ts":"2026-11-18T17:55:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"PASS; A9-A10 manual checks UNTESTED","data":{"verdict":"PASS"}}
+{"ts":"2026-11-18T18:10:00Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0002","ticket":"tab-reorder-and-same-folder-split","detail":"ticket done after checker PASS; manual checks UNTESTED"}
