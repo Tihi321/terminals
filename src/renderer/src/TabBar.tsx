@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import { ChevronDown, FileDiff, FileText, Plus, RotateCw, Shield, ShieldAlert, Terminal, X, Zap } from 'lucide-react'
+import { ChevronDown, Download, FileDiff, FileText, Plus, RotateCw, Shield, ShieldAlert, Terminal, X, Zap } from 'lucide-react'
 import type { Command, ElevatorInfo } from '../../shared/types'
 import { GSUDO_HINT } from '../../shared/elevation'
 import { ContextMenu } from './ContextMenu'
@@ -59,6 +59,8 @@ interface Props {
   onNew: () => void
   /** Start the default shell elevated (UAC prompt). */
   onNewAdmin: () => void
+  /** Runs `winget install gerardog.gsudo` in a new tab; offered when no elevator is found. */
+  onInstallGsudo: () => void
   /** Asked each time the new-terminal menu opens. */
   getElevator: () => Promise<ElevatorInfo>
   onDragEnd: () => void
@@ -92,12 +94,15 @@ export function TabBar(p: Props): JSX.Element {
       items: [
         { label: 'New terminal', icon: <Terminal size={14} />, onClick: p.onNew },
         {
-          label: available ? 'New admin terminal' : `New admin terminal — install gsudo: ${GSUDO_HINT}`,
+          label: available ? 'New admin terminal' : 'New admin terminal (needs gsudo)',
           icon: <Shield size={14} />,
           disabled: !available,
           title: info?.hint,
           onClick: p.onNewAdmin
-        }
+        },
+        ...(available
+          ? []
+          : [{ label: 'Install gsudo', icon: <Download size={14} />, title: `Runs: ${GSUDO_HINT}`, onClick: p.onInstallGsudo }])
       ]
     })
   }

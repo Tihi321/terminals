@@ -880,11 +880,6 @@ kbd,
 .admin-placeholder .btn {
   margin-top: 14px;
 }
-.admin-hint {
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--danger);
-}
 .admin-retry {
   position: absolute;
   right: auto;

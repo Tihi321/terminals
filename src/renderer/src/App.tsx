@@ -1,8 +1,8 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, Shield, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
+import { Download, FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, Shield, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
 import type { AppState, Command, ElevatorInfo, GitDiffRequest } from '../../shared/types'
-import { GSUDO_HINT } from '../../shared/elevation'
+import { GSUDO_HINT, INSTALL_GSUDO_COMMAND } from '../../shared/elevation'
 import { Sidebar } from './Sidebar'
 import { TerminalView } from './TerminalView'
 import { FileTree } from './FileTree'
@@ -60,7 +60,7 @@ function shellLabel(shell: string): string {
 }
 
 /** Button that starts an admin shell; disabled with the install hint when no elevator is available. Asks main on mount. */
-function StartAdminButton({ onStart, className }: { onStart: () => void; className?: string }): JSX.Element {
+function StartAdminButton({ onStart, onInstall, className }: { onStart: () => void; onInstall: () => void; className?: string }): JSX.Element {
   const [info, setInfo] = useState<ElevatorInfo | null>(null)
   useEffect(() => {
     let alive = true
@@ -78,7 +78,11 @@ function StartAdminButton({ onStart, className }: { onStart: () => void; classNa
       <button className={className ?? 'btn primary'} disabled={info === null || unavailable} title={info?.hint} onClick={onStart}>
         <Shield size={14} /> Start as admin
       </button>
-      {unavailable && <span className="admin-hint">Install gsudo: {GSUDO_HINT}</span>}
+      {unavailable && (
+        <button className="btn small" title={`Runs: ${GSUDO_HINT}`} onClick={onInstall}>
+          <Download size={14} /> Install gsudo
+        </button>
+      )}
     </>
   )
 }
@@ -1020,6 +1024,7 @@ export function App(): JSX.Element {
                         onRunAgain={runCommand}
                         onNew={() => newTab(loc.id, undefined, p.id)}
                         onNewAdmin={() => newAdminTab(loc.id, p.id)}
+                        onInstallGsudo={() => runCommand(INSTALL_GSUDO_COMMAND, loc.id)}
                         getElevator={() => window.api.getElevator()}
                         onDragEnd={() => {
                           tabDrag.tab = null
@@ -1148,7 +1153,7 @@ export function App(): JSX.Element {
                       <p>
                         <span className="path-chip">{t.cwd}</span>
                       </p>
-                      <StartAdminButton onStart={() => startAdmin(t.id)} />
+                      <StartAdminButton onStart={() => startAdmin(t.id)} onInstall={() => runCommand(INSTALL_GSUDO_COMMAND, t.locId)} />
                     </div>
                   )
                 }
@@ -1168,7 +1173,7 @@ export function App(): JSX.Element {
                     />
                     {t.elevated && t.exited && visible && (
                       <div className="admin-retry" style={style}>
-                        <StartAdminButton className="btn small" onStart={() => startAdmin(t.id)} />
+                        <StartAdminButton className="btn small" onStart={() => startAdmin(t.id)} onInstall={() => runCommand(INSTALL_GSUDO_COMMAND, t.locId)} />
                       </div>
                     )}
                   </div>
