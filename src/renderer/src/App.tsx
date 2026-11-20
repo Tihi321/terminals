@@ -719,7 +719,7 @@ export function App(): JSX.Element {
   )
 
   // Latest-handler indirection so the registry hooks and the window listener never go stale.
-  const act = useRef({ newSelected: () => {}, closeActive: () => {}, moveActive: (_dir: -1 | 1) => {} })
+  const act = useRef({ newSelected: () => {}, closeActive: () => {}, moveActive: (_dir: -1 | 1) => {}, moveItem: (_dir: -1 | 1) => {}, nestItem: (_dir: -1 | 1) => {} })
   act.current = {
     newSelected: () => selectedId && newTab(selectedId, undefined, focusedPaneId()),
     closeActive: () => {
@@ -731,6 +731,14 @@ export function App(): JSX.Element {
       const paneId = focusedPaneId()
       const id = paneId ? activeRef.current[paneId] : undefined
       if (id) commitTabs((t) => shiftTab(t, id, dir))
+    },
+    moveItem: (dir) => {
+      const id = stateRef.current?.selectedId
+      if (id && !id.startsWith('child:')) void window.api.moveItem(id, dir).then(setState)
+    },
+    nestItem: (dir) => {
+      const id = stateRef.current?.selectedId
+      if (id && !id.startsWith('child:')) void window.api.nestItem(id, dir).then(setState)
     }
   }
 
@@ -739,6 +747,7 @@ export function App(): JSX.Element {
       onNewTab: () => act.current.newSelected(),
       onCloseTab: () => act.current.closeActive(),
       onMoveTab: (dir) => act.current.moveActive(dir),
+      onMoveItem: (dir) => act.current.moveItem(dir),
       onCwd: (id, cwd) => {
         cwdById.current[id] = cwd
         scheduleSave()
@@ -761,7 +770,17 @@ export function App(): JSX.Element {
         const el = e.target as HTMLElement | null
         if (el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return
         e.preventDefault()
-        act.current.moveActive(e.key === 'ArrowLeft' ? -1 : 1)
+        // Sidebar focused: nest / un-nest the selected item. Otherwise (terminal etc.) move the active tab.
+        const dir = e.key === 'ArrowLeft' ? -1 : 1
+        if (el?.closest('.tree')) act.current.nestItem(dir)
+        else act.current.moveActive(dir)
+        return
+      }
+      if (e.altKey && e.shiftKey && !e.ctrlKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        const el = e.target as HTMLElement | null
+        if (el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return
+        e.preventDefault()
+        act.current.moveItem(e.key === 'ArrowUp' ? -1 : 1)
         return
       }
       if (!e.ctrlKey || e.altKey) return
@@ -909,6 +928,9 @@ export function App(): JSX.Element {
             onOpenSettings={() => setSettingsOpen(true)}
             counts={counts}
             onSelect={(id) => void select(id)}
+            onNestMove={(id, op, dir) =>
+              void (op === 'move' ? window.api.moveItem(id, dir) : window.api.nestItem(id, dir)).then(setState)
+            }
             onOpenTerminal={(id) => void openTerminal(id)}
             onOpenToSide={openLocToSide}
             canOpenToSide={(id) => canAddPane(ps, id)}

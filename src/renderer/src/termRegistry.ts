@@ -48,6 +48,8 @@ export interface TermHooks {
   onOpenSettings: () => void
   /** Alt+Shift+Left/Right: move the focused pane's active tab one place. */
   onMoveTab: (dir: -1 | 1) => void
+  /** Alt+Shift+Up/Down: move the selected sidebar item one place among its siblings. */
+  onMoveItem: (dir: -1 | 1) => void
   /** The shell reported its working directory (OSC 7 or OSC 9;9). */
   onCwd: (id: string, cwd: string) => void
 }
@@ -61,6 +63,7 @@ let hooks: TermHooks = {
   onToggleSidebar: () => {},
   onOpenSettings: () => {},
   onMoveTab: () => {},
+  onMoveItem: () => {},
   onCwd: () => {}
 }
 export function setTermHooks(h: TermHooks): void {
@@ -240,6 +243,11 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     if (ev.altKey && ev.shiftKey && !ev.ctrlKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
       ev.preventDefault()
       hooks.onMoveTab(ev.key === 'ArrowLeft' ? -1 : 1)
+      return false
+    }
+    if (ev.altKey && ev.shiftKey && !ev.ctrlKey && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
+      ev.preventDefault()
+      hooks.onMoveItem(ev.key === 'ArrowUp' ? -1 : 1)
       return false
     }
     if (ev.ctrlKey && ev.shiftKey && k === 't') {

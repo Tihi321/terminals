@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { markSidebarClick } from './sidebarFocus'
 import type { JSX, ReactNode } from 'react'
 import {
   PanelRight,
@@ -15,6 +16,10 @@ import {
   FolderPlus,
   FolderTree,
   FolderX,
+  ArrowDown,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  ArrowUp,
   GitBranch,
   Group,
   TriangleAlert,
@@ -31,12 +36,14 @@ import type { AppState, ChildView, FolderView, GroupView } from '../../shared/ty
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { LOC_DRAG_TYPE, locDrag } from './TabBar'
-import { childGroups, groupPath, nestError, removalSet, subtreeGroupIds } from '../../shared/groupTree'
+import { childGroups, groupPath, nestError, nestTarget, removalSet, subtreeGroupIds } from '../../shared/groupTree'
 
 interface Props {
   state: AppState
   counts: Record<string, number>
   onSelect: (id: string) => void
+  /** Move (up/down among siblings) or nest (into group above / out of group) a folder or group. */
+  onNestMove: (id: string, op: 'move' | 'nest', dir: -1 | 1) => void
   onOpenTerminal: (id: string) => void
   /** Show this location in a pane next to the focused one (or focus its pane when it already has one). */
   onOpenToSide: (id: string) => void
@@ -225,12 +232,38 @@ export function Sidebar(p: Props): JSX.Element {
     { label: 'Open in editor', icon: <Code size={14} />, disabled: missing, onClick: () => p.onOpenEditor(path) }
   ]
 
+  /** Move up/down/into group above/out of group, each only when it would do something (same rules as the shortcuts). */
+  const arrangeItems = (id: string): MenuItem[] => {
+    const folders = state.folders
+    const idx = (dir: -1 | 1): boolean => {
+      const f = folders.find((x) => x.id === id)
+      const gs = state.groups
+      const sibs = f
+        ? folders.filter((x) => (x.groupId && gs.some((g) => g.id === x.groupId) ? x.groupId : null) === (f.groupId && gs.some((g) => g.id === f.groupId) ? f.groupId : null))
+        : (() => {
+            const me = gs.find((g) => g.id === id)
+            return childGroups(gs, me?.parentId && gs.some((g) => g.id === me.parentId) ? me.parentId : null)
+          })()
+      const i = sibs.findIndex((x) => x.id === id)
+      return i >= 0 && !!sibs[i + dir]
+    }
+    const items: MenuItem[] = []
+    if (idx(-1)) items.push({ label: 'Move up', icon: <ArrowUp size={14} />, hint: 'Alt+Shift+Up', onClick: () => p.onNestMove(id, 'move', -1) })
+    if (idx(1)) items.push({ label: 'Move down', icon: <ArrowDown size={14} />, hint: 'Alt+Shift+Down', onClick: () => p.onNestMove(id, 'move', 1) })
+    if (nestTarget(state.groups, state.folders, id, 1) !== undefined)
+      items.push({ label: 'Move into group above', icon: <ArrowRightToLine size={14} />, hint: 'Alt+Shift+Right', onClick: () => p.onNestMove(id, 'nest', 1) })
+    if (nestTarget(state.groups, state.folders, id, -1) !== undefined)
+      items.push({ label: 'Move out of group', icon: <ArrowLeftToLine size={14} />, hint: 'Alt+Shift+Left', onClick: () => p.onNestMove(id, 'nest', -1) })
+    return items
+  }
+
   const folderMenu = (f: FolderView): MenuItem[] => {
     const manual = state.groups.filter((g) => g.kind === 'manual')
     return [
       ...pathItems(f.id, f.path, f.missing),
       { separator: true },
       { label: 'Rename', icon: <Pencil size={14} />, onClick: () => startRename('folder', f.id, f.name) },
+      ...arrangeItems(f.id),
       ...manual
         .filter((g) => g.id !== f.groupId)
         .map<MenuItem>((g) => ({
@@ -260,6 +293,7 @@ export function Sidebar(p: Props): JSX.Element {
       onClick: () => setConfirmRemove(g.id)
     }
     const moveItems: MenuItem[] = [
+      ...arrangeItems(g.id),
       ...state.groups
         .filter((x) => x.kind === 'manual' && x.id !== g.parentId && nestError(state.groups, g.id, x.id) === null)
         .map<MenuItem>((x) => ({
@@ -655,6 +689,13 @@ export function Sidebar(p: Props): JSX.Element {
       </div>
       <div
         className={dragOver === 'standalone' ? 'tree drop-active' : 'tree'}
+        tabIndex={-1}
+        onClick={(e) => {
+          // Keep keyboard focus in the tree after a row click (the selected terminal would otherwise grab it).
+          if ((e.target as HTMLElement).closest('input, textarea')) return
+          markSidebarClick()
+          if (!e.currentTarget.contains(document.activeElement)) e.currentTarget.focus({ preventScroll: true })
+        }}
         onDragOver={(e) => {
           if (isOsDrag(e)) {
             e.preventDefault()

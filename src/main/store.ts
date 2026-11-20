@@ -26,7 +26,7 @@ import {
 import { sanitizePersisted } from '../shared/panes'
 import { sanitizeTabs } from '../shared/session'
 import { DEFAULT_SETTINGS, patchSettings, sanitizeSettings } from '../shared/settings'
-import { nestError, removalSet } from '../shared/groupTree'
+import { childGroups, nestError, nestTarget, removalSet } from '../shared/groupTree'
 import { resolveShell } from './pty'
 import { readGit } from './git'
 
@@ -503,6 +503,59 @@ export function moveFolder(id: string, groupId: string | null, beforeId?: string
   if (at >= 0) data.folders.splice(at, 0, f)
   else data.folders.push(f)
   save()
+  return getState()
+}
+
+/** Swaps item `id` with its neighbour among siblings (same groupId for folders, same effective parent for groups). Pure on `d`. Returns true when something moved. */
+export function moveItemData(d: Persisted, id: string, dir: -1 | 1): boolean {
+  if (dir !== -1 && dir !== 1) return false
+  const swap = <T extends { id: string }>(arr: T[], sibs: T[]): boolean => {
+    const i = sibs.findIndex((x) => x.id === id)
+    const other = sibs[i + dir]
+    if (i < 0 || !other) return false
+    const a = arr.indexOf(sibs[i])
+    const b = arr.indexOf(other)
+    ;[arr[a], arr[b]] = [arr[b], arr[a]]
+    return true
+  }
+  const f = d.folders.find((x) => x.id === id)
+  if (f) return swap(d.folders, d.folders.filter((x) => (x.groupId ?? null) === (f.groupId ?? null)))
+  const g = d.groups.find((x) => x.id === id)
+  if (g) {
+    const parent = g.parentId && d.groups.some((x) => x.id === g.parentId) ? g.parentId : null
+    return swap(d.groups, childGroups(d.groups, parent))
+  }
+  return false
+}
+
+export function moveItem(id: string, dir: -1 | 1): AppState {
+  if (moveItemData(data, String(id), dir)) save()
+  return getState()
+}
+
+/** Nests item `id` into the manual group above it (dir 1) or out of its group (dir -1); rules in nestTarget. Appends at the end of the new container. Pure on `d`. Returns true when something moved. */
+export function nestItemData(d: Persisted, id: string, dir: -1 | 1): boolean {
+  if (dir !== -1 && dir !== 1) return false
+  const target = nestTarget(d.groups, d.folders, id, dir)
+  if (target === undefined) return false
+  const f = d.folders.find((x) => x.id === id)
+  if (f) {
+    f.groupId = target
+    d.folders = d.folders.filter((x) => x !== f)
+    d.folders.push(f)
+    return true
+  }
+  const g = d.groups.find((x) => x.id === id) as PersistedGroup
+  const oldParent = g.parentId
+  g.parentId = target
+  d.groups = d.groups.filter((x) => x !== g)
+  if (dir === -1 && oldParent) d.groups.splice(d.groups.findIndex((x) => x.id === oldParent) + 1, 0, g)
+  else d.groups.push(g)
+  return true
+}
+
+export function nestItem(id: string, dir: -1 | 1): AppState {
+  if (nestItemData(data, String(id), dir)) save()
   return getState()
 }
 

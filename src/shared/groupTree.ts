@@ -70,3 +70,32 @@ export function removalSet(
   const set = new Set(groupIds)
   return { groupIds, folderIds: folders.filter((f) => f.groupId !== null && set.has(f.groupId)).map((f) => f.id) }
 }
+
+/**
+ * Where Alt+Shift+Left/Right (or the "Move into group above" / "Move out of group" menu entries) would put item `id`.
+ * Returns the new container (a manual group id, or null = top level) or undefined when nothing would change.
+ * dir 1 = into the manual group rendered directly above at the same level: for a group the previous sibling group,
+ * for a folder the last manual child group of its container (the sidebar renders subgroups before folders).
+ * dir -1 = one level out: the container's own parent. Pure; used by main (authoritative) and the renderer (menu).
+ */
+export function nestTarget(groups: TreeGroup[], folders: TreeFolder[], id: string, dir: -1 | 1): string | null | undefined {
+  const ids = new Set(groups.map((g) => g.id))
+  const parentOf = (g: TreeGroup): string | null => (g.parentId && ids.has(g.parentId) ? g.parentId : null)
+  const manual = (gid: string | null): boolean => gid === null || groups.some((g) => g.id === gid && g.kind === 'manual')
+  const g = groups.find((x) => x.id === id)
+  const f = g ? undefined : folders.find((x) => x.id === id)
+  if (!g && !f) return undefined
+  const cur = g ? parentOf(g) : f && f.groupId && ids.has(f.groupId) ? f.groupId : null
+  let target: string | null | undefined
+  if (dir === 1) {
+    const sibs = childGroups(groups, cur)
+    const above = g ? sibs[sibs.findIndex((x) => x.id === id) - 1] : [...sibs].reverse().find((x) => x.kind === 'manual')
+    target = above && above.kind === 'manual' ? above.id : undefined
+  } else {
+    const parent = cur === null ? undefined : groups.find((x) => x.id === cur)
+    target = parent ? parentOf(parent) : undefined
+  }
+  if (target === undefined || !manual(target)) return undefined
+  if (g && nestError(groups, id, target) !== null) return undefined
+  return target
+}

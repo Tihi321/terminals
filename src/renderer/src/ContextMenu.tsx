@@ -8,6 +8,8 @@ export interface MenuItem {
   danger?: boolean
   disabled?: boolean
   separator?: boolean
+  /** Shortcut shown at the right edge. */
+  hint?: string
   /** Native tooltip, e.g. why an item is disabled. */
   title?: string
 }
@@ -73,7 +75,8 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
             }}
           >
             <span className="ctx-icon">{it.icon}</span>
-            <span>{it.label}</span>
+            <span className="ctx-label">{it.label}</span>
+            {it.hint && <span className="ctx-hint">{it.hint}</span>}
           </button>
         )
       )}

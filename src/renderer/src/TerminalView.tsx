@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, JSX } from 'react'
 import { formatPaths, getTerm, refreshTerm } from './termRegistry'
+import { sidebarKeepsFocus } from './sidebarFocus'
 
 interface Props {
   id: string
@@ -79,7 +80,7 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
     const raf = requestAnimationFrame(() => {
       refreshTerm(id)
       safeFit(id, el)
-      if (focused) entry.term.focus()
+      if (focused && !sidebarKeepsFocus()) entry.term.focus()
     })
     return () => cancelAnimationFrame(raf)
   }, [visible, focused, id])

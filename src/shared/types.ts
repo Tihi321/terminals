@@ -278,6 +278,10 @@ export interface TerminalsApi {
   renameGroup(id: string, name: string): Promise<AppState>
   /** Move a folder into a manual group (or out with null), optionally before another folder. */
   moveFolder(id: string, groupId: string | null, beforeId?: string): Promise<AppState>
+  /** Move a folder or group one place up (-1) or down (1) among its siblings. No-op at the edges or for unknown ids. */
+  moveItem(id: string, dir: -1 | 1): Promise<AppState>
+  /** Alt+Shift+Right (1) nests a folder or group into the manual group above it; Left (-1) moves it out one level. No-op when not applicable. */
+  nestItem(id: string, dir: -1 | 1): Promise<AppState>
   setGroupCollapsed(id: string, collapsed: boolean): Promise<AppState>
   setShowHidden(groupId: string, show: boolean): Promise<AppState>
   setChildHidden(groupId: string, path: string, hidden: boolean): Promise<AppState>

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
-import { childId, migrate, moveGroupData, removeGroupData, type Persisted } from './store'
+import { childId, migrate, moveGroupData, moveItemData, nestItemData, removeGroupData, type Persisted } from './store'
 import { subtreeGroupIds } from '../shared/groupTree'
 import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
@@ -547,7 +547,43 @@ function checkGroupTree(): CheckResult {
     if (r.commands.map((c) => c.ownerId).join() !== 's' || r.snippets.map((x) => x.scope).join() !== 's') return fail('cascade should leave only the commands/prompts of s')
     if (r.selectedId !== 's') return fail('selection should fall back to s, got ' + r.selectedId)
     if (sum.groupIds.length !== 4 || sum.folderIds.length !== 2 || sum.commands !== 4 || sum.prompts !== 1) return fail('summary counts ' + JSON.stringify(sum))
-    return { ok: true, msg: 'group tree: flat migration, dangling/non-manual/cyclic parents, move rules, cascade removal with commands, prompts and selection' }
+    // 4. moveItemData: swaps among siblings only, edges and unknown ids are no-ops.
+    const mv = migrate({
+      version: 4,
+      folders: [
+        { id: 's1', path: p('s1'), groupId: null },
+        { id: 'a1', path: p('a1'), groupId: 'ga' },
+        { id: 's2', path: p('s2'), groupId: null },
+        { id: 'a2', path: p('a2'), groupId: 'ga' }
+      ],
+      groups: [g('ga'), g('gb'), g('sub', { parentId: 'ga' }), g('gc')]
+    })
+    const ids = (a: { id: string }[]): string => a.map((x) => x.id).join()
+    if (!moveItemData(mv, 'a2', -1) || ids(mv.folders.filter((f) => f.groupId === 'ga')) !== 'a2,a1' || mv.folders.find((f) => f.id === 'a2')?.groupId !== 'ga') return fail('folder should swap within its group')
+    if (ids(mv.folders.filter((f) => !f.groupId)) !== 's1,s2') return fail('standalone folders must not change when a grouped folder moves')
+    if (moveItemData(mv, 'a2', -1) || moveItemData(mv, 's2', 1) || moveItemData(mv, 'nope', 1) || moveItemData(mv, 'child:x', 1)) return fail('edge / unknown moves should be no-ops')
+    if (!moveItemData(mv, 'gc', -1) || ids(mv.groups.filter((x) => !x.parentId)) !== 'ga,gc,gb' || moveItemData(mv, 'sub', 1) || moveItemData(mv, 'sub', -1)) return fail('group should swap among top-level groups only; lone subgroup stays')
+    // 5. nestItemData: into the manual group above, out one level, cycles / no target / non-manual are no-ops.
+    const ns = migrate({
+      version: 4,
+      folders: [
+        { id: 'f0', path: p('f0'), groupId: null },
+        { id: 'fx', path: p('fx'), groupId: 'n2' },
+        { id: 'f1', path: p('f1'), groupId: 'n1' },
+        { id: 'f2', path: p('f2'), groupId: 'n1' }
+      ],
+      groups: [g('n1'), g('n2'), g('n3'), g('n1a', { parentId: 'n1' }), g('n1b', { parentId: 'n1' })]
+    })
+    const par = (id: string): string | null | undefined => ns.groups.find((x) => x.id === id)?.parentId
+    if (nestItemData(ns, 'n1', 1) || nestItemData(ns, 'n1a', 1)) return fail('first sibling has no group above')
+    if (!nestItemData(ns, 'n2', 1) || par('n2') !== 'n1' || ids(ns.groups.filter((x) => x.parentId === 'n1')) !== 'n1a,n1b,n2') return fail('group should nest into the previous sibling, at the end')
+    if (!nestItemData(ns, 'n1b', 1) || par('n1b') !== 'n1a') return fail('subgroup should nest into previous sibling subgroup')
+    if (nestItemData(ns, 'n1', -1) || nestItemData(ns, 'f0', -1)) return fail('top-level items cannot move out')
+    if (!nestItemData(ns, 'n1b', -1) || par('n1b') !== 'n1' || ids(ns.groups).split(',')[ids(ns.groups).split(',').indexOf('n1a') + 1] !== 'n1b') return fail('group out should land right after its old parent, got ' + ids(ns.groups))
+    if (!nestItemData(ns, 'f0', 1) || ns.folders.find((x) => x.id === 'f0')?.groupId !== 'n3' || ids(ns.folders).split(',').pop() !== 'f0') return fail('standalone folder should join the last top-level manual group')
+    if (!nestItemData(ns, 'f1', -1) || ns.folders.find((x) => x.id === 'f1')?.groupId !== null) return fail('folder out of a top-level group becomes standalone')
+    if (nestItemData(ns, 'nope', 1) || nestItemData(ns, 'child:x', -1)) return fail('unknown ids are no-ops')
+    return { ok: true, msg: 'group tree: flat migration, move among siblings, nest / un-nest, dangling/non-manual/cyclic parents, move rules, cascade removal with commands, prompts and selection' }
   } catch (e) {
     return fail(String(e))
   }

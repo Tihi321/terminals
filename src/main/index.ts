@@ -336,6 +336,8 @@ function registerIpc(): void {
   ipcMain.handle('folders:move', (_e, id: string, groupId: string | null, beforeId?: string) =>
     store.moveFolder(id, groupId, beforeId)
   )
+  ipcMain.handle('items:move', (_e, id: string, dir: number) => store.moveItem(String(id), dir === -1 ? -1 : 1))
+  ipcMain.handle('items:nest', (_e, id: string, dir: number) => store.nestItem(String(id), dir === -1 ? -1 : 1))
   ipcMain.handle('groups:collapsed', (_e, id: string, c: boolean) => store.setGroupCollapsed(id, c))
   ipcMain.handle('groups:showHidden', (_e, id: string, s: boolean) => store.setShowHidden(id, s))
   ipcMain.handle('groups:childHidden', (_e, id: string, path: string, h: boolean) =>
