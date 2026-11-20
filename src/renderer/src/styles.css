@@ -535,7 +535,7 @@ kbd,
 .group-empty {
   color: var(--text-3);
   font-size: 12px;
-  padding: 6px 8px 8px 50px;
+  padding: 6px 8px 8px 50px; /* depth-specific padding-left is set inline */
 }
 .group-children {
   margin-bottom: 4px;
@@ -2304,4 +2304,20 @@ kbd,
 .dl.note {
   color: var(--text-3);
   font-style: italic;
+}
+
+.row.confirm-row {
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  cursor: default;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.confirm-row .confirm-text {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.4;
 }

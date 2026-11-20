@@ -99,6 +99,8 @@ export interface GroupView {
   id: string
   kind: 'parent' | 'manual'
   name: string
+  /** Containing manual group, or null at the top level. */
+  parentId: string | null
   /** Parent-folder groups only. */
   path: string | null
   order: number
@@ -265,9 +267,13 @@ export interface TerminalsApi {
   onStateChanged(cb: (state: AppState) => void): () => void
   addFolder(): Promise<AppState>
   addParentGroup(): Promise<AppState>
-  addGroup(name: string): Promise<AppState>
+  /** Creates a manual group (inside parentId when that is a manual group, else top level) and selects it. */
+  addGroup(name: string, parentId?: string | null): Promise<AppState>
   removeFolder(id: string): Promise<AppState>
+  /** Cascades: removes the group, all subgroups, their folders, and the commands/prompts they own. Nothing on disk. */
   removeGroup(id: string): Promise<AppState>
+  /** Nest a group under a manual group (or null for top level). No change if the move is invalid. */
+  moveGroup(id: string, parentId: string | null): Promise<AppState>
   renameFolder(id: string, name: string): Promise<AppState>
   renameGroup(id: string, name: string): Promise<AppState>
   /** Move a folder into a manual group (or out with null), optionally before another folder. */

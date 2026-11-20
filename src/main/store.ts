@@ -10,7 +10,7 @@ import {
   writeFileSync,
   type Dirent
 } from 'node:fs'
-import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path'
+import { basename, dirname, join, relative, resolve, isAbsolute, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
   SCHEMA_VERSION,
@@ -26,6 +26,7 @@ import {
 import { sanitizePersisted } from '../shared/panes'
 import { sanitizeTabs } from '../shared/session'
 import { DEFAULT_SETTINGS, patchSettings, sanitizeSettings } from '../shared/settings'
+import { nestError, removalSet } from '../shared/groupTree'
 import { resolveShell } from './pty'
 import { readGit } from './git'
 
@@ -34,6 +35,8 @@ interface PersistedGroup {
   kind: 'parent' | 'manual'
   name: string
   path?: string
+  /** Containing manual group; absent or null = top level. */
+  parentId?: string | null
   order: number
   collapsed: boolean
   showHidden: boolean
@@ -41,7 +44,7 @@ interface PersistedGroup {
   hidden: string[]
 }
 
-interface Persisted {
+export interface Persisted {
   version: number
   folders: Folder[]
   groups: PersistedGroup[]
@@ -123,6 +126,7 @@ export function migrate(raw: Record<string, unknown>): Persisted {
       kind: g.kind === 'parent' ? 'parent' : 'manual',
       name: String(g.name ?? 'Group'),
       path: typeof g.path === 'string' ? g.path : undefined,
+      parentId: typeof g.parentId === 'string' ? g.parentId : null,
       order: typeof g.order === 'number' ? g.order : i,
       collapsed: !!g.collapsed,
       showHidden: !!g.showHidden,
@@ -151,6 +155,26 @@ export function migrate(raw: Record<string, unknown>): Persisted {
   // Drop dangling group references rather than losing the folder.
   const groupIds = new Set(d.groups.map((g) => g.id))
   for (const f of d.folders) if (f.groupId && !groupIds.has(f.groupId)) f.groupId = null
+  // Only existing manual groups can be parents; a group is never its own parent.
+  const byId = new Map(d.groups.map((g) => [g.id, g]))
+  for (const g of d.groups) {
+    if (!g.parentId) continue
+    const p = byId.get(g.parentId)
+    if (!p || p === g || p.kind !== 'manual') g.parentId = null
+  }
+  // Break cycles: walk up from each group and cut the link where a node is revisited.
+  for (const g of d.groups) {
+    const seen = new Set<string>([g.id])
+    let cur: PersistedGroup = g
+    while (cur.parentId) {
+      if (seen.has(cur.parentId)) {
+        cur.parentId = null
+        break
+      }
+      seen.add(cur.parentId)
+      cur = byId.get(cur.parentId) as PersistedGroup
+    }
+  }
   return d
 }
 
@@ -240,6 +264,7 @@ export function getState(): AppState {
       id: g.id,
       kind: g.kind,
       name: g.name,
+      parentId: g.parentId ?? null,
       path: g.path ?? null,
       order: g.order,
       collapsed: g.collapsed,
@@ -341,11 +366,12 @@ export function createParentGroup(path: string): { id: string; existed: boolean 
   return r
 }
 
-function pushManualGroup(name: string): string {
+function pushManualGroup(name: string, parentId?: string | null): string {
   const g: PersistedGroup = {
     id: randomUUID(),
     kind: 'manual',
     name: name.trim() || 'New group',
+    parentId: parentId && data.groups.some((x) => x.id === parentId && x.kind === 'manual') ? parentId : null,
     order: data.groups.length,
     collapsed: false,
     showHidden: false,
@@ -355,24 +381,24 @@ function pushManualGroup(name: string): string {
   return g.id
 }
 
-export function addManualGroup(name: string): AppState {
-  data.selectedId = pushManualGroup(name)
+export function addManualGroup(name: string, parentId?: string | null): AppState {
+  data.selectedId = pushManualGroup(name, parentId)
   save()
   return getState()
 }
 
 /** Like addManualGroup, but leaves the selection alone and returns the new id (used by the MCP server). */
-export function createManualGroup(name: string): string {
-  const id = pushManualGroup(name)
+export function createManualGroup(name: string, parentId?: string | null): string {
+  const id = pushManualGroup(name, parentId)
   save()
   return id
 }
 
-function fixSelection(): void {
-  const s = data.selectedId
+function fixSelection(d: Persisted): void {
+  const s = d.selectedId
   if (!s || s.startsWith('child:')) return
-  if (!data.folders.some((f) => f.id === s) && !data.groups.some((g) => g.id === s)) {
-    data.selectedId = data.folders[0]?.id ?? data.groups[0]?.id ?? null
+  if (!d.folders.some((f) => f.id === s) && !d.groups.some((g) => g.id === s)) {
+    d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? null
   }
 }
 
@@ -380,18 +406,72 @@ export function removeFolder(id: string): AppState {
   data.folders = data.folders.filter((f) => f.id !== id)
   data.commands = data.commands.filter((c) => c.ownerId !== id)
   data.snippets = data.snippets.filter((s) => s.scope !== id)
-  fixSelection()
+  fixSelection(data)
   save()
   return getState()
 }
 
+export interface RemovalSummary {
+  groupIds: string[]
+  folderIds: string[]
+  commands: number
+  prompts: number
+}
+
+/** Cascade-removes group `id` from `d`: subgroups, their folders, and owned commands/prompts. Touches only `d` (no disk, no save). */
+export function removeGroupData(d: Persisted, id: string): RemovalSummary {
+  const { groupIds, folderIds } = removalSet(d.groups, d.folders, id)
+  const summary: RemovalSummary = { groupIds, folderIds, commands: 0, prompts: 0 }
+  if (groupIds.length === 0) return summary
+  const gset = new Set(groupIds)
+  const fset = new Set(folderIds)
+  // Direct children of removed parent-folder groups own commands/prompts under `child:` ids.
+  const prefixes: string[] = []
+  for (const g of d.groups) if (gset.has(g.id) && g.kind === 'parent' && g.path) prefixes.push(childId(g.path) + sep)
+  const owned = (o: string): boolean =>
+    gset.has(o) || fset.has(o) || prefixes.some((p) => o.startsWith(p) && !/[\\/]/.test(o.slice(p.length)))
+  const sel = d.selectedId
+  const selRemoved = !!sel && owned(sel)
+  const cmds = d.commands.filter((c) => !owned(c.ownerId))
+  const snips = d.snippets.filter((s) => !owned(s.scope))
+  summary.commands = d.commands.length - cmds.length
+  summary.prompts = d.snippets.length - snips.length
+  d.commands = cmds
+  d.snippets = snips
+  d.groups = d.groups.filter((g) => !gset.has(g.id))
+  d.folders = d.folders.filter((f) => !fset.has(f.id))
+  if (selRemoved) d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? null
+  else fixSelection(d)
+  return summary
+}
+
 export function removeGroup(id: string): AppState {
-  data.groups = data.groups.filter((g) => g.id !== id)
-  for (const f of data.folders) if (f.groupId === id) f.groupId = null
-  data.commands = data.commands.filter((c) => c.ownerId !== id)
-  data.snippets = data.snippets.filter((s) => s.scope !== id)
-  fixSelection()
+  removeGroupData(data, id)
   save()
+  return getState()
+}
+
+/** Cascade removal for the MCP server; returns what was removed. */
+export function deleteGroup(id: string): RemovalSummary {
+  const r = removeGroupData(data, id)
+  if (r.groupIds.length > 0) save()
+  return r
+}
+
+/** Nests group `id` under manual group `parentId` (null = top level) and makes it the last record. Returns the error or null. Pure on `d`. */
+export function moveGroupData(d: Persisted, id: string, parentId: string | null): string | null {
+  const err = nestError(d.groups, id, parentId)
+  if (err) return err
+  const g = d.groups.find((x) => x.id === id) as PersistedGroup
+  if ((g.parentId ?? null) === parentId) return null // already there: no-op, no reorder
+  g.parentId = parentId
+  d.groups = d.groups.filter((x) => x !== g)
+  d.groups.push(g)
+  return null
+}
+
+export function moveGroup(id: string, parentId: string | null): AppState {
+  if (moveGroupData(data, id, parentId) === null) save()
   return getState()
 }
 

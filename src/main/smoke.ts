@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
-import { childId, migrate } from './store'
+import { childId, migrate, moveGroupData, removeGroupData, type Persisted } from './store'
+import { subtreeGroupIds } from '../shared/groupTree'
 import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
 import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_FONT, patchSettings, sanitizeSettings } from '../shared/settings'
@@ -475,6 +476,83 @@ function checkPtyEnv(dir: string, shell: string, track: (p: IPty) => void): Prom
   })
 }
 
+/** Check: nested groups: migration of parentId, moveGroupData rules and cascade removal. Pure, works on migrate() output. */
+function checkGroupTree(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'group tree: ' + m })
+  const root = join(tmpdir(), 'terminals-grouptree')
+  const p = (...n: string[]): string => join(root, ...n)
+  const g = (id: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ id, kind: 'manual', name: id, order: 0, ...extra })
+  const parentOf = (d: Persisted, id: string): string | null | undefined => d.groups.find((x) => x.id === id)?.parentId
+  try {
+    // 1. Old flat state, then dangling / non-manual / cyclic parents.
+    const flat = migrate({
+      version: 4,
+      folders: [{ id: 'f1', path: p('f1'), groupId: 'a' }],
+      groups: [g('a'), g('b', { kind: 'parent', path: p('b') })]
+    })
+    if (flat.groups.some((x) => x.parentId !== null) || flat.folders[0]?.groupId !== 'a') return fail('flat state should keep top level groups and folder membership')
+    const bad = migrate({
+      version: 4,
+      groups: [
+        g('x', { parentId: 'nope' }),
+        g('pk', { kind: 'parent', path: p('pk') }),
+        g('y', { parentId: 'pk' }),
+        g('a', { parentId: 'b' }),
+        g('b', { parentId: 'a' })
+      ]
+    })
+    if (parentOf(bad, 'x') !== null) return fail('dangling parent should become null')
+    if (parentOf(bad, 'y') !== null) return fail('parent-kind parent should become null')
+    for (const x of bad.groups) {
+      const sub = subtreeGroupIds(bad.groups, x.id)
+      if (sub.length > bad.groups.length || sub.slice(1).includes(x.id)) return fail('cycle left behind for ' + x.id)
+    }
+    if (parentOf(bad, 'a') !== null && parentOf(bad, 'b') !== null) return fail('cycle a<->b was not cut')
+
+    // 2. moveGroupData
+    const tree = (): Persisted =>
+      migrate({
+        version: 4,
+        groups: [g('a'), g('b', { parentId: 'a' }), g('c', { parentId: 'b' }), g('pk', { kind: 'parent', path: p('pk') }), g('m')]
+      })
+    const d = tree()
+    for (const [id, to] of [['a', 'c'], ['a', 'a'], ['m', 'pk']] as const) {
+      const before = parentOf(d, id)
+      if (typeof moveGroupData(d, id, to) !== 'string' || parentOf(d, id) !== before) return fail(`move ${id} -> ${to} should be rejected and leave parentId alone`)
+    }
+    if (moveGroupData(d, 'pk', 'm') !== null || parentOf(d, 'pk') !== 'm') return fail('parent-kind group should move into a manual group')
+    if (moveGroupData(d, 'b', null) !== null || parentOf(d, 'b') !== null) return fail('move to top level')
+    if (d.groups[d.groups.length - 1]?.id !== 'b') return fail('moved group should go last')
+    const orderBefore = d.groups.map((x) => x.id).join(',')
+    if (moveGroupData(d, 'pk', 'm') !== null || d.groups.map((x) => x.id).join(',') !== orderBefore) return fail('moving a group to its current parent should leave the order unchanged')
+
+    // 3. Cascade removal: a > b > c, parent-kind group pk nested in b, plus a standalone folder s.
+    const r = migrate({
+      version: 4,
+      groups: [g('a'), g('b', { parentId: 'a' }), g('c', { parentId: 'b' }), g('pk', { kind: 'parent', path: p('repos'), parentId: 'b' })],
+      folders: [
+        { id: 'fa', path: p('fa'), groupId: 'a' },
+        { id: 'fc', path: p('fc'), groupId: 'c' },
+        { id: 's', path: p('s'), groupId: null }
+      ],
+      commands: ['a', 'c', 'fc', childId(p('repos', 'one')), 's'].map((o, i) => ({ id: 'k' + i, name: 'k' + i, ownerId: o, mode: 'parallel', targets: [] })),
+      snippets: [
+        { id: 'p1', name: 'p1', body: 'x', scope: 'a' },
+        { id: 'p2', name: 'p2', body: 'x', scope: 's' }
+      ],
+      selectedId: 'fc'
+    })
+    const sum = removeGroupData(r, 'a')
+    if (r.groups.length !== 0 || r.folders.map((f) => f.id).join() !== 's') return fail('cascade should leave only folder s: ' + JSON.stringify({ g: r.groups.length, f: r.folders.map((f) => f.id) }))
+    if (r.commands.map((c) => c.ownerId).join() !== 's' || r.snippets.map((x) => x.scope).join() !== 's') return fail('cascade should leave only the commands/prompts of s')
+    if (r.selectedId !== 's') return fail('selection should fall back to s, got ' + r.selectedId)
+    if (sum.groupIds.length !== 4 || sum.folderIds.length !== 2 || sum.commands !== 4 || sum.prompts !== 1) return fail('summary counts ' + JSON.stringify(sum))
+    return { ok: true, msg: 'group tree: flat migration, dangling/non-manual/cyclic parents, move rules, cascade removal with commands, prompts and selection' }
+  } catch (e) {
+    return fail(String(e))
+  }
+}
+
 /** Check: MCP location resolution, command/prompt validation and the auth/host guards, against a synthetic state. */
 function checkMcpLogic(dir: string): CheckResult {
   const p = (...n: string[]): string => join(dir, ...n)
@@ -494,6 +572,7 @@ function checkMcpLogic(dir: string): CheckResult {
     kind,
     name,
     path,
+    parentId: null,
     order: 0,
     collapsed: false,
     showHidden: false,
@@ -624,6 +703,7 @@ export async function runSmoke(): Promise<void> {
     await checkSteps(dir, shell, track),
     await checkPtyEnv(dir, shell, track),
     checkMigration(),
+    checkGroupTree(),
     checkSettings(),
     checkPanes(),
     checkTabs(),

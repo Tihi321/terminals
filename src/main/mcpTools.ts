@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as z from 'zod'
 import type { AppState, Command, CommandTarget, Snippet } from '../shared/types'
+import { nestError } from '../shared/groupTree'
 import * as store from './store'
 
 /**
@@ -387,7 +388,8 @@ export const TOOLS: ToolDef[] = [
   }),
   defineTool({
     name: 'list_locations',
-    description: 'All groups (manual and parent folder groups with their discovered subfolders) and saved folders, with ids, names, paths and group membership.',
+    description:
+      'All groups (manual and parent folder groups with their discovered subfolders) and saved folders, with ids, names, paths and group membership. Groups nest through `parentId` (null = top level); only manual groups can contain groups.',
     shape: {},
     mutates: false,
     run: () => {
@@ -395,11 +397,12 @@ export const TOOLS: ToolDef[] = [
       return {
         groups: s.groups.map((g) =>
           g.kind === 'manual'
-            ? { id: g.id, kind: g.kind, name: g.name, folderIds: s.folders.filter((f) => f.groupId === g.id).map((f) => f.id) }
+            ? { id: g.id, kind: g.kind, name: g.name, parentId: g.parentId, folderIds: s.folders.filter((f) => f.groupId === g.id).map((f) => f.id) }
             : {
                 id: g.id,
                 kind: g.kind,
                 name: g.name,
+                parentId: g.parentId,
                 path: g.path,
                 missing: g.missing,
                 children: g.children.map((c) => ({ id: c.id, name: c.name, path: c.path, hidden: c.hidden }))
@@ -509,16 +512,18 @@ export const TOOLS: ToolDef[] = [
   defineTool({
     name: 'create_group',
     description:
-      'Create a manual group. `folders`: absolute paths; unsaved ones are added to the group, saved ones are moved into it. Reports what happened per path.',
+      'Create a manual group, optionally inside another manual group (`parent`). `folders`: absolute paths; unsaved ones are added to the group, saved ones are moved into it. Reports what happened per path.',
     shape: {
       name: z.string().describe('Group name'),
+      parent: groupRef('Parent manual group').optional(),
       folders: z.array(z.string()).optional().describe('Absolute folder paths')
     },
     mutates: true,
     run: (a) => {
       const name = requireName(a.name, 'Group name')
-      const id = store.createManualGroup(name)
-      return { groupId: id, name, folders: addOrMove(a.folders ?? [], id, true) }
+      const parentId = a.parent !== undefined ? findLocation(store.getState(), a.parent, ['manual']).id : null
+      const id = store.createManualGroup(name, parentId)
+      return { groupId: id, name, parentId, folders: addOrMove(a.folders ?? [], id, true) }
     }
   }),
   defineTool({
@@ -549,18 +554,40 @@ export const TOOLS: ToolDef[] = [
   defineTool({
     name: 'delete_group',
     description:
-      "Remove a group from the app. Also deletes the commands and prompts saved on the group and closes its terminals (for a parent group, its subfolders' terminals too). A manual group's folders stay as standalone folders. Nothing on disk is deleted.",
+      "Removes the group, all its subgroups at any depth and every folder in them from the app. Also deletes their commands and prompts (including those on a removed parent group's subfolders) and closes their terminals. Nothing on disk is deleted.",
     shape: { group: groupRef('Group') },
     mutates: true,
     destructive: true,
     run: (a) => {
+      const g = findLocation(store.getState(), a.group, ['manual', 'parent'])
+      const summary = store.deleteGroup(g.id)
+      return {
+        deleted: g.id,
+        name: g.name,
+        kind: g.kind,
+        groupsDeleted: summary.groupIds.slice(1),
+        foldersDeleted: summary.folderIds,
+        commandsDeleted: summary.commands,
+        promptsDeleted: summary.prompts
+      }
+    }
+  }),
+  defineTool({
+    name: 'move_group',
+    description: 'Move a group under a manual group, or to the top level when `parent` is omitted. Only manual groups can contain groups.',
+    shape: {
+      group: groupRef('Group to move'),
+      parent: groupRef('Target manual group; omit to move to the top level').optional()
+    },
+    mutates: true,
+    run: (a) => {
       const s = store.getState()
       const g = findLocation(s, a.group, ['manual', 'parent'])
-      const commands = s.commands.filter((c) => c.ownerId === g.id).length
-      const prompts = s.snippets.filter((p) => p.scope === g.id).length
-      const kept = s.folders.filter((f) => f.groupId === g.id).map((f) => f.id)
-      store.removeGroup(g.id)
-      return { deleted: g.id, name: g.name, kind: g.kind, commandsDeleted: commands, promptsDeleted: prompts, foldersKept: kept }
+      const parentId = a.parent !== undefined ? findLocation(s, a.parent, ['manual']).id : null
+      const err = nestError(s.groups, g.id, parentId)
+      if (err) throw new ToolError(err)
+      store.moveGroup(g.id, parentId)
+      return { id: g.id, name: g.name, parentId }
     }
   }),
   defineTool({

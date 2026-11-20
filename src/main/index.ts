@@ -323,7 +323,12 @@ function registerIpc(): void {
     const p = await pickFolder()
     return p ? store.addParentGroup(p) : store.getState()
   })
-  ipcMain.handle('groups:addManual', (_e, name: string) => store.addManualGroup(String(name ?? '')))
+  ipcMain.handle('groups:addManual', (_e, name: string, parentId?: string | null) =>
+    store.addManualGroup(String(name ?? ''), typeof parentId === 'string' ? parentId : null)
+  )
+  ipcMain.handle('groups:move', (_e, id: string, parentId: string | null) =>
+    store.moveGroup(String(id), typeof parentId === 'string' ? parentId : null)
+  )
   ipcMain.handle('folders:remove', (_e, id: string) => store.removeFolder(id))
   ipcMain.handle('groups:remove', (_e, id: string) => store.removeGroup(id))
   ipcMain.handle('folders:rename', (_e, id: string, name: string) => store.renameFolder(id, String(name)))

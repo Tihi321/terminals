@@ -31,6 +31,7 @@ import type { AppState, ChildView, FolderView, GroupView } from '../../shared/ty
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { LOC_DRAG_TYPE, locDrag } from './TabBar'
+import { childGroups, groupPath, nestError, removalSet, subtreeGroupIds } from '../../shared/groupTree'
 
 interface Props {
   state: AppState
@@ -42,7 +43,8 @@ interface Props {
   canOpenToSide: (id: string) => boolean
   onAddFolder: () => void
   onAddParent: () => void
-  onAddGroup: (name: string) => void
+  onAddGroup: (name: string, parentId?: string | null) => void
+  onMoveGroup: (id: string, parentId: string | null) => void
   onRemoveFolder: (id: string) => void
   onRemoveGroup: (id: string) => void
   onRenameFolder: (id: string, name: string) => void
@@ -178,10 +180,13 @@ export function Sidebar(p: Props): JSX.Element {
   const { state } = p
   const [editing, setEditing] = useState<{ kind: 'folder' | 'group'; id: string } | null>(null)
   const [draft, setDraft] = useState('')
-  const [creating, setCreating] = useState<string | null>(null)
+  const [creating, setCreating] = useState<{ parentId: string | null; name: string } | null>(null)
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const dragId = useRef<string | null>(null)
+  /** Id of the group header being dragged (nest / un-nest); separate from dragId so folder handlers ignore it. */
+  const dragGroupId = useRef<string | null>(null)
 
   const folders = state.folders
   const standalone = folders.filter((f) => !f.groupId)
@@ -229,7 +234,7 @@ export function Sidebar(p: Props): JSX.Element {
       ...manual
         .filter((g) => g.id !== f.groupId)
         .map<MenuItem>((g) => ({
-          label: `Move to group: ${g.name}`,
+          label: `Move to group: ${groupPath(state.groups, g.id)}`,
           icon: <FolderInput size={14} />,
           onClick: () => p.onMoveFolder(f.id, g.id)
         })),
@@ -242,20 +247,47 @@ export function Sidebar(p: Props): JSX.Element {
     ]
   }
 
+  /** A group drop is valid when nesting is allowed and the target is not the group's current parent. */
+  const canDropGroup = (gid: string, parentId: string | null): boolean =>
+    (state.groups.find((x) => x.id === gid)?.parentId ?? null) !== parentId && nestError(state.groups, gid, parentId) === null
+
   const groupMenu = (g: GroupView): MenuItem[] => {
     const rename: MenuItem = { label: 'Rename', icon: <Pencil size={14} />, onClick: () => startRename('group', g.id, g.name) }
     const remove: MenuItem = {
-      label: g.kind === 'manual' ? 'Remove group (keeps folders)' : 'Remove group',
+      label: 'Remove group…',
       icon: <Trash2 size={14} />,
       danger: true,
-      onClick: () => p.onRemoveGroup(g.id)
+      onClick: () => setConfirmRemove(g.id)
     }
-    if (g.kind === 'manual') return [sideItem(g.id, false), { separator: true }, rename, { separator: true }, remove]
+    const moveItems: MenuItem[] = [
+      ...state.groups
+        .filter((x) => x.kind === 'manual' && x.id !== g.parentId && nestError(state.groups, g.id, x.id) === null)
+        .map<MenuItem>((x) => ({
+          label: `Move to group: ${groupPath(state.groups, x.id)}`,
+          icon: <FolderInput size={14} />,
+          onClick: () => p.onMoveGroup(g.id, x.id)
+        })),
+      ...(g.parentId
+        ? [{ label: 'Move to top level', icon: <FolderMinus size={14} />, onClick: () => p.onMoveGroup(g.id, null) } as MenuItem]
+        : [])
+    ]
+    if (g.kind === 'manual') {
+      const newSub: MenuItem = {
+        label: 'New subgroup',
+        icon: <FolderPlus size={14} />,
+        onClick: () => {
+          if (g.collapsed) p.onToggleCollapse(g.id, false)
+          setCreating({ parentId: g.id, name: '' })
+        }
+      }
+      return [sideItem(g.id, false), { separator: true }, rename, newSub, ...moveItems, { separator: true }, remove]
+    }
     const path = g.path as string
     return [
       ...pathItems(g.id, path, g.missing),
       { separator: true },
       rename,
+      ...moveItems,
       { label: 'Refresh', icon: <RefreshCw size={14} />, onClick: p.onRefresh },
       {
         label: g.showHidden ? 'Hide hidden children' : `Show hidden children (${g.hiddenCount})`,
@@ -278,7 +310,7 @@ export function Sidebar(p: Props): JSX.Element {
   ]
 
   /** True for a drag coming from the OS (Explorer), as opposed to the internal folder reorder. */
-  const isOsDrag = (e: React.DragEvent): boolean => !dragId.current && e.dataTransfer.types.includes('Files')
+  const isOsDrag = (e: React.DragEvent): boolean => !dragId.current && !dragGroupId.current && e.dataTransfer.types.includes('Files')
   const osDrop = (e: React.DragEvent, groupId: string | null, beforeId?: string): void => {
     e.preventDefault()
     e.stopPropagation()
@@ -345,19 +377,91 @@ export function Sidebar(p: Props): JSX.Element {
     />
   )
 
-  const groupBlock = (g: GroupView): JSX.Element => {
+  const creatingRow = (depth: number): JSX.Element | null =>
+    creating === null ? null : (
+      <div className="row creating" style={{ paddingLeft: 8 + depth * 18 }}>
+        <span className="row-chevron" />
+        <span className="row-icon">
+          <Group size={16} />
+        </span>
+        <input
+          className="rename-input"
+          autoFocus
+          placeholder="Group name"
+          value={creating.name}
+          onChange={(e) => setCreating({ parentId: creating.parentId, name: e.target.value })}
+          onBlur={() => setCreating(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && creating.name.trim()) {
+              p.onAddGroup(creating.name, creating.parentId)
+              setCreating(null)
+            }
+            if (e.key === 'Escape') setCreating(null)
+          }}
+        />
+      </div>
+    )
+
+  const confirmRow = (g: GroupView, depth: number): JSX.Element => {
+    const { groupIds, folderIds } = removalSet(state.groups, state.folders, g.id)
+    const n = groupIds.length - 1
+    const m = folderIds.length
+    return (
+      <div
+        className="row confirm-row"
+        style={{ paddingLeft: 8 + depth * 18 }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setConfirmRemove(null)
+        }}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setConfirmRemove(null)
+        }}
+      >
+        <span className="confirm-text">
+          {`Remove "${g.name}"${n > 0 ? `, ${n} ${n === 1 ? 'subgroup' : 'subgroups'}` : ''}${m > 0 ? `, ${m} ${m === 1 ? 'folder' : 'folders'}` : ''}? Nothing is deleted on disk.`}
+        </span>
+        <button
+          className="btn small danger"
+          autoFocus
+          onClick={() => {
+            setConfirmRemove(null)
+            p.onRemoveGroup(g.id)
+          }}
+        >
+          Remove
+        </button>
+        <button className="btn small" onClick={() => setConfirmRemove(null)}>
+          Cancel
+        </button>
+      </div>
+    )
+  }
+
+  const groupBlock = (g: GroupView, depth: number, seen: Set<string>): JSX.Element => {
+    seen.add(g.id)
     const members = g.kind === 'manual' ? membersOf(g.id) : []
+    const subgroups = g.kind === 'manual' ? childGroups(state.groups, g.id).filter((c) => !seen.has(c.id)) : []
     const visibleChildren = g.children.filter((c) => g.showHidden || !c.hidden)
-    const count =
-      (p.counts[g.id] ?? 0) +
-      (g.kind === 'manual' ? members.reduce((n, f) => n + (p.counts[f.id] ?? 0), 0) : g.children.reduce((n, c) => n + (p.counts[c.id] ?? 0), 0))
-    const total = g.kind === 'manual' ? members.length : visibleChildren.length
+    const count = subtreeGroupIds(state.groups, g.id).reduce((sum, gid) => {
+      const x = state.groups.find((y) => y.id === gid)
+      if (!x) return sum
+      const own =
+        x.kind === 'manual'
+          ? membersOf(x.id).reduce((n, f) => n + (p.counts[f.id] ?? 0), 0)
+          : x.children.reduce((n, c) => n + (p.counts[c.id] ?? 0), 0)
+      return sum + (p.counts[x.id] ?? 0) + own
+    }, 0)
+    const removal = removalSet(state.groups, state.folders, g.id)
+    const total = removal.folderIds.length
+    const subCount = removal.groupIds.length - 1
+    const manualSubtitle = `${subCount > 0 ? `${subCount} ${subCount === 1 ? 'group' : 'groups'}, ` : ''}${total} ${total === 1 ? 'folder' : 'folders'}`
+    const showEmpty = g.kind === 'manual' && members.length === 0 && subgroups.length === 0 && creating?.parentId !== g.id
     return (
       <div
         key={g.id}
         className="group"
-        // Manual groups accept folders dragged in from Explorer; parent groups don't (they bubble to the
-        // sidebar, which adds the folder as a standalone one).
+        // Manual groups accept folders dragged in from Explorer; a drop on a parent-kind group (also when nested)
+        // bubbles to the enclosing manual group, or to the sidebar (standalone) when there is none.
         onDragOver={
           g.kind === 'manual'
             ? (e) => {
@@ -372,94 +476,126 @@ export function Sidebar(p: Props): JSX.Element {
         onDragLeave={g.kind === 'manual' ? (e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setDragOver((d) => (d === g.id ? null : d)) : undefined}
         onDrop={g.kind === 'manual' ? (e) => isOsDrag(e) && osDrop(e, g.id) : undefined}
       >
-        <Row
-          indent={0}
-          icon={g.kind === 'manual' ? <Group size={16} /> : <FolderTree size={16} />}
-          name={g.name}
-          subtitle={g.missing ? 'Folder not found' : g.kind === 'parent' ? g.branch ?? g.path : `${total} ${total === 1 ? 'folder' : 'folders'}`}
-          subKind={g.missing ? 'missing' : g.kind === 'parent' ? (g.branch ? 'branch' : 'path') : 'text'}
-          group
-          title={g.path ? (g.missing ? `${g.path}\n(folder not found on disk)` : g.path) : g.name}
-          selected={g.id === state.selectedId}
-          locId={g.id}
-          missing={g.missing}
-          count={count}
-          dropActive={dragOver === g.id}
-          editing={isEditing('group', g.id)}
-          draft={draft}
-          onDraft={setDraft}
-          onCommit={commitRename}
-          onCancel={() => setEditing(null)}
-          chevron={
-            <button
-              className="icon-btn chevron"
-              title={g.collapsed ? 'Expand' : 'Collapse'}
-              onClick={(e) => {
-                e.stopPropagation()
-                p.onToggleCollapse(g.id, !g.collapsed)
-              }}
-            >
-              {g.collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-            </button>
-          }
-          onClick={() => p.onSelect(g.id)}
-          onContext={(e) => openMenu(e, groupMenu(g))}
-          onDoubleClick={() => startRename('group', g.id, g.name)}
-          drag={
-            g.kind === 'manual'
-              ? {
-                  onDragStart: () => {},
-                  onDragEnd: () => {},
-                  onDragOver: (e) => {
-                    if (dragId.current) {
-                      e.preventDefault()
-                      setDragOver(g.id)
+        {confirmRemove === g.id ? (
+          confirmRow(g, depth)
+        ) : (
+          <Row
+            indent={depth}
+            icon={g.kind === 'manual' ? <Group size={16} /> : <FolderTree size={16} />}
+            name={g.name}
+            subtitle={g.missing ? 'Folder not found' : g.kind === 'parent' ? g.branch ?? g.path : manualSubtitle}
+            subKind={g.missing ? 'missing' : g.kind === 'parent' ? (g.branch ? 'branch' : 'path') : 'text'}
+            group
+            title={g.path ? (g.missing ? `${g.path}\n(folder not found on disk)` : g.path) : g.name}
+            selected={g.id === state.selectedId}
+            locId={g.id}
+            missing={g.missing}
+            count={count}
+            dropActive={dragOver === g.id}
+            editing={isEditing('group', g.id)}
+            draft={draft}
+            onDraft={setDraft}
+            onCommit={commitRename}
+            onCancel={() => setEditing(null)}
+            chevron={
+              <button
+                className="icon-btn chevron"
+                title={g.collapsed ? 'Expand' : 'Collapse'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  p.onToggleCollapse(g.id, !g.collapsed)
+                }}
+              >
+                {g.collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+              </button>
+            }
+            onClick={() => p.onSelect(g.id)}
+            onContext={(e) => openMenu(e, groupMenu(g))}
+            onDoubleClick={() => startRename('group', g.id, g.name)}
+            drag={{
+              onDragStart: () => (dragGroupId.current = g.id),
+              onDragEnd: () => {
+                dragGroupId.current = null
+                setDragOver(null)
+              },
+              onDragOver:
+                g.kind === 'manual'
+                  ? (e) => {
+                      if (dragId.current) {
+                        e.preventDefault()
+                        setDragOver(g.id)
+                      } else if (dragGroupId.current && canDropGroup(dragGroupId.current, g.id)) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setDragOver(g.id)
+                      }
                     }
-                  },
-                  onDragLeave: () => setDragOver((d) => (d === g.id ? null : d)),
-                  onDrop: (e) => {
-                    e.preventDefault()
-                    const from = dragId.current
-                    dragId.current = null
-                    setDragOver(null)
-                    if (from) p.onMoveFolder(from, g.id)
-                  }
-                }
-              : undefined
-          }
-          actions={
-            g.kind === 'parent' ? (
-              <>
-                <button className="icon-btn" title="Rescan subfolders" onClick={p.onRefresh}>
-                  <RefreshCw size={14} />
-                </button>
-                <button
-                  className={`icon-btn ${g.showHidden ? 'active' : ''}`}
-                  title={g.showHidden ? 'Hide hidden children' : `Show hidden children (${g.hiddenCount})`}
-                  onClick={() => p.onToggleShowHidden(g.id, !g.showHidden)}
-                >
-                  {g.showHidden ? <Eye size={14} /> : <EyeOff size={14} />}
-                </button>
-                <button className="icon-btn" title="New terminal in parent folder" disabled={g.missing} onClick={() => p.onOpenTerminal(g.id)}>
-                  <Terminal size={14} />
-                </button>
-              </>
-            ) : undefined
-          }
-        />
+                  : undefined,
+              onDragLeave: g.kind === 'manual' ? () => setDragOver((d) => (d === g.id ? null : d)) : undefined,
+              onDrop:
+                g.kind === 'manual'
+                  ? (e) => {
+                      e.preventDefault()
+                      setDragOver(null)
+                      if (dragGroupId.current) {
+                        e.stopPropagation()
+                        const gid = dragGroupId.current
+                        dragGroupId.current = null
+                        if (canDropGroup(gid, g.id)) p.onMoveGroup(gid, g.id)
+                        return
+                      }
+                      const from = dragId.current
+                      dragId.current = null
+                      if (from) p.onMoveFolder(from, g.id)
+                    }
+                  : undefined
+            }}
+            actions={
+              g.kind === 'parent' ? (
+                <>
+                  <button className="icon-btn" title="Rescan subfolders" onClick={p.onRefresh}>
+                    <RefreshCw size={14} />
+                  </button>
+                  <button
+                    className={`icon-btn ${g.showHidden ? 'active' : ''}`}
+                    title={g.showHidden ? 'Hide hidden children' : `Show hidden children (${g.hiddenCount})`}
+                    onClick={() => p.onToggleShowHidden(g.id, !g.showHidden)}
+                  >
+                    {g.showHidden ? <Eye size={14} /> : <EyeOff size={14} />}
+                  </button>
+                  <button className="icon-btn" title="New terminal in parent folder" disabled={g.missing} onClick={() => p.onOpenTerminal(g.id)}>
+                    <Terminal size={14} />
+                  </button>
+                </>
+              ) : undefined
+            }
+          />
+        )}
         {!g.collapsed && (
           <div className="group-children">
-            {g.kind === 'manual' && members.length === 0 && <div className="group-empty">Drag folders here or use "Move to group"</div>}
-            {g.kind === 'manual' && members.map((f) => folderRow(f, 1))}
-            {g.kind === 'parent' && g.missing && <div className="group-empty">Parent folder not found</div>}
+            {g.kind === 'manual' && creating?.parentId === g.id && creatingRow(depth + 1)}
+            {g.kind === 'manual' && subgroups.map((c) => groupBlock(c, depth + 1, seen))}
+            {showEmpty && (
+              <div className="group-empty" style={{ paddingLeft: 50 + depth * 18 }}>
+                Drag folders or groups here or use "Move to group"
+              </div>
+            )}
+            {g.kind === 'manual' && members.map((f) => folderRow(f, depth + 1))}
+            {g.kind === 'parent' && g.missing && (
+              <div className="group-empty" style={{ paddingLeft: 50 + depth * 18 }}>
+                Parent folder not found
+              </div>
+            )}
             {g.kind === 'parent' && !g.missing && visibleChildren.length === 0 && (
-              <div className="group-empty">{g.hiddenCount > 0 ? 'All subfolders are hidden' : 'No subfolders'}</div>
+              <div className="group-empty" style={{ paddingLeft: 50 + depth * 18 }}>
+                {g.hiddenCount > 0 ? 'All subfolders are hidden' : 'No subfolders'}
+              </div>
             )}
             {g.kind === 'parent' &&
               visibleChildren.map((c) => (
                 <Row
                   key={c.id}
-                  indent={1}
+                  indent={depth + 1}
                   icon={c.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
                   name={c.name}
                   subtitle={c.hidden ? 'hidden' : c.isGit ? c.branch ?? 'git' : null}
@@ -506,7 +642,7 @@ export function Sidebar(p: Props): JSX.Element {
           <button className="icon-btn" onClick={p.onAddParent} title="Add parent folder (auto-discovers subfolders)">
             <FolderTree size={16} />
           </button>
-          <button className="icon-btn" onClick={() => setCreating('')} title="New group">
+          <button className="icon-btn" onClick={() => setCreating({ parentId: null, name: '' })} title="New group">
             <Group size={16} />
           </button>
           <button className="icon-btn" onClick={p.onRefresh} title="Rescan folders">
@@ -530,29 +666,7 @@ export function Sidebar(p: Props): JSX.Element {
         }}
         onDrop={(e) => isOsDrag(e) && osDrop(e, null)}
       >
-        {creating !== null && (
-          <div className="row creating">
-            <span className="row-chevron" />
-            <span className="row-icon">
-              <Group size={16} />
-            </span>
-            <input
-              className="rename-input"
-              autoFocus
-              placeholder="Group name"
-              value={creating}
-              onChange={(e) => setCreating(e.target.value)}
-              onBlur={() => setCreating(null)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && creating.trim()) {
-                  p.onAddGroup(creating)
-                  setCreating(null)
-                }
-                if (e.key === 'Escape') setCreating(null)
-              }}
-            />
-          </div>
-        )}
+        {creating?.parentId === null && creatingRow(0)}
         {empty && (
           <div className="sidebar-empty">
             <span className="empty-glyph">
@@ -562,12 +676,15 @@ export function Sidebar(p: Props): JSX.Element {
             <div>Add a folder or a parent folder with the buttons above, or drag folders here from Explorer.</div>
           </div>
         )}
-        {state.groups.map(groupBlock)}
-        {(standalone.length > 0 || state.groups.some((g) => g.kind === 'manual')) && (
+        {(() => {
+          const seen = new Set<string>()
+          return childGroups(state.groups, null).map((g) => (seen.has(g.id) ? null : groupBlock(g, 0, seen)))
+        })()}
+        {(standalone.length > 0 || state.groups.some((g) => g.kind === 'manual' || g.parentId)) && (
           <div
             className="standalone"
             onDragOver={(e) => {
-              if (dragId.current) {
+              if (dragId.current || (dragGroupId.current && canDropGroup(dragGroupId.current, null))) {
                 e.preventDefault()
                 setDragOver('standalone')
               }
@@ -575,16 +692,22 @@ export function Sidebar(p: Props): JSX.Element {
             onDragLeave={() => setDragOver((d) => (d === 'standalone' ? null : d))}
             onDrop={(e) => {
               e.preventDefault()
+              setDragOver(null)
+              if (dragGroupId.current) {
+                const gid = dragGroupId.current
+                dragGroupId.current = null
+                if (canDropGroup(gid, null)) p.onMoveGroup(gid, null)
+                return
+              }
               const from = dragId.current
               dragId.current = null
-              setDragOver(null)
               if (from) p.onMoveFolder(from, null)
             }}
           >
             {state.groups.length > 0 && <div className="section-label">Folders</div>}
             <div className={dragOver === 'standalone' ? 'drop-zone active' : 'drop-zone'}>
               {standalone.map((f) => folderRow(f, 0))}
-              {standalone.length === 0 && <div className="group-empty">Drop a folder here to ungroup it</div>}
+              {standalone.length === 0 && <div className="group-empty">Drop a folder or group here to move it to the top level</div>}
             </div>
           </div>
         )}

@@ -1,0 +1,15 @@
+{"ts":"2026-11-20T15:02:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0005","ticket":"nested-groups","detail":"planner returned the nested-groups plan"}
+{"ts":"2026-11-20T15:09:00Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0005","ticket":"nested-groups","detail":"user approved the plan"}
+{"ts":"2026-11-20T15:09:51Z","actor":"implement","type":"implement.started","request":"REQ-0005","ticket":"nested-groups","detail":"branch nested-groups from origin/master edb7b84"}
+{"ts":"2026-11-20T15:09:59Z","actor":"implement","type":"slice.started","request":"REQ-0005","ticket":"nested-groups","detail":"T1 contract: groupTree, types, store, IPC, preload","data":{"tasks":["T1"]}}
+{"ts":"2026-11-20T15:11:29Z","actor":"implement","type":"slice.done","request":"REQ-0005","ticket":"nested-groups","detail":"T1 done; typecheck only fails in smoke.ts group() helper (T4)","data":{"tasks":["T1"]}}
+{"ts":"2026-11-20T15:11:35Z","actor":"implement","type":"slice.started","request":"REQ-0005","ticket":"nested-groups","detail":"T2 started in parallel","data":{"tasks":["T2"]}}
+{"ts":"2026-11-20T15:11:35Z","actor":"implement","type":"slice.started","request":"REQ-0005","ticket":"nested-groups","detail":"T3 started in parallel","data":{"tasks":["T3"]}}
+{"ts":"2026-11-20T15:11:35Z","actor":"implement","type":"slice.started","request":"REQ-0005","ticket":"nested-groups","detail":"T4 started in parallel","data":{"tasks":["T4"]}}
+{"ts":"2026-11-20T15:13:03Z","actor":"implement","type":"slice.done","request":"REQ-0005","ticket":"nested-groups","detail":"T2 MCP tools done; node typecheck clean","data":{"tasks":["T2"]}}
+{"ts":"2026-11-20T15:13:13Z","actor":"implement","type":"slice.done","request":"REQ-0005","ticket":"nested-groups","detail":"T4 smoke checkGroupTree added; smoke 13 PASS 0 FAIL","data":{"tasks":["T4"]}}
+{"ts":"2026-11-20T15:13:40Z","actor":"implement","type":"slice.done","request":"REQ-0005","ticket":"nested-groups","detail":"T3 renderer done; typecheck clean; UI checks untested","data":{"tasks":["T3"]}}
+{"ts":"2026-11-20T15:14:18Z","actor":"implement","type":"verify.passed","request":"REQ-0005","ticket":"nested-groups","detail":"typecheck exit 0; smoke 13 PASS 0 FAIL","data":{"pass":13,"fail":0}}
+{"ts":"2026-11-20T15:14:36Z","actor":"implement","type":"changelog.written","request":"REQ-0005","ticket":"nested-groups","detail":"changelog written; ticket left in-progress for director checker"}
+{"ts":"2026-11-20T15:40:00Z","actor":"director-checker","type":"checker.verdict","request":"REQ-0005","ticket":"nested-groups","detail":"PASS; typecheck ok, smoke 13/13; UI and MCP criteria 7-12 untested","data":{"verdict":"PASS"}}
+{"ts":"2026-11-20T15:58:00Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0005","ticket":"nested-groups","detail":"checker PASS + polish F1/F5; typecheck ok, smoke 13/13 (director re-ran)"}

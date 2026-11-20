@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, Shield, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
 import type { AppState, Command, ElevatorInfo, GitDiffRequest } from '../../shared/types'
 import { GSUDO_HINT, INSTALL_GSUDO_COMMAND } from '../../shared/elevation'
+import { removalSet } from '../../shared/groupTree'
 import { Sidebar } from './Sidebar'
 import { TerminalView } from './TerminalView'
 import { FileTree } from './FileTree'
@@ -913,14 +914,19 @@ export function App(): JSX.Element {
             canOpenToSide={(id) => canAddPane(ps, id)}
             onAddFolder={() => void addFolder()}
             onAddParent={async () => setState(await window.api.addParentGroup())}
-            onAddGroup={async (name) => setState(await window.api.addGroup(name))}
+            onAddGroup={async (name, parentId) => setState(await window.api.addGroup(name, parentId))}
+            onMoveGroup={async (id, parentId) => setState(await window.api.moveGroup(id, parentId))}
             onRemoveFolder={async (id) => {
               closeTabsOf([id])
               setState(await window.api.removeFolder(id))
             }}
             onRemoveGroup={async (id) => {
-              const g = state.groups.find((x) => x.id === id)
-              closeTabsOf([id, ...(g?.kind === 'parent' ? g.children.map((c) => c.id) : [])])
+              const { groupIds, folderIds } = removalSet(state.groups, state.folders, id)
+              closeTabsOf([
+                ...groupIds,
+                ...folderIds,
+                ...groupIds.flatMap((gid) => state.groups.find((x) => x.id === gid)?.children.map((c) => c.id) ?? [])
+              ])
               setState(await window.api.removeGroup(id))
             }}
             onRenameFolder={async (id, name) => setState(await window.api.renameFolder(id, name))}
@@ -992,7 +998,9 @@ export function App(): JSX.Element {
               const paneActive: string | undefined = active[p.id]
               const diff = paneTabs.find((t) => t.id === paneActive && t.kind === 'diff')
               const fileTab = paneTabs.find((t) => t.id === paneActive && t.kind === 'file')
-              const members = loc?.kind === 'manual' ? state.folders.filter((f) => f.groupId === loc.id).length : 0
+              const removal = loc?.kind === 'manual' ? removalSet(state.groups, state.folders, loc.id) : null
+              const members = removal ? removal.folderIds.length + removal.groupIds.length - 1 : 0
+              const onlySubgroups = !!removal && removal.folderIds.length === 0 && removal.groupIds.length > 1
               return (
                 <div
                   key={p.id}
@@ -1086,8 +1094,10 @@ export function App(): JSX.Element {
                         <h2>{loc.name}</h2>
                         <p>
                           {members === 0
-                            ? 'This group is empty. Drag folders onto it or use "Move to group".'
-                            : 'Select one of the folders in this group to open a terminal.'}
+                            ? 'This group is empty. Drag folders or groups onto it or use "Move to group".'
+                            : onlySubgroups
+                              ? 'This group only contains subgroups. Select a folder in one of them to open a terminal.'
+                              : 'Select one of the folders in this group to open a terminal.'}
                         </p>
                         <p className="hint">
                           Commands saved on this group are in the Commands panel <Keys combo="Ctrl+Shift+R" />
