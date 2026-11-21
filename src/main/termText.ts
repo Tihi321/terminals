@@ -84,19 +84,22 @@ function psQuote(s: string): string {
 export function buildRunInput(command: string, nonce: string): string {
   const first = (command.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').trim().slice(0, 200)
   const wrapper = [
-    `$__tr = @{ e = [char]27; b = [char]7; code = 1; err0 = $(if ($Error.Count) { $Error[0] } else { $null }) }`,
+    `$__tr = @{ done = 0; code = 1; err0 = $(if ($Error.Count) { $Error[0] } else { $null }) }`,
     `Write-Host ('[agent] ' + ${psQuote(first)}) -ForegroundColor DarkGray`,
-    `[Console]::Write($__tr.e + ']133;C;terminals=${nonce}' + $__tr.b)`,
+    `[Console]::Write([string][char]27 + ']133;C;terminals=${nonce}' + [char]7)`,
     `$global:LASTEXITCODE = 0`,
     `try {`,
     `  . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(command)}'))))`,
+    `  $__tr.done = 1`,
     `  if ($global:LASTEXITCODE) { $__tr.code = $global:LASTEXITCODE }`,
     `  elseif ($Error.Count -and -not [object]::ReferenceEquals($Error[0], $__tr.err0)) { $__tr.code = 1 }`,
     `  else { $__tr.code = 0 }`,
-    `} catch { $__tr.code = 1; $_ | Out-Host }`,
+    `} catch { $__tr.done = 1; $__tr.code = 1; $_ | Out-Host }`,
     `finally {`,
-    `  [Console]::Write($__tr.e + ']133;D;' + $__tr.code + ';terminals=${nonce}' + $__tr.b)`,
-    `  Remove-Variable __tr -Scope Global -ErrorAction SilentlyContinue`,
+    `  $__c = 1; $__d = 0`,
+    `  if ($__tr -is [hashtable]) { $__c = [int]$__tr.code; $__d = [int]$__tr.done }`,
+    `  [Console]::Write([string][char]27 + ']133;D;' + $__c + $(if ($__d) { '' } else { 'x' }) + ';terminals=${nonce}' + [char]7)`,
+    `  Remove-Variable __tr, __c, __d -Scope Global -ErrorAction SilentlyContinue`,
     `}`
   ].join('\n')
   return `. ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(wrapper)}'))))\r`
@@ -107,14 +110,14 @@ export function findMarkers(
   buf: string,
   nonce: string,
   from = 0
-): { begin: number | null; end: { index: number; code: number } | null } {
+): { begin: number | null; end: { index: number; code: number; abnormal: boolean } | null } {
   const start = Math.max(0, from)
   const beginRe = new RegExp(`${ESC}\\]133;C;terminals=${nonce}(?:${BEL}|${ESC}\\\\)`, 'g')
   beginRe.lastIndex = start
   const b = beginRe.exec(buf)
   const begin = b ? b.index + b[0].length : null
-  const endRe = new RegExp(`${ESC}\\]133;D;(-?\\d+);terminals=${nonce}(?:${BEL}|${ESC}\\\\)`, 'g')
+  const endRe = new RegExp(`${ESC}\\]133;D;(-?\\d+)(x?);terminals=${nonce}(?:${BEL}|${ESC}\\\\)`, 'g')
   endRe.lastIndex = begin ?? start
   const e = endRe.exec(buf)
-  return { begin, end: e ? { index: e.index, code: Number(e[1]) } : null }
+  return { begin, end: e ? { index: e.index, code: Number(e[1]), abnormal: e[2] === 'x' } : null }
 }

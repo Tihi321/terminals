@@ -424,8 +424,7 @@ export function Sidebar(p: Props): JSX.Element {
         name="Home"
         subtitle={h.missing ? 'Folder not found' : h.branch ? h.branch : h.path}
         subKind={h.missing ? 'missing' : h.branch ? 'branch' : 'path'}
-        title={h.missing ? `${h.path}
-(folder not found on disk)` : h.path}
+        title={h.missing ? `${h.path}\n(folder not found on disk)` : h.path}
         selected={HOME_ID === state.selectedId}
         missing={h.missing}
         count={p.counts[HOME_ID] ?? 0}

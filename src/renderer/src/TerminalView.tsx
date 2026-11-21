@@ -55,8 +55,7 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
             window.api.ptyResize(id, entry.term.cols, entry.term.rows)
           } else {
             entry.markReady()
-            entry.term.write(`[31mFailed to attach: ${r.error}[0m
-`)
+            entry.term.write(`\x1b[31mFailed to attach: ${r.error}\x1b[0m\r\n`)
             window.dispatchEvent(new CustomEvent('terminal-failed', { detail: id }))
           }
         })
@@ -77,8 +76,7 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
           .then((r) => {
             entry.markReady()
             if (!r.ok) {
-              entry.term.write(`[31mFailed to start: ${r.error}[0m
-`)
+              entry.term.write(`\x1b[31mFailed to start: ${r.error}\x1b[0m\r\n`)
               // Treat as exited so the tab is marked consistently.
               window.dispatchEvent(new CustomEvent('terminal-failed', { detail: id }))
             }

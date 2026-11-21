@@ -821,7 +821,11 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
     if (!r3.timedOut || r3.exitCode !== null || !info?.alive || !info.busy) return fail('timeout keeps shell alive and busy ' + JSON.stringify({ r3, info }))
     await host.close(t.id)
     if (host.list().length) return fail('close must forget the terminal')
-    return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive' }
+    const t2 = await host.open({ locId: 'home', cwd: dir })
+    const r4 = await host.run(t2.id, 'exit 5', 20000)
+    if (!r4.exited || r4.exitCode !== 5) return fail('exit 5 must resolve exited with code 5 ' + JSON.stringify(r4))
+    await host.close(t2.id).catch(() => undefined)
+    return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive, reports `exit 5` as exited with code 5' }
   } catch (e) {
     return fail(String(e))
   }

@@ -82,6 +82,7 @@ const MAX_INPUT = 8000
 const PRE_KEEP = 2048
 const READY_QUIET_MS = 500
 const READY_MAX_MS = 10_000
+const EXIT_WAIT_MS = 1500
 
 interface Run {
   nonce: string
@@ -97,6 +98,8 @@ interface Run {
   settled: boolean
   resolve: (r: RunResult) => void
   timer: ReturnType<typeof setTimeout> | null
+  /** The end marker showed the user code did not finish normally (`exit`, Ctrl+C): waiting briefly to see if the shell exits. */
+  ending: { code: number; text: string; timer: ReturnType<typeof setTimeout> } | null
 }
 
 interface Rec {
@@ -192,7 +195,8 @@ export class TerminalHost implements TerminalControl {
     const run = rec.run
     if (run) {
       rec.run = null
-      this.settle(rec, run, { exitCode: code, exited: true })
+      if (run.ending) clearTimeout(run.ending.timer)
+      this.settle(rec, run, { exitCode: code, exited: true, text: run.ending?.text })
     }
   }
 
@@ -204,7 +208,8 @@ export class TerminalHost implements TerminalControl {
     const run = rec.run
     if (run) {
       rec.run = null
-      this.settle(rec, run, { exitCode: rec.exitCode, exited: true })
+      if (run.ending) clearTimeout(run.ending.timer)
+      this.settle(rec, run, { exitCode: rec.exitCode, exited: true, text: run.ending?.text })
     }
   }
 
@@ -292,7 +297,8 @@ export class TerminalHost implements TerminalControl {
         bodyCut: false,
         settled: false,
         resolve,
-        timer: null
+        timer: null,
+        ending: null
       }
       run.timer = setTimeout(() => {
         if (run.settled) return
@@ -374,6 +380,7 @@ export class TerminalHost implements TerminalControl {
 
   /** Parses markers in the new chunk; finishes the run when its end marker arrived. */
   private feedRun(rec: Rec, run: Run, chunk: string): void {
+    if (run.ending) return
     if (run.body === null) {
       const prev = run.pre
       const buf = prev + chunk
@@ -393,6 +400,18 @@ export class TerminalHost implements TerminalControl {
     const m = findMarkers(body, run.nonce, Math.max(0, run.scan - 64))
     if (m.end) {
       const text = body.slice(0, m.end.index)
+      if (m.end.abnormal) {
+        // `exit N` (the shell is going away) and Ctrl+C both end up here; only an actual pty exit tells them apart.
+        const code = m.end.code
+        const timer = setTimeout(() => {
+          if (rec.run !== run) return
+          rec.run = null
+          run.ending = null
+          this.settle(rec, run, { exitCode: code, text })
+        }, EXIT_WAIT_MS)
+        run.ending = { code, text, timer }
+        return
+      }
       rec.run = null
       this.settle(rec, run, { exitCode: m.end.code, text })
       return

@@ -116,9 +116,8 @@ function disown(id: string): void {
 /** Kills and forgets every pty created by the given webContents. */
 function killPtysOf(wcId: number): void {
   const set = owners.get(wcId)
-  if (!set) return
   owners.delete(wcId)
-  for (const id of [...set]) releasePty(id)
+  if (set) for (const id of [...set]) releasePty(id)
   host.forgetOwner(wcId)
   for (const [id, h] of hosted) if (h.wc === wcId) hosted.delete(id)
 }
