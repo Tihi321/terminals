@@ -84,7 +84,8 @@ function psQuote(s: string): string {
 export function buildRunInput(command: string, nonce: string): string {
   const first = (command.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').trim().slice(0, 200)
   const wrapper = [
-    `$__tr = @{ done = 0; code = 1; err0 = $(if ($Error.Count) { $Error[0] } else { $null }) }`,
+    `$__tr = @{ done = 0; code = 1; err0 = $(if ($Error.Count) { $Error[0] } else { $null }); ev = $null; v7 = ($PSVersionTable.PSVersion.Major -ge 7) }`,
+    `if ($__tr.v7) { $__tr.ev = $global:ErrorView; $global:ErrorView = 'ConciseView' }`,
     `Write-Host ('[agent] ' + ${psQuote(first)}) -ForegroundColor DarkGray`,
     `[Console]::Write([string][char]27 + ']133;C;terminals=${nonce}' + [char]7)`,
     `$global:LASTEXITCODE = 0`,
@@ -97,7 +98,7 @@ export function buildRunInput(command: string, nonce: string): string {
     `} catch { $__tr.done = 1; $__tr.code = 1; $_ | Out-Host }`,
     `finally {`,
     `  $__c = 1; $__d = 0`,
-    `  if ($__tr -is [hashtable]) { $__c = [int]$__tr.code; $__d = [int]$__tr.done }`,
+    `  if ($__tr -is [hashtable]) { $__c = [int]$__tr.code; $__d = [int]$__tr.done; if ($__tr.v7) { $global:ErrorView = $__tr.ev } }`,
     `  [Console]::Write([string][char]27 + ']133;D;' + $__c + $(if ($__d) { '' } else { 'x' }) + ';terminals=${nonce}' + [char]7)`,
     `  Remove-Variable __tr, __c, __d -Scope Global -ErrorAction SilentlyContinue`,
     `}`

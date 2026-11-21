@@ -28,7 +28,7 @@ export interface McpInfo {
 }
 
 const INSTRUCTIONS =
-  "Manages the Terminals app: saved folders, groups, saved commands and prompts, and (when the user has turned on \"Allow MCP to run commands\") its terminals. open_terminal opens a visible PowerShell tab (default: the Home location) and returns its id; run_command runs a command in that live shell and returns its output and exit code; send_input types raw text; read_terminal returns recent output; close_terminal closes it. Only terminals opened through MCP can be typed into or closed. \"This folder\" is the terminal's location from get_context."
+  "Manages the Terminals app: saved folders, groups, saved commands and prompts, and (when the user has turned on \"Allow MCP to run commands\") its terminals. open_terminal opens a visible PowerShell tab (default: the Home location) in the background and returns its id; the app window is never shown or focused unless open_terminal is called with reveal: true. run_command runs a command in that live shell and returns its output and exit code; send_input types raw text; read_terminal returns recent output; wait_for_output waits for a line of output to match; close_terminal closes it. Only terminals opened through MCP can be typed into or closed. \"This folder\" is the terminal's location from get_context."
 
 
 /** Reads the token from the data dir, creating it on first use. */

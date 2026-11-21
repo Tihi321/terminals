@@ -825,7 +825,12 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
     const r4 = await host.run(t2.id, 'exit 5', 20000)
     if (!r4.exited || r4.exitCode !== 5) return fail('exit 5 must resolve exited with code 5 ' + JSON.stringify(r4))
     await host.close(t2.id).catch(() => undefined)
-    return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive, reports `exit 5` as exited with code 5' }
+    const t3 = await host.open({ locId: 'home', cwd: dir })
+    host.send(t3.id, "Start-Sleep -Milliseconds 300; 're'+'ady'\r")
+    const w = await host.waitFor(t3.id, 'ready', 5000, true)
+    await host.close(t3.id).catch(() => undefined)
+    if (!w.matched) return fail('wait_for_output must match later output ' + JSON.stringify(w))
+    return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive, reports `exit 5` as exited with code 5, waitFor matches later output' }
   } catch (e) {
     return fail(String(e))
   }

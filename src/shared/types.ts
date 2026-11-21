@@ -206,6 +206,8 @@ export interface AgentTabRequest {
   cwd: string
   /** Resolved shell executable (for the tab title / restore). */
   shell: string
+  /** open_terminal reveal: true. The renderer also activates the new tab in a pane (main shows/focuses the window and selects the location). */
+  reveal?: boolean
 }
 
 /** Elevator status for the UI. The path stays in main. */

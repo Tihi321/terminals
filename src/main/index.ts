@@ -122,8 +122,15 @@ function killPtysOf(wcId: number): void {
   for (const [id, h] of hosted) if (h.wc === wcId) hosted.delete(id)
 }
 
+/** open_terminal reveal: selects the location (the renderer's panes follow) and brings the window to the front. */
+function revealLocation(locId: string): void {
+  store.select(locId)
+  pushState()
+  showWindow()
+}
+
 /**
- * Asks the renderer to show a tab for an agent pty main already spawned. Never shows or focuses the window.
+ * Asks the renderer to show a tab for an agent pty main already spawned. Shows or focuses the window only with req.reveal.
  * Rejects with a ToolError when there is no window or the renderer does not answer in time.
  */
 function openAgentTab(req: Omit<AgentTabRequest, 'reqId'>): Promise<Result> {
@@ -137,6 +144,7 @@ function openAgentTab(req: Omit<AgentTabRequest, 'reqId'>): Promise<Result> {
     }, OPEN_TAB_TIMEOUT_MS)
     pendingTabs.set(reqId, (r) => {
       clearTimeout(timer)
+      if (r.ok && req.reveal) revealLocation(req.locId)
       resolvePromise(r)
     })
     w.webContents.send('agent:openTab', { ...req, reqId })

@@ -299,7 +299,7 @@ export function App(): JSX.Element {
     [commitTabs, showTab]
   )
 
-  /** main spawned an agent (MCP) pty: show a background tab that attaches to it. Never changes selection or focus. */
+  /** main spawned an agent (MCP) pty: show a tab that attaches to it. In the background unless req.reveal. */
   const newAgentTab = useCallback(
     (req: AgentTabRequest): Result => {
       const st = stateRef.current
@@ -321,8 +321,9 @@ export function App(): JSX.Element {
         }
       ])
       // Only a pane that shows this location and has no active tab takes it; otherwise it stays in the background.
+      // With reveal (open_terminal reveal: true) it is always activated.
       const cur = panesRef.current
-      if (cur?.panes.some((p) => p.locId === req.locId && !activeRef.current[p.id])) showTab(req.id)
+      if (req.reveal || cur?.panes.some((p) => p.locId === req.locId && !activeRef.current[p.id])) showTab(req.id)
       scheduleSave()
       return { ok: true }
     },

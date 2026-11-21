@@ -50,10 +50,24 @@ export interface ReadResult {
   truncated: boolean
 }
 
+export interface WaitResult {
+  id: string
+  matched: boolean
+  /** The first matching line (ANSI-stripped), null when nothing matched. */
+  line: string | null
+  timedOut: boolean
+  exited: boolean
+  /** Last 20 lines of the terminal at the time the wait ended. */
+  tail: string[]
+}
+
 /** What the MCP tools use. All methods throw ToolError with a user-readable message. */
 export interface TerminalControl {
   list(): TermInfo[]
-  open(target: { locId: string; cwd: string }): Promise<TermInfo>
+  /** `reveal`: also show/focus the window and select the location (default false: background). */
+  open(target: { locId: string; cwd: string; reveal?: boolean }): Promise<TermInfo>
+  /** Waits for a line of the terminal's output to contain `pattern` (substring) or match it (RegExp). */
+  waitFor(id: string, pattern: RegExp | string, timeoutMs: number, fromNow: boolean): Promise<WaitResult>
   run(id: string, command: string, timeoutMs: number): Promise<RunResult>
   send(id: string, text: string): void
   read(id: string, lines: number): ReadResult
@@ -114,7 +128,19 @@ interface Rec {
   exitCode: number | null
   lastDataAt: number
   run: Run | null
+  waiters: Waiter[]
 }
+
+interface Waiter {
+  pattern: RegExp | string
+  /** Output seen since the wait began (capped); matched line by line, including the unfinished last line. */
+  buf: string
+  timer: ReturnType<typeof setTimeout>
+  resolve: (r: WaitResult) => void
+}
+
+const WAIT_BUF_CAP = 64 * 1024
+const TAIL_LINES = 20
 
 const OSC99_RE = /\u001b\]9;9;"?([^"\u0007\u001b]+?)"?(?:\u0007|\u001b\\)/g
 const OSC7_RE = /\u001b\]7;file:\/\/[^/\u0007\u001b]*\/([^\u0007\u001b]*)(?:\u0007|\u001b\\)/g
@@ -165,7 +191,8 @@ export class TerminalHost implements TerminalControl {
       alive: true,
       exitCode: null,
       lastDataAt: 0,
-      run: null
+      run: null,
+      waiters: []
     })
   }
 
@@ -185,6 +212,7 @@ export class TerminalHost implements TerminalControl {
       rec.cwdTail = (rec.cwdTail + chunk).slice(-512)
     }
     if (rec.run) this.feedRun(rec, rec.run, chunk)
+    if (rec.waiters.length) this.feedWaiters(rec, chunk)
   }
 
   exit(id: string, code: number): void {
@@ -192,6 +220,7 @@ export class TerminalHost implements TerminalControl {
     if (!rec) return
     rec.alive = false
     rec.exitCode = code
+    this.endWaiters(rec, { exited: true })
     const run = rec.run
     if (run) {
       rec.run = null
@@ -205,6 +234,7 @@ export class TerminalHost implements TerminalControl {
     const rec = this.recs.get(id)
     if (!rec) return
     this.recs.delete(id)
+    this.endWaiters(rec, { exited: true })
     const run = rec.run
     if (run) {
       rec.run = null
@@ -228,7 +258,7 @@ export class TerminalHost implements TerminalControl {
     return [...this.recs.values()].map((r) => this.info(r))
   }
 
-  async open(target: { locId: string; cwd: string }): Promise<TermInfo> {
+  async open(target: { locId: string; cwd: string; reveal?: boolean }): Promise<TermInfo> {
     const id = randomUUID()
     const shell = psShell(this.deps.configuredShell())
     let pty: IPty
@@ -248,7 +278,7 @@ export class TerminalHost implements TerminalControl {
     })
     let res: Result
     try {
-      res = await this.deps.openTab({ id, locId: target.locId, cwd: target.cwd, shell })
+      res = await this.deps.openTab({ id, locId: target.locId, cwd: target.cwd, shell, ...(target.reveal ? { reveal: true } : {}) })
     } catch (e) {
       this.deps.release(id)
       throw e instanceof ToolError ? e : new ToolError(e instanceof Error ? e.message : String(e))
@@ -339,6 +369,27 @@ export class TerminalHost implements TerminalControl {
     }
   }
 
+  waitFor(id: string, pattern: RegExp | string, timeoutMs: number, fromNow: boolean): Promise<WaitResult> {
+    const rec = this.recs.get(id)
+    if (!rec) throw new ToolError(`Unknown terminal id "${id}". Use list_terminals.`)
+    const ms = Math.max(1, Math.min(Number.isFinite(timeoutMs) ? timeoutMs : 30_000, 600_000))
+    const pat = typeof pattern === 'string' ? pattern : new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ''))
+    return new Promise<WaitResult>((resolve) => {
+      const w: Waiter = {
+        pattern: pat,
+        buf: fromNow ? '' : rec.ring.text().slice(-WAIT_BUF_CAP),
+        timer: setTimeout(() => this.finishWaiter(rec, w, { timedOut: true }), ms),
+        resolve
+      }
+      rec.waiters.push(w)
+      if (!fromNow) {
+        const line = this.matchLine(w)
+        if (line !== null) return this.finishWaiter(rec, w, { line })
+      }
+      if (!rec.alive) this.finishWaiter(rec, w, { exited: true })
+    })
+  }
+
   async close(id: string): Promise<void> {
     const rec = this.recs.get(id)
     if (!rec) throw new ToolError(`Unknown terminal id "${id}". Use list_terminals.`)
@@ -378,6 +429,44 @@ export class TerminalHost implements TerminalControl {
     return rec
   }
 
+  private matchLine(w: Waiter): string | null {
+    for (const line of toLines(w.buf)) {
+      if (typeof w.pattern === 'string' ? line.includes(w.pattern) : w.pattern.test(line)) return line
+    }
+    return null
+  }
+
+  private feedWaiters(rec: Rec, chunk: string): void {
+    for (const w of [...rec.waiters]) {
+      w.buf += chunk
+      if (w.buf.length > WAIT_BUF_CAP) w.buf = w.buf.slice(-WAIT_BUF_CAP)
+      const line = this.matchLine(w)
+      if (line !== null) this.finishWaiter(rec, w, { line })
+    }
+  }
+
+  private finishWaiter(rec: Rec, w: Waiter, r: { line?: string; timedOut?: boolean; exited?: boolean }): void {
+    const i = rec.waiters.indexOf(w)
+    if (i < 0) return
+    rec.waiters.splice(i, 1)
+    clearTimeout(w.timer)
+    const all = toLines(rec.ring.text())
+    const result: WaitResult = {
+      id: rec.id,
+      matched: r.line !== undefined,
+      line: r.line ?? null,
+      timedOut: r.timedOut === true,
+      exited: r.exited === true,
+      tail: all.slice(-TAIL_LINES)
+    }
+    later(() => w.resolve(result))
+  }
+
+  /** Terminal exited or was removed: every pending wait ends with exited: true. */
+  private endWaiters(rec: Rec, r: { exited: true }): void {
+    for (const w of [...rec.waiters]) this.finishWaiter(rec, w, r)
+  }
+
   /** Parses markers in the new chunk; finishes the run when its end marker arrived. */
   private feedRun(rec: Rec, run: Run, chunk: string): void {
     if (run.ending) return
@@ -403,6 +492,11 @@ export class TerminalHost implements TerminalControl {
       if (m.end.abnormal) {
         // `exit N` (the shell is going away) and Ctrl+C both end up here; only an actual pty exit tells them apart.
         const code = m.end.code
+        // The end marker arrived: the run can no longer time out, whatever the settle delay below does.
+        if (run.timer) {
+          clearTimeout(run.timer)
+          run.timer = null
+        }
         const timer = setTimeout(() => {
           if (rec.run !== run) return
           rec.run = null

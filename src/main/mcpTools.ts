@@ -702,21 +702,22 @@ export const TOOLS: ToolDef[] = [
   defineTool({
     name: 'open_terminal',
     description:
-      'Open a visible PowerShell tab in the app, in the background (no focus change), and return its id. Needs "Allow MCP to run commands" in the app settings. Never elevated.',
+      'Open a visible PowerShell tab in the app and return its id. By default in the background (no focus or selection change); with reveal: true the window is shown and focused, the location selected and the tab activated. Needs "Allow MCP to run commands" in the app settings. Never elevated.',
     shape: {
       location: z
         .string()
         .optional()
         .describe(
           'Location id, name or absolute path. A saved location opens there; any other existing directory opens under Home with that cwd. Default: Home.'
-        )
+        ),
+      reveal: z.boolean().optional().describe('Show and focus the window, select the location and activate the new tab. Default false')
     },
     mutates: false,
     readOnly: false,
     run: async (a, ctx) => {
       const terminals = terminalsOrThrow(ctx)
       const { loc, cwd } = resolveOpenTarget(store.getState(), a.location)
-      const t = await terminals.open({ locId: loc.id, cwd })
+      const t = await terminals.open({ locId: loc.id, cwd, reveal: a.reveal === true })
       return { id: t.id, location: { id: loc.id, name: loc.name, kind: loc.kind }, cwd: t.cwd, shell: t.shell, agent: true }
     }
   }),
@@ -764,6 +765,32 @@ export const TOOLS: ToolDef[] = [
     mutates: false,
     readOnly: true,
     run: (a, ctx) => terminalsOrThrow(ctx).read(a.id, a.lines ?? 100)
+  }),
+  defineTool({
+    name: 'wait_for_output',
+    description:
+      "Waits until a line of a terminal's output (any terminal, ANSI-stripped, including the unfinished last line) contains `pattern` (plain case-sensitive substring) or matches it (regex: true), or until the timeout or the terminal's exit. By default only output arriving after the call counts; fromNow: false also searches the buffered output. Returns { matched, line, timedOut, exited, tail (last 20 lines) }. Needs \"Allow MCP to run commands\".",
+    shape: {
+      id: termId,
+      pattern: z.string().min(1).describe('Text to find in a line'),
+      regex: z.boolean().optional().describe('Treat pattern as a JavaScript regular expression. Default false'),
+      timeoutSeconds: z.number().int().min(1).max(600).optional().describe('Default 30'),
+      fromNow: z.boolean().optional().describe('Only output arriving after this call (default true); false also searches the current buffer')
+    },
+    mutates: false,
+    readOnly: true,
+    run: async (a, ctx) => {
+      const terminals = terminalsOrThrow(ctx)
+      let pattern: RegExp | string = a.pattern
+      if (a.regex === true) {
+        try {
+          pattern = new RegExp(a.pattern)
+        } catch (e) {
+          throw new ToolError(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      return terminals.waitFor(a.id, pattern, (a.timeoutSeconds ?? 30) * 1000, a.fromNow !== false)
+    }
   }),
   defineTool({
     name: 'list_terminals',
