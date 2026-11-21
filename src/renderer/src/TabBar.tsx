@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import { ChevronDown, Download, FileDiff, FileText, Plus, RotateCw, Shield, ShieldAlert, Terminal, X, Zap } from 'lucide-react'
+import { Bot, ChevronDown, Download, FileDiff, FileText, Plus, RotateCw, Shield, ShieldAlert, Terminal, X, Zap } from 'lucide-react'
 import type { Command, ElevatorInfo } from '../../shared/types'
 import { GSUDO_HINT } from '../../shared/elevation'
 import { ContextMenu } from './ContextMenu'
@@ -31,6 +31,8 @@ export interface Tab {
   preview?: boolean
   /** Shell tabs: started (or to be started) as administrator. Saved in the session. */
   elevated?: boolean
+  /** Shell tabs: opened by an MCP agent. Saved in the session. */
+  agent?: boolean
   /** Elevated shell restored from a session: no term/pty until "Start as admin" is clicked. Not saved. */
   pending?: boolean
   /** Bumped on an elevated retry so the TerminalView remounts. */
@@ -185,6 +187,11 @@ export function TabBar(p: Props): JSX.Element {
               t.pending ? <Shield size={13} className="tab-icon admin" /> : <ShieldAlert size={13} className="tab-icon admin" />
             ) : (
               <Terminal size={13} className="tab-icon" />
+            )}
+            {t.agent && (
+              <span className="tab-agent" title="Opened by an agent (MCP)">
+                <Bot size={12} />
+              </span>
             )}
             <span className="tab-title">{t.title}</span>
             {t.kind === 'command' && <span className={`dot ${t.run?.status}`} />}

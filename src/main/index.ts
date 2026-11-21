@@ -2,10 +2,11 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nati
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import icon from '../../build/icon.png?asset'
 import type { IPty } from '@lydell/node-pty'
-import type { Command, PasteContent, PtyCreateRequest, Settings, Snippet, UiState } from '../shared/types'
+import { HOME_ID, type AgentTabRequest, type Command, type PasteContent, type PtyCreateRequest, type Result, type Settings, type Snippet, type UiState } from '../shared/types'
 import { listShells, resolveShell, spawnElevated, spawnShell, spawnSteps, stepsShell } from './pty'
 import { checkElevatedRequest, elevatedCommand, readSudoMode, resolveElevator } from './elevation'
 import { GSUDO_HINT } from '../shared/elevation'
@@ -17,7 +18,8 @@ import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } fro
 import * as gitcli from './gitcli'
 import type { GitDiffRequest } from '../shared/types'
 import { startMcpServer, type McpInfo } from './mcp'
-import { locationById } from './mcpTools'
+import { locationById, ToolError } from './mcpTools'
+import { TerminalHost } from './terminalHost'
 
 // Must run before app is ready: lets tests/dev runs use an isolated data directory.
 const dataDirArg = process.argv.find((a) => a.startsWith('--data-dir='))?.slice('--data-dir='.length)
@@ -46,12 +48,23 @@ const watcher = new DirWatcher((dir) => {
   if (win && !win.isDestroyed()) win.webContents.send('fs:changed', dir)
 })
 
+/** Ids whose output is forwarded to the renderer as pty:data: ptys main spawned for agent tabs, once the tab attached. */
+const attached = new Set<string>()
+/** Ptys registered with the terminal host -> owning webContents id, and whether main (not the renderer) spawned them. */
+const hosted = new Map<string, { wc: number; byHost: boolean }>()
+/** open_terminal round trips waiting for the renderer's reply. */
+const pendingTabs = new Map<string, (r: Result) => void>()
+const OPEN_TAB_TIMEOUT_MS = 5000
+
 /** Ids of ptys running an elevated shell; they get a graceful exit before the console is closed. */
 const elevatedIds = new Set<string>()
 /** webContents id -> time of its last elevated create attempt (rate limit). */
 const lastElevatedCreate = new Map<number, number>()
 
 function killAllPtys(): void {
+  for (const id of hosted.keys()) host.remove(id)
+  hosted.clear()
+  attached.clear()
   for (const p of ptys.values()) {
     try {
       p.kill()
@@ -72,6 +85,9 @@ function releasePty(id: string): void {
   const p = ptys.get(id)
   ptys.delete(id)
   disown(id)
+  host.remove(id)
+  attached.delete(id)
+  hosted.delete(id)
   const elevated = elevatedIds.delete(id)
   if (!p) return
   const kill = (): void => {
@@ -103,7 +119,82 @@ function killPtysOf(wcId: number): void {
   if (!set) return
   owners.delete(wcId)
   for (const id of [...set]) releasePty(id)
+  host.forgetOwner(wcId)
+  for (const [id, h] of hosted) if (h.wc === wcId) hosted.delete(id)
 }
+
+/**
+ * Asks the renderer to show a tab for an agent pty main already spawned. Never shows or focuses the window.
+ * Rejects with a ToolError when there is no window or the renderer does not answer in time.
+ */
+function openAgentTab(req: Omit<AgentTabRequest, 'reqId'>): Promise<Result> {
+  const w = win
+  if (!w || w.isDestroyed()) return Promise.reject(new ToolError('The Terminals window is not available.'))
+  const reqId = randomUUID()
+  return new Promise<Result>((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      pendingTabs.delete(reqId)
+      reject(new ToolError('The Terminals window did not answer; it may still be loading. Try again.'))
+    }, OPEN_TAB_TIMEOUT_MS)
+    pendingTabs.set(reqId, (r) => {
+      clearTimeout(timer)
+      resolvePromise(r)
+    })
+    w.webContents.send('agent:openTab', { ...req, reqId })
+  })
+}
+
+function closeAgentTab(id: string): void {
+  if (win && !win.isDestroyed()) win.webContents.send('agent:closeTab', id)
+}
+
+/** Spawns a plain (never elevated) shell for an agent tab, owned by the window. Output reaches the renderer once it attached. */
+function spawnForHost(id: string, shellExe: string, locId: string, cwd: string, cols: number, rows: number): IPty {
+  const w = win
+  if (!w || w.isDestroyed()) throw new ToolError('The Terminals window is not available.')
+  const wc = w.webContents
+  const wcId = wc.id
+  let spawned: IPty | null = null
+  const p = spawnShell(
+    shellExe,
+    cwd,
+    cols,
+    rows,
+    {
+      onData: (data: string): void => {
+        host.data(id, data)
+        if (attached.has(id) && !wc.isDestroyed()) wc.send('pty:data', id, data)
+      },
+      onExit: (code: number): void => {
+        const current = ptys.get(id)
+        if (current !== undefined && current !== spawned) return
+        if (current !== undefined) {
+          ptys.delete(id)
+          disown(id)
+        }
+        host.exit(id, code)
+        if (attached.has(id) && !wc.isDestroyed()) wc.send('pty:exit', id, code)
+      }
+    },
+    ptyEnv(locId)
+  )
+  spawned = p
+  ptys.set(id, p)
+  const mine = owners.get(wcId) ?? new Set<string>()
+  mine.add(id)
+  owners.set(wcId, mine)
+  hosted.set(id, { wc: wcId, byHost: true })
+  return p
+}
+
+const host = new TerminalHost({
+  spawn: spawnForHost,
+  openTab: openAgentTab,
+  closeTab: closeAgentTab,
+  release: (id) => releasePty(id),
+  configuredShell: () => store.getShell(),
+  ownerWc: () => (win && !win.isDestroyed() ? win.webContents.id : null)
+})
 
 function currentTheme(): Theme {
   return getTheme(resolveThemeId(store.getSettings().theme, nativeTheme.shouldUseDarkColors))
@@ -440,9 +531,12 @@ function registerIpc(): void {
       const stepsError = checkElevatedRequest(req)
       if (stepsError) return { ok: false, error: stepsError }
     }
+    const wantAgent = req?.agent === true && !wantElevated && !Array.isArray(req?.steps)
+    // A restored agent tab under Home may sit in any existing directory (open_terminal accepts arbitrary ones).
+    const homeAgent = wantAgent && req?.locId === HOME_ID
     const cwdError = (c: unknown): string | null => {
       if (typeof c !== 'string' || !existsSync(c) || !statSync(c).isDirectory()) return 'Folder does not exist'
-      if (!store.isInsideRoots(c) && !store.isCommandCwd(c)) return 'Folder is not a saved folder'
+      if (!homeAgent && !store.isInsideRoots(c) && !store.isCommandCwd(c)) return 'Folder is not a saved folder'
       return null
     }
     let cwd = req?.cwd
@@ -476,6 +570,7 @@ function registerIpc(): void {
     let spawned: IPty | null = null
     const handlers = {
       onData: (data: string): void => {
+        host.data(req.id, data)
         if (!e.sender.isDestroyed()) e.sender.send('pty:data', req.id, data)
       },
       onExit: (code: number): void => {
@@ -488,6 +583,7 @@ function registerIpc(): void {
           disown(req.id)
           elevatedIds.delete(req.id)
         }
+        host.exit(req.id, code)
         if (!e.sender.isDestroyed()) e.sender.send('pty:exit', req.id, code)
       }
     }
@@ -503,6 +599,16 @@ function registerIpc(): void {
       spawned = p
       ptys.set(req.id, p)
       if (elevatedCmd) elevatedIds.add(req.id)
+      hosted.set(req.id, { wc: e.sender.id, byHost: false })
+      host.add(req.id, p, {
+        locId: typeof req.locId === 'string' ? req.locId : '',
+        cwd: cwd as string,
+        shell: elevatedCmd ? resolveShell(shellExe) : Array.isArray(req.steps) ? stepsShell(store.getShell()) : shellExe,
+        kind: Array.isArray(req.steps) ? 'command' : 'shell',
+        agent: wantAgent,
+        elevated: wantElevated,
+        ownerWc: e.sender.id
+      })
       const mine = owners.get(e.sender.id) ?? new Set<string>()
       mine.add(req.id)
       owners.set(e.sender.id, mine)
@@ -524,7 +630,28 @@ function registerIpc(): void {
     }
   })
   ipcMain.on('pty:kill', (e, id: string) => {
-    if (ownsPty(e.sender.id, id)) releasePty(id)
+    if (ownsPty(e.sender.id, id)) return releasePty(id)
+    // An exited pty is already disowned: closing its tab only has to drop the host's leftover record.
+    if (typeof id === 'string' && hosted.get(id)?.wc === e.sender.id) {
+      host.remove(id)
+      attached.delete(id)
+      hosted.delete(id)
+    }
+  })
+  // Agent tabs: the renderer attaches to a pty main spawned and gets its output so far. Synchronous, so no chunk is lost.
+  ipcMain.handle('pty:attach', (e, id: string): Result<{ backlog: string }> => {
+    const h = typeof id === 'string' ? hosted.get(id) : undefined
+    if (!h || !h.byHost || h.wc !== e.sender.id) return { ok: false, error: 'Unknown terminal' }
+    attached.add(id)
+    return { ok: true, backlog: host.backlog(id) }
+  })
+  ipcMain.on('agent:openTab:reply', (e, reqId: string, result: Result) => {
+    if (!win || win.isDestroyed() || e.sender !== win.webContents) return
+    const done = typeof reqId === 'string' ? pendingTabs.get(reqId) : undefined
+    if (!done) return
+    pendingTabs.delete(reqId)
+    const err = (result as { error?: unknown } | undefined)?.error
+    done(result && result.ok === true ? { ok: true } : { ok: false, error: String(err ?? 'The window refused the tab') })
   })
 }
 
@@ -542,7 +669,13 @@ if (SMOKE) {
     nativeTheme.on('updated', applyWindowTheme)
     // Before the window, so the first terminals already get the MCP env vars.
     try {
-      mcp = await startMcpServer({ dataDir: app.getPath('userData'), version: app.getVersion(), onChange: pushState })
+      mcp = await startMcpServer({
+        dataDir: app.getPath('userData'),
+        version: app.getVersion(),
+        onChange: pushState,
+        terminals: host,
+        allowRun: () => store.getSettings().allowMcpRun
+      })
       console.log(`MCP server listening on ${mcp.url}`)
     } catch (e) {
       console.error('MCP server failed to start', e)

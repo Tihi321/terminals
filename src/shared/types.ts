@@ -1,6 +1,9 @@
 /** Current on-disk schema version. Files without a `version` field are version 1. */
 export const SCHEMA_VERSION = 4
 
+/** Id of the pinned Home location. Never a saved folder/group id (those are UUIDs or `child:` ids). */
+export const HOME_ID = 'home'
+
 export type ThemeId = 'dark' | 'light' | 'fjord' | 'sandstone'
 export type ThemeSetting = ThemeId | 'system'
 export type CursorStyle = 'block' | 'bar' | 'underline'
@@ -17,6 +20,10 @@ export interface Settings {
   cursorStyle: CursorStyle
   cursorBlink: boolean
   scrollback: number
+  /** Directory Home terminals start in. '' = the user's Documents folder (resolved in main at runtime). */
+  homeDir: string
+  /** MCP clients may open terminals, run commands, type into and read terminals. Read at every call. */
+  allowMcpRun: boolean
 }
 
 /** One entry of the default-shell picker. value '' = automatic. */
@@ -55,6 +62,8 @@ export interface PersistedTab {
   run?: { commandId: string; runId: string; target: number }
   /** shell only: started elevated; restored as a not-started placeholder. */
   elevated?: boolean
+  /** Opened by an MCP agent; restored tabs stay controllable by MCP. */
+  agent?: boolean
 }
 
 export interface UiState {
@@ -143,7 +152,20 @@ export type PasteContent =
   | { kind: 'image'; path: string }
   | { kind: 'files'; paths: string[] }
 
+export interface HomeView {
+  id: typeof HOME_ID
+  name: 'Home'
+  /** Resolved directory: settings.homeDir, or Documents when that is ''. */
+  path: string
+  /** settings.homeDir is '' (Documents). */
+  isDefault: boolean
+  missing: boolean
+  isGit: boolean
+  branch: string | null
+}
+
 export interface AppState {
+  home: HomeView
   folders: FolderView[]
   groups: GroupView[]
   commands: Command[]
@@ -171,6 +193,19 @@ export interface PtyCreateRequest {
   fallbackCwd?: string
   /** Start the shell elevated. Main builds the command from the validated shell and the elevator it finds; only `true` counts. */
   elevated?: boolean
+  /** Restored agent tab. Ignored for steps and elevated requests. With locId === HOME_ID, any existing directory is accepted as cwd. */
+  agent?: boolean
+}
+
+/** main -> renderer: show a tab for an agent pty main already spawned. */
+export interface AgentTabRequest {
+  reqId: string
+  /** pty id == tab id. */
+  id: string
+  locId: string
+  cwd: string
+  /** Resolved shell executable (for the tab title / restore). */
+  shell: string
 }
 
 /** Elevator status for the UI. The path stays in main. */
@@ -342,6 +377,12 @@ export interface TerminalsApi {
   ptyWrite(id: string, data: string): void
   ptyResize(id: string, cols: number, rows: number): void
   ptyKill(id: string): void
+  /** Attaches this renderer to a pty main spawned (agent tabs); returns its output so far. Afterwards pty:data flows as usual. */
+  ptyAttach(id: string): Promise<Result<{ backlog: string }>>
+  /** Main asks for an agent tab. The callback runs synchronously; its result is sent back as the reply. */
+  onAgentOpenTab(cb: (req: AgentTabRequest) => Result): () => void
+  /** Main closed an agent terminal (close_terminal): drop its tab. */
+  onAgentCloseTab(cb: (id: string) => void): () => void
   onPtyData(cb: (id: string, data: string) => void): () => void
   onPtyExit(cb: (id: string, exitCode: number) => void): () => void
 }

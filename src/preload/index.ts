@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { AppState, TerminalsApi, ThemeId } from '../shared/types'
+import type { AgentTabRequest, AppState, Result, TerminalsApi, ThemeId } from '../shared/types'
 
 const inv = (channel: string, ...args: unknown[]): Promise<never> => ipcRenderer.invoke(channel, ...args) as Promise<never>
 
@@ -80,6 +80,25 @@ const api: TerminalsApi = {
   ptyWrite: (id, data) => ipcRenderer.send('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
   ptyKill: (id) => ipcRenderer.send('pty:kill', id),
+  ptyAttach: (id) => inv('pty:attach', id),
+  onAgentOpenTab: (cb) => {
+    const h = (_: unknown, req: AgentTabRequest): void => {
+      let result: Result
+      try {
+        result = cb(req)
+      } catch (e) {
+        result = { ok: false, error: String(e) }
+      }
+      ipcRenderer.send('agent:openTab:reply', req.reqId, result)
+    }
+    ipcRenderer.on('agent:openTab', h)
+    return () => ipcRenderer.removeListener('agent:openTab', h)
+  },
+  onAgentCloseTab: (cb) => {
+    const h = (_: unknown, id: string): void => cb(id)
+    ipcRenderer.on('agent:closeTab', h)
+    return () => ipcRenderer.removeListener('agent:closeTab', h)
+  },
   onPtyData: (cb) => {
     const h = (_: unknown, id: string, data: string): void => cb(id, data)
     ipcRenderer.on('pty:data', h)

@@ -43,7 +43,16 @@ export const SETTINGS_SCHEMA: { [K in keyof Settings]: SettingField<Settings[K]>
     sanitize: (v) => (v === 'block' || v === 'bar' || v === 'underline' ? (v as CursorStyle) : undefined)
   },
   cursorBlink: { default: true, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) },
-  scrollback: { default: 5000, sanitize: intIn(SCROLLBACK_MIN, SCROLLBACK_MAX) }
+  scrollback: { default: 5000, sanitize: intIn(SCROLLBACK_MIN, SCROLLBACK_MAX) },
+  homeDir: {
+    default: '',
+    sanitize: (v) => {
+      if (typeof v !== 'string') return undefined
+      const t = v.trim()
+      return t === '' || /^([a-zA-Z]:[\\/]|\\\\[^\\])/.test(t) ? t : undefined
+    }
+  },
+  allowMcpRun: { default: false, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) }
 }
 
 const KEYS = Object.keys(SETTINGS_SCHEMA) as (keyof Settings)[]

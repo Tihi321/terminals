@@ -2332,3 +2332,9 @@ kbd,
   color: var(--text-2);
   line-height: 1.4;
 }
+.tab-agent {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--accent);
+}

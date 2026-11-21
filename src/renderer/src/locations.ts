@@ -1,4 +1,5 @@
 import type { AppState } from '../../shared/types'
+import { HOME_ID } from '../../shared/types'
 
 /** Anything a terminal can be attached to: a saved folder, a discovered child, or a group root. */
 export interface Loc {
@@ -7,7 +8,7 @@ export interface Loc {
   /** Null for manual groups (no directory of their own). */
   path: string | null
   missing: boolean
-  kind: 'folder' | 'child' | 'parent' | 'manual'
+  kind: 'folder' | 'child' | 'parent' | 'manual' | 'home'
   /** Group this location belongs to (children and group members), or null. */
   groupId: string | null
   branch: string | null
@@ -15,6 +16,8 @@ export interface Loc {
 
 export function buildLocs(state: AppState): Map<string, Loc> {
   const m = new Map<string, Loc>()
+  const h = state.home
+  m.set(HOME_ID, { id: HOME_ID, name: 'Home', path: h.path, missing: h.missing, kind: 'home', groupId: null, branch: h.branch })
   for (const f of state.folders)
     m.set(f.id, { id: f.id, name: f.name, path: f.path, missing: f.missing, kind: 'folder', groupId: f.groupId, branch: f.branch })
   for (const g of state.groups) {

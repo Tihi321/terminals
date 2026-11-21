@@ -10,8 +10,10 @@ import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
 import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_FONT, patchSettings, sanitizeSettings } from '../shared/settings'
 import { THEME_IDS, THEMES, UI_VARS, resolveThemeId } from '../shared/themes'
-import { contextLocation, findLocation, planCommand, planPrompt, ToolError, visibleCommands } from './mcpTools'
-import { hostAllowed, tokenMatches } from './mcp'
+import { contextLocation, findLocation, planCommand, planPrompt, resolveOpenTarget, RUN_DISABLED_ERROR, ToolError, visibleCommands } from './mcpTools'
+import { hostAllowed, startMcpServer, tokenMatches } from './mcp'
+import { TerminalHost } from './terminalHost'
+import { buildRunInput, findMarkers, toLines } from './termText'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
 import { activateIn, moveTab, reconcileActive, shiftTab } from '../shared/tabs'
 import { planRestore, restorePaths, sanitizeTabs, toPersistedTabs, type RestoreCtx } from '../shared/session'
@@ -643,6 +645,7 @@ function checkMcpLogic(dir: string): CheckResult {
       }
     ],
     snippets: [{ id: 's1', name: 'hi', body: 'hello', scope: 'global' }],
+    home: { id: 'home', name: 'Home', path: dir, isDefault: false, missing: false, isGit: false, branch: null },
     selectedId: null,
     settings: { ...DEFAULT_SETTINGS },
     ui: { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [] },
@@ -717,6 +720,8 @@ function checkMcpLogic(dir: string): CheckResult {
     const pu = planPrompt(state, { id: 's1', body: 'new' }, 'f2')
     if (pu.created || pu.prompt.scope !== 'global' || pu.prompt.name !== 'hi') return fail('prompt update keeps scope/name')
 
+    if (resolveOpenTarget(state, undefined).loc.id !== 'home') return fail('open_terminal default is Home')
+    if (!err(() => resolveOpenTarget(state, p('nope')))?.includes('does not exist')) return fail('open_terminal non-existent path')
     if (!hostAllowed('127.0.0.1:5000', 5000) || !hostAllowed('localhost:5000', 5000)) return fail('host allowed')
     if (hostAllowed('evil.example:5000', 5000) || hostAllowed('127.0.0.1:5001', 5000) || hostAllowed('127.0.0.1', 5000) || hostAllowed(undefined, 5000))
       return fail('host rejected')
@@ -725,6 +730,140 @@ function checkMcpLogic(dir: string): CheckResult {
     return { ok: true, msg: 'mcp logic: location by id/path/name/child, ambiguity and kind errors, header fallback, command/prompt validation, host and token guards' }
   } catch (e) {
     return fail(String(e))
+  }
+}
+
+/** Check: pure terminal text helpers (ANSI/OSC stripping, marker parsing across chunks, echo never matches). */
+function checkTermText(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'term text: ' + m })
+  try {
+    const raw = '\u001b]0;title\u0007\u001b[32mgreen\u001b[0m line\r\nprogress 10%\rprogress 100%\r\nabc\b\bx  \r\n\r\nPS C:\\> \u001b[K'
+    const lines = toLines(raw)
+    const want = ['green line', 'progress 100%', 'ax', '', 'PS C:\\>']
+    if (JSON.stringify(lines) !== JSON.stringify(want)) return fail('toLines ' + JSON.stringify(lines))
+    const nonce = '0123456789abcdef'
+    const begin = `\u001b]133;C;terminals=${nonce}\u0007`
+    const end = `\u001b]133;D;3;terminals=${nonce}\u0007`
+    const a = begin + 'out\r\n' + end.slice(0, 20)
+    const m1 = findMarkers(a, nonce)
+    if (m1.begin !== begin.length || m1.end) return fail('begin found, end pending ' + JSON.stringify(m1))
+    const joined = a + end.slice(20)
+    const m2 = findMarkers(joined, nonce, Math.max(0, a.length - 64))
+    if (!m2.end || m2.end.code !== 3 || joined.slice(m2.begin ?? 0, m2.end.index) !== 'out\r\n') return fail('split end marker ' + JSON.stringify(m2))
+    const echo = buildRunInput('Write-Output hi', nonce)
+    const m3 = findMarkers(echo, nonce)
+    if (m3.begin !== null || m3.end !== null || echo.includes('\u001b') || !echo.endsWith('\r')) return fail('echoed input line must not contain a marker')
+    return { ok: true, msg: 'term text: toLines strips ANSI/OSC and applies \\r and \\b, markers found across a chunk split, typed run line carries no marker' }
+  } catch (e) {
+    return fail(String(e))
+  }
+}
+
+/** A TerminalHost wired to real ptys without a window (the renderer round trip is a no-op). */
+function makeSmokeHost(track: (p: IPty) => void): TerminalHost {
+  const live = new Map<string, IPty>()
+  const host: TerminalHost = new TerminalHost({
+    spawn: (id, sh, _locId, cwd, cols, rows) => {
+      const p = spawnShell(sh, cwd, cols, rows, {
+        onData: (d) => host.data(id, d),
+        onExit: (c) => host.exit(id, c)
+      })
+      live.set(id, p)
+      track(p)
+      return p
+    },
+    openTab: async () => ({ ok: true }),
+    closeTab: () => undefined,
+    release: (id) => {
+      const p = live.get(id)
+      live.delete(id)
+      try {
+        p?.kill()
+      } catch {
+        /* already gone */
+      }
+      host.remove(id)
+    },
+    configuredShell: () => ''
+  })
+  return host
+}
+
+/** Race a check against a watchdog so a hung shell fails the check instead of the whole run. */
+function withWatchdog(p: Promise<CheckResult>, ms: number, name: string): Promise<CheckResult> {
+  const timeout = new Promise<CheckResult>((r) => setTimeout(() => r({ ok: false, msg: `${name}: timed out after ${ms} ms` }), ms))
+  return Promise.race([p, timeout])
+}
+
+/** Check: run_command in a live PowerShell through TerminalHost (output, exit code, state, busy, timeout). */
+async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<CheckResult> {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'run command: ' + m })
+  const host = makeSmokeHost(track)
+  try {
+    const t = await host.open({ locId: 'home', cwd: dir })
+    if (!t.id || !t.alive || !t.agent) return fail('open ' + JSON.stringify(t))
+    const r1 = await host.run(t.id, "Write-Output ('a'+'1'); cmd /c exit 3", 20000)
+    if (r1.output !== 'a1' || r1.exitCode !== 3 || r1.success !== false || r1.timedOut || r1.exited) return fail('output/exit code ' + JSON.stringify(r1))
+    await host.run(t.id, '$x = 41 + 1', 20000)
+    const r2 = await host.run(t.id, '$x', 20000)
+    if (r2.output !== '42' || r2.exitCode !== 0) return fail('state must persist between runs ' + JSON.stringify(r2))
+    const slow = host.run(t.id, 'Start-Sleep 3', 20000)
+    let busy = ''
+    try {
+      await host.run(t.id, '1', 1000)
+    } catch (e) {
+      busy = e instanceof ToolError ? e.message : 'non-ToolError ' + String(e)
+    }
+    if (!busy.includes('busy')) return fail('second run while busy must be rejected, got ' + JSON.stringify(busy))
+    await slow
+    const r3 = await host.run(t.id, 'Start-Sleep 5', 1000)
+    const info = host.list().find((x) => x.id === t.id)
+    if (!r3.timedOut || r3.exitCode !== null || !info?.alive || !info.busy) return fail('timeout keeps shell alive and busy ' + JSON.stringify({ r3, info }))
+    await host.close(t.id)
+    if (host.list().length) return fail('close must forget the terminal')
+    return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive' }
+  } catch (e) {
+    return fail(String(e))
+  }
+}
+
+/** Check: the MCP HTTP endpoint with terminal control off, then on (open under Home, run, close). */
+async function checkMcpHttp(dir: string, track: (p: IPty) => void): Promise<CheckResult> {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'mcp http: ' + m })
+  const host = makeSmokeHost(track)
+  let flag = false
+  const info = await startMcpServer({ dataDir: join(dir, 'mcp-data'), version: 'smoke', onChange: () => undefined, terminals: host, allowRun: () => flag })
+  let rpcId = 0
+  const call = async (name: string, args: Record<string, unknown>): Promise<{ isError: boolean; text: string }> => {
+    const res = await fetch(info.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${info.token}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/call', params: { name, arguments: args } })
+    })
+    const body = (await res.json()) as { result?: { isError?: boolean; content: { text: string }[] } }
+    if (!body.result) throw new Error(`HTTP ${res.status}: ${JSON.stringify(body)}`)
+    return { isError: body.result.isError === true, text: body.result.content[0]?.text ?? '' }
+  }
+  try {
+    const off = await call('run_command', { id: 'x', command: 'echo' })
+    if (!off.isError || off.text !== RUN_DISABLED_ERROR) return fail('run_command with the toggle off ' + JSON.stringify(off))
+    const list = await call('list_terminals', {})
+    if (list.isError || (JSON.parse(list.text) as { allowRun: boolean }).allowRun !== false) return fail('list_terminals with the toggle off ' + JSON.stringify(list))
+    flag = true
+    const opened = await call('open_terminal', { location: dir })
+    if (opened.isError) return fail('open_terminal ' + opened.text)
+    const o = JSON.parse(opened.text) as { id: string; location: { id: string } }
+    if (o.location.id !== 'home') return fail('an unsaved directory must open under Home ' + opened.text)
+    const run = await call('run_command', { id: o.id, command: "Write-Output ('h'+'i')" })
+    const r = JSON.parse(run.text) as { output: string; exitCode: number }
+    if (run.isError || r.output !== 'hi' || r.exitCode !== 0) return fail('run_command ' + run.text)
+    const closed = await call('close_terminal', { id: o.id })
+    if (closed.isError || host.list().length) return fail('close_terminal ' + closed.text)
+    return { ok: true, msg: 'mcp http: toggle off refuses run_command but list_terminals works; toggle on opens under Home, runs hi / exit 0, closes' }
+  } catch (e) {
+    return fail(String(e))
+  } finally {
+    await info.close?.()
   }
 }
 
@@ -747,6 +886,9 @@ export async function runSmoke(): Promise<void> {
     checkElevation(),
     checkWrite(),
     checkMcpLogic(dir),
+    checkTermText(),
+    await withWatchdog(checkRunCommand(dir, track), 60000, 'run command'),
+    await withWatchdog(checkMcpHttp(dir, track), 60000, 'mcp http'),
     await checkGit()
   ]
   for (const r of results) console.log(r.ok ? `PASS: ${r.msg}` : `FAIL: ${r.msg}`)

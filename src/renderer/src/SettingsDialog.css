@@ -76,3 +76,18 @@
   background: var(--accent);
   transform: translateX(14px);
 }
+.settings-path {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.settings-path input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-path .btn {
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

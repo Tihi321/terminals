@@ -22,6 +22,7 @@ import {
   ArrowUp,
   GitBranch,
   Group,
+  House,
   TriangleAlert,
   Pencil,
   RefreshCw,
@@ -33,6 +34,7 @@ import {
   Trash2
 } from 'lucide-react'
 import type { AppState, ChildView, FolderView, GroupView } from '../../shared/types'
+import { HOME_ID } from '../../shared/types'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { LOC_DRAG_TYPE, locDrag } from './TabBar'
@@ -411,6 +413,39 @@ export function Sidebar(p: Props): JSX.Element {
     />
   )
 
+  /** Pinned Home location: selectable, has its own tabs; cannot be renamed, removed, dragged or reordered. */
+  const homeRow = (): JSX.Element => {
+    const h = state.home
+    return (
+      <Row
+        key={HOME_ID}
+        indent={0}
+        icon={<House size={16} />}
+        name="Home"
+        subtitle={h.missing ? 'Folder not found' : h.branch ? h.branch : h.path}
+        subKind={h.missing ? 'missing' : h.branch ? 'branch' : 'path'}
+        title={h.missing ? `${h.path}
+(folder not found on disk)` : h.path}
+        selected={HOME_ID === state.selectedId}
+        missing={h.missing}
+        count={p.counts[HOME_ID] ?? 0}
+        onClick={() => p.onSelect(HOME_ID)}
+        onContext={(e) =>
+          openMenu(e, [
+            { label: 'Open terminal', icon: <Terminal size={14} />, disabled: h.missing, onClick: () => p.onOpenTerminal(HOME_ID) },
+            { label: 'Open in Explorer', icon: <FolderOpen size={14} />, disabled: h.missing, onClick: () => p.onOpenExplorer(h.path) },
+            { label: 'Copy path', icon: <Copy size={14} />, onClick: () => p.onCopy(h.path) }
+          ])
+        }
+        actions={
+          <button className="icon-btn" title="New terminal" disabled={h.missing} onClick={() => p.onOpenTerminal(HOME_ID)}>
+            <Terminal size={14} />
+          </button>
+        }
+      />
+    )
+  }
+
   const creatingRow = (depth: number): JSX.Element | null =>
     creating === null ? null : (
       <div className="row creating" style={{ paddingLeft: 8 + depth * 18 }}>
@@ -707,6 +742,7 @@ export function Sidebar(p: Props): JSX.Element {
         }}
         onDrop={(e) => isOsDrag(e) && osDrop(e, null)}
       >
+        {homeRow()}
         {creating?.parentId === null && creatingRow(0)}
         {empty && (
           <div className="sidebar-empty">

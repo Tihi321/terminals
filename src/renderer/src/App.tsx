@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, Shield, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
-import type { AppState, Command, ElevatorInfo, GitDiffRequest } from '../../shared/types'
+import type { AgentTabRequest, AppState, Command, ElevatorInfo, GitDiffRequest, Result } from '../../shared/types'
 import { GSUDO_HINT, INSTALL_GSUDO_COMMAND } from '../../shared/elevation'
 import { removalSet } from '../../shared/groupTree'
 import { Sidebar } from './Sidebar'
@@ -299,6 +299,36 @@ export function App(): JSX.Element {
     [commitTabs, showTab]
   )
 
+  /** main spawned an agent (MCP) pty: show a background tab that attaches to it. Never changes selection or focus. */
+  const newAgentTab = useCallback(
+    (req: AgentTabRequest): Result => {
+      const st = stateRef.current
+      if (!st || !buildLocs(st).has(req.locId)) return { ok: false, error: 'Unknown location' }
+      createTerm(req.id, { attach: true })
+      const n = (counters.current[req.locId] = (counters.current[req.locId] ?? 0) + 1)
+      commitTabs((t) => [
+        ...t,
+        {
+          id: req.id,
+          locId: req.locId,
+          cwd: req.cwd,
+          title: `Agent ${n}`,
+          kind: 'shell',
+          agent: true,
+          exited: false,
+          shell: req.shell,
+          startCwd: req.cwd
+        }
+      ])
+      // Only a pane that shows this location and has no active tab takes it; otherwise it stays in the background.
+      const cur = panesRef.current
+      if (cur?.panes.some((p) => p.locId === req.locId && !activeRef.current[p.id])) showTab(req.id)
+      scheduleSave()
+      return { ok: true }
+    },
+    [commitTabs, showTab, scheduleSave]
+  )
+
   /** New admin tab: the TerminalView mounts and requests an elevated pty (the click that opened the menu is the consent). */
   const newAdminTab = useCallback((locId: string, paneId?: string) => newTab(locId, undefined, paneId, true), [newTab])
 
@@ -585,6 +615,7 @@ export function App(): JSX.Element {
                 } else createTerm(t.newId)
                 tab.shell = t.shell
                 tab.startCwd = t.startCwd
+                if (t.agent) tab.agent = true
                 if (t.fallbackCwd) fallbackById.current[t.newId] = t.fallbackCwd
                 // New tabs continue the numbering ("PowerShell 3").
                 const n = /\s(\d+)$/.exec(t.title)
@@ -838,6 +869,16 @@ export function App(): JSX.Element {
     },
     [closeTab]
   )
+
+  // Agent (MCP) terminals: main spawns the pty and asks for a tab; close_terminal drops it again.
+  useEffect(() => {
+    const offOpen = window.api.onAgentOpenTab(newAgentTab)
+    const offClose = window.api.onAgentCloseTab((id) => closeTab(id))
+    return () => {
+      offOpen()
+      offClose()
+    }
+  }, [newAgentTab, closeTab])
 
   // State pushed by the main process (MCP server). A folder or group removed there gets the same cleanup as a
   // removal from the sidebar: its terminals (and a parent group's children's) are closed before the state applies.
@@ -1194,6 +1235,7 @@ export function App(): JSX.Element {
                     <TerminalView
                       id={t.id}
                       elevated={t.elevated}
+                      agent={t.agent}
                       cwd={t.cwd}
                       shell={t.shell}
                       fallbackCwd={fallbackById.current[t.id]}
@@ -1319,6 +1361,7 @@ export function App(): JSX.Element {
       {settingsOpen && state && (
         <SettingsDialog
           settings={state.settings}
+          homePath={state.home.path}
           onChange={(patch) => void window.api.setSettings(patch).then(setState)}
           onClose={() => setSettingsOpen(false)}
         />

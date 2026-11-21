@@ -31,6 +31,11 @@ export function stepsShell(shell: string): string {
   return isRunnableShell(shell) ? shell : resolveShell('')
 }
 
+/** PowerShell for agent terminals: `configured` when it is pwsh/powershell, else the automatic choice. */
+export function psShell(configured: string): string {
+  return /pwsh|powershell/i.test(configured) ? resolveShell(configured) : resolveShell('')
+}
+
 /** Known shells for the default-shell picker. */
 export function listShells(): ShellOption[] {
   return [

@@ -21,6 +21,8 @@ interface Props {
   fallbackCwd?: string
   /** Shell tabs: start the shell as administrator (main resolves the elevator; nothing else is sent). */
   elevated?: boolean
+  /** Restored agent shell tab: tell main it is MCP-controllable. */
+  agent?: boolean
 }
 
 function safeFit(id: string, el: HTMLElement): void {
@@ -34,7 +36,7 @@ function safeFit(id: string, el: HTMLElement): void {
 }
 
 /** Hosts a long-lived xterm instance. Mounted for the tab's whole life, hidden via CSS when inactive. */
-export function TerminalView({ id, cwd, visible, focused, style, steps, locId, shell, fallbackCwd, elevated }: Props): JSX.Element {
+export function TerminalView({ id, cwd, visible, focused, style, steps, locId, shell, fallbackCwd, elevated, agent }: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -45,26 +47,42 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
       entry.started = true
       entry.term.open(el)
       safeFit(id, el)
-      void window.api
-        .ptyCreate({
-          id,
-          cwd,
-          cols: entry.term.cols,
-          rows: entry.term.rows,
-          steps,
-          locId,
-          shell,
-          fallbackCwd,
-          ...(elevated ? { elevated: true } : {})
-        })
-        .then((r) => {
-          entry.markReady()
-          if (!r.ok) {
-            entry.term.write(`\x1b[31mFailed to start: ${r.error}\x1b[0m\r\n`)
-            // Treat as exited so the tab is marked consistently.
+      if (entry.attach) {
+        void window.api.ptyAttach(id).then((r) => {
+          if (r.ok) {
+            if (r.backlog) entry.term.write(r.backlog)
+            entry.markReady()
+            window.api.ptyResize(id, entry.term.cols, entry.term.rows)
+          } else {
+            entry.markReady()
+            entry.term.write(`[31mFailed to attach: ${r.error}[0m
+`)
             window.dispatchEvent(new CustomEvent('terminal-failed', { detail: id }))
           }
         })
+      } else
+        void window.api
+          .ptyCreate({
+            id,
+            cwd,
+            cols: entry.term.cols,
+            rows: entry.term.rows,
+            steps,
+            locId,
+            shell,
+            fallbackCwd,
+            ...(elevated ? { elevated: true } : {}),
+            ...(agent ? { agent: true } : {})
+          })
+          .then((r) => {
+            entry.markReady()
+            if (!r.ok) {
+              entry.term.write(`[31mFailed to start: ${r.error}[0m
+`)
+              // Treat as exited so the tab is marked consistently.
+              window.dispatchEvent(new CustomEvent('terminal-failed', { detail: id }))
+            }
+          })
     }
     const ro = new ResizeObserver(() => safeFit(id, el))
     ro.observe(el)

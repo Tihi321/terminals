@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import { X } from 'lucide-react'
+import { FolderOpen, X } from 'lucide-react'
 import type { Settings, ShellOption } from '../../shared/types'
 import {
   DEFAULT_SETTINGS,
@@ -16,7 +16,8 @@ import './SettingsDialog.css'
 type FieldDef =
   | { key: 'theme' | 'cursorStyle' | 'shell'; kind: 'select'; label: string; hint?: string }
   | { key: 'terminalFontSize' | 'scrollback'; kind: 'number'; label: string; min: number; max: number; step: number; hint?: string }
-  | { key: 'cursorBlink'; kind: 'toggle'; label: string; hint?: string }
+  | { key: 'cursorBlink' | 'allowMcpRun'; kind: 'toggle'; label: string; hint?: string }
+  | { key: 'homeDir'; kind: 'path'; label: string; hint?: string }
   | { key: 'terminalFontFamily' | 'editor'; kind: 'text'; label: string; presets?: string[]; hint?: string }
 
 const FONT_PRESETS = [DEFAULT_TERMINAL_FONT, "'Cascadia Code'", 'Consolas', "'JetBrains Mono'", "'Fira Code'", "'Courier New'"]
@@ -74,6 +75,21 @@ const SECTIONS: { title: string; fields: FieldDef[] }[] = [
   {
     title: 'Integrations',
     fields: [{ key: 'editor', kind: 'text', label: 'Editor', hint: 'Executable on PATH used by Open in editor.' }]
+  },
+  {
+    title: 'Home',
+    fields: [{ key: 'homeDir', kind: 'path', label: 'Home folder', hint: 'Where Home terminals start. Empty = your Documents folder.' }]
+  },
+  {
+    title: 'MCP',
+    fields: [
+      {
+        key: 'allowMcpRun',
+        kind: 'toggle',
+        label: 'Allow MCP to run commands',
+        hint: "Lets MCP clients with this app's token open terminals, run commands, type into and read them. Off by default."
+      }
+    ]
   }
 ]
 
@@ -92,6 +108,7 @@ function DraftInput(p: {
   value: string | number
   numeric?: { min: number; max: number; step: number }
   list?: string
+  placeholder?: string
   onCommit: (v: string | number) => void
 }): JSX.Element {
   const [draft, setDraft] = useState(String(p.value))
@@ -143,6 +160,7 @@ function DraftInput(p: {
       max={p.numeric?.max}
       step={p.numeric?.step}
       list={p.list}
+      placeholder={p.placeholder}
       spellCheck={false}
       value={draft}
       onFocus={() => (focused.current = true)}
@@ -173,10 +191,13 @@ function DraftInput(p: {
 
 export function SettingsDialog({
   settings,
+  homePath,
   onChange,
   onClose
 }: {
   settings: Settings
+  /** Resolved Home directory (shown as the placeholder when the setting is empty). */
+  homePath: string
   onChange: (patch: Partial<Settings>) => void
   onClose: () => void
 }): JSX.Element {
@@ -216,9 +237,11 @@ export function SettingsDialog({
   }
 
   const reset = (): void => {
-    const { shell: _shell, editor: _editor, ...rest } = DEFAULT_SETTINGS
+    const { shell: _shell, editor: _editor, homeDir: _homeDir, allowMcpRun: _allowMcpRun, ...rest } = DEFAULT_SETTINGS
     void _shell
     void _editor
+    void _homeDir
+    void _allowMcpRun
     onChange(rest)
   }
 
@@ -254,6 +277,27 @@ export function SettingsDialog({
             <DraftInput value={settings[f.key]} numeric={{ min: f.min, max: f.max, step: f.step }} onCommit={(v) => set(f.key, v)} />
             {hint}
           </label>
+        )
+      case 'path':
+        return (
+          <div className="field" key={f.key}>
+            <span>{f.label}</span>
+            <div className="settings-path">
+              <DraftInput value={settings[f.key]} placeholder={homePath} onCommit={(v) => set(f.key, v)} />
+              <button
+                className="btn"
+                onClick={() => {
+                  void window.api.pickFolder().then((p) => p && set(f.key, p))
+                }}
+              >
+                <FolderOpen size={14} /> Browse…
+              </button>
+              <button className="btn" disabled={settings[f.key] === ''} onClick={() => set(f.key, '')}>
+                Use Documents
+              </button>
+            </div>
+            {hint}
+          </div>
         )
       case 'text':
         return (
@@ -297,7 +341,7 @@ export function SettingsDialog({
           ))}
         </div>
         <div className="modal-foot">
-          <button className="btn" onClick={reset} title="Resets appearance, cursor and scrollback. Shell and editor are kept.">
+          <button className="btn" onClick={reset} title="Resets appearance, cursor and scrollback. Shell, editor, Home folder and MCP access are kept.">
             Reset to defaults
           </button>
           <span className="hint settings-foot-hint">Changes apply immediately.</span>

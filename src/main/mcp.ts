@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { TOOLS, ToolError, type ToolContext } from './mcpTools'
+import type { TerminalControl } from './terminalHost'
 
 /**
  * Built-in MCP server (Streamable HTTP, stateless, JSON responses) so a Claude Code session in one of the app's
@@ -22,10 +23,13 @@ export interface McpInfo {
   url: string
   token: string
   port: number
+  /** Stops listening (used by smoke). */
+  close?: () => Promise<void>
 }
 
 const INSTRUCTIONS =
-  "Manages the Terminals app: saved folders, groups (manual and parent folder groups), saved commands and saved prompts. Changes show up in the app immediately. \"This folder\" is the terminal's location from get_context; folder-scoped tools default to it. Nothing here runs commands."
+  "Manages the Terminals app: saved folders, groups, saved commands and prompts, and (when the user has turned on \"Allow MCP to run commands\") its terminals. open_terminal opens a visible PowerShell tab (default: the Home location) and returns its id; run_command runs a command in that live shell and returns its output and exit code; send_input types raw text; read_terminal returns recent output; close_terminal closes it. Only terminals opened through MCP can be typed into or closed. \"This folder\" is the terminal's location from get_context."
+
 
 /** Reads the token from the data dir, creating it on first use. */
 export function loadOrCreateToken(dir: string): string {
@@ -69,11 +73,11 @@ function buildServer(ctx: ToolContext, version: string, onChange: () => void): M
       {
         description: t.description,
         inputSchema: t.shape,
-        annotations: { readOnlyHint: !t.mutates, destructiveHint: !!t.destructive, openWorldHint: false }
+        annotations: { readOnlyHint: t.readOnly ?? !t.mutates, destructiveHint: !!t.destructive, openWorldHint: false }
       },
       async (args) => {
         try {
-          const result = t.run(args as Record<string, unknown>, ctx)
+          const result = await t.run(args as Record<string, unknown>, ctx)
           return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
         } catch (e) {
           const text = e instanceof ToolError ? e.message : `Internal error: ${e instanceof Error ? e.message : String(e)}`
@@ -95,7 +99,9 @@ async function handle(
   info: McpInfo,
   dataDir: string,
   version: string,
-  onChange: () => void
+  onChange: () => void,
+  terminals: TerminalControl | null,
+  allowRun: () => boolean
 ): Promise<void> {
   if (!hostAllowed(req.headers.host, info.port)) return sendError(res, 403, 'Forbidden: bad Host header')
   // Browsers always send Origin on cross-origin requests; CLI MCP clients do not.
@@ -108,7 +114,7 @@ async function handle(
 
   const raw = req.headers[LOCATION_HEADER]
   const headerLocation = (Array.isArray(raw) ? raw[0] : raw) || undefined
-  const server = buildServer({ headerLocation, dataDir }, version, onChange)
+  const server = buildServer({ headerLocation, dataDir, terminals, allowRun }, version, onChange)
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   res.on('close', () => {
     void transport.close()
@@ -133,13 +139,19 @@ function listen(port: number, onRequest: (req: IncomingMessage, res: ServerRespo
  * Starts the server on TERMINALS_MCP_PORT (default 47821), falling back to an OS-assigned port when that one is
  * taken (e.g. the dev build and the installed build running at once).
  */
-export async function startMcpServer(opts: { dataDir: string; version: string; onChange: () => void }): Promise<McpInfo> {
+export async function startMcpServer(opts: {
+  dataDir: string
+  version: string
+  onChange: () => void
+  terminals: TerminalControl | null
+  allowRun: () => boolean
+}): Promise<McpInfo> {
   const token = loadOrCreateToken(opts.dataDir)
   const envPort = Number(process.env.TERMINALS_MCP_PORT)
   const wanted = Number.isInteger(envPort) && envPort > 0 && envPort < 65536 ? envPort : DEFAULT_MCP_PORT
   const info: McpInfo = { url: '', token, port: 0 }
   const onRequest = (req: IncomingMessage, res: ServerResponse): void => {
-    handle(req, res, info, opts.dataDir, opts.version, opts.onChange).catch((e) => {
+    handle(req, res, info, opts.dataDir, opts.version, opts.onChange, opts.terminals, opts.allowRun).catch((e) => {
       console.error('MCP request failed', e)
       if (!res.headersSent) sendError(res, 500, 'Internal server error')
       else res.end()
@@ -156,5 +168,11 @@ export async function startMcpServer(opts: { dataDir: string; version: string; o
   }
   info.port = (http.address() as AddressInfo).port
   info.url = `http://127.0.0.1:${info.port}${MCP_PATH}`
+  const server = http
+  info.close = () =>
+    new Promise<void>((resolvePromise) => {
+      server.close(() => resolvePromise())
+      server.closeAllConnections()
+    })
   return info
 }

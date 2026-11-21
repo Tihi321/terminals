@@ -13,6 +13,7 @@ import {
 import { basename, dirname, join, relative, resolve, isAbsolute, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
+  HOME_ID,
   SCHEMA_VERSION,
   type AppState,
   type ChildView,
@@ -276,7 +277,19 @@ export function getState(): AppState {
       hiddenCount: children.filter((c) => c.hidden).length
     }
   })
+  const homePath = getHomeDir()
+  const homeMissing = !existsSync(homePath)
+  const homeGit = homeMissing ? { isGit: false, branch: null } : readGit(homePath)
   return {
+    home: {
+      id: HOME_ID,
+      name: 'Home',
+      path: homePath,
+      isDefault: data.settings.homeDir === '',
+      missing: homeMissing,
+      isGit: homeGit.isGit,
+      branch: homeGit.branch
+    },
     folders: data.folders.map((f) => {
       const missing = !existsSync(f.path)
       const git = missing ? { isGit: false, branch: null } : readGit(f.path)
@@ -290,6 +303,11 @@ export function getState(): AppState {
     ui: data.ui,
     resolvedShell: resolveShell(data.settings.shell)
   }
+}
+
+/** Directory of the Home location: settings.homeDir, or the Documents folder when that is ''. */
+export function getHomeDir(): string {
+  return data.settings.homeDir || app.getPath('documents')
 }
 
 export function getSettings(): Settings {
@@ -306,7 +324,11 @@ export function getEditor(): string {
 
 /** Absolute roots the renderer may browse/open: saved folders and parent-folder group roots. */
 export function getRoots(): string[] {
-  return [...data.folders.map((f) => f.path), ...data.groups.filter((g) => g.path).map((g) => g.path as string)]
+  return [
+    ...data.folders.map((f) => f.path),
+    ...data.groups.filter((g) => g.path).map((g) => g.path as string),
+    getHomeDir()
+  ]
 }
 
 export function isInsideRoots(p: string): boolean {
@@ -396,9 +418,9 @@ export function createManualGroup(name: string, parentId?: string | null): strin
 
 function fixSelection(d: Persisted): void {
   const s = d.selectedId
-  if (!s || s.startsWith('child:')) return
+  if (!s || s === HOME_ID || s.startsWith('child:')) return
   if (!d.folders.some((f) => f.id === s) && !d.groups.some((g) => g.id === s)) {
-    d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? null
+    d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? HOME_ID
   }
 }
 
@@ -440,7 +462,7 @@ export function removeGroupData(d: Persisted, id: string): RemovalSummary {
   d.snippets = snips
   d.groups = d.groups.filter((g) => !gset.has(g.id))
   d.folders = d.folders.filter((f) => !fset.has(f.id))
-  if (selRemoved) d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? null
+  if (selRemoved) d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? HOME_ID
   else fixSelection(d)
   return summary
 }

@@ -2,16 +2,18 @@ import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as z from 'zod'
-import type { AppState, Command, CommandTarget, Snippet } from '../shared/types'
+import { HOME_ID, type AppState, type Command, type CommandTarget, type Snippet } from '../shared/types'
 import { nestError } from '../shared/groupTree'
 import * as store from './store'
+import { ToolError } from './toolError'
+import type { TerminalControl } from './terminalHost'
 
 /**
  * Tool logic of the built-in MCP server. Location resolution and the command/prompt builders are pure functions
  * over an AppState; the tool `run` functions apply the result through the store (never by editing terminals.json).
  */
 
-export type LocKind = 'folder' | 'child' | 'parent' | 'manual'
+export type LocKind = 'folder' | 'child' | 'parent' | 'manual' | 'home'
 
 /** Anything a terminal can belong to: a saved folder, a parent group's subfolder, or a group. */
 export interface McpLoc {
@@ -26,19 +28,27 @@ export interface McpLoc {
 }
 
 /** An error the caller can fix; its message is returned to the client as the tool result. */
-export class ToolError extends Error {}
+export { ToolError }
 
 export interface ToolContext {
   /** Value of the X-Terminals-Location header (the terminal's TERMINALS_LOC_ID), if any. */
   headerLocation?: string
   dataDir: string
+  /** Null when the server runs without a terminal host (logic tests). */
+  terminals: TerminalControl | null
+  /** settings.allowMcpRun, read per call. */
+  allowRun: () => boolean
 }
+
+export const RUN_DISABLED_ERROR =
+  'Terminal control is off. Ask the user to turn on Settings > MCP > "Allow MCP to run commands" in the Terminals app.'
 
 const KIND_LABEL: Record<LocKind, string> = {
   folder: 'saved folder',
   child: 'subfolder of a parent folder group',
   parent: 'parent folder group',
-  manual: 'manual group'
+  manual: 'manual group',
+  home: 'Home location'
 }
 
 const HOW_TO =
@@ -57,6 +67,8 @@ export function buildLocations(state: AppState): McpLoc[] {
   for (const g of state.groups) out.push({ id: g.id, name: g.name, path: g.path, kind: g.kind, groupId: null, missing: g.missing })
   for (const g of state.groups)
     for (const c of g.children) out.push({ id: c.id, name: c.name, path: c.path, kind: 'child', groupId: g.id, missing: false })
+  // Last, so a saved folder at the same path wins.
+  out.push({ id: HOME_ID, name: state.home.name, path: state.home.path, kind: 'home', groupId: null, missing: state.home.missing })
   return out
 }
 
@@ -122,6 +134,34 @@ export function contextLocation(state: AppState, ref: string | undefined, header
   if (!loc) throw new ToolError(`This terminal's location ${h} no longer exists in the app. ${HOW_TO}`)
   if (kinds && !kinds.includes(loc.kind)) throw wrongKind(h, loc, kinds)
   return loc
+}
+
+/**
+ * Where open_terminal starts. undefined/'' -> Home. A saved location -> its path (a manual group has none: error).
+ * An unsaved existing absolute directory -> Home with that cwd. A non-existent path -> error. Home missing -> error.
+ */
+export function resolveOpenTarget(state: AppState, ref: string | undefined): { loc: McpLoc; cwd: string } {
+  const home = buildLocations(state).find((l) => l.id === HOME_ID) as McpLoc
+  const useHome = (cwd: string): { loc: McpLoc; cwd: string } => {
+    if (home.missing) throw new ToolError(`The Home folder ${home.path} does not exist. Ask the user to change it in Settings.`)
+    return { loc: home, cwd }
+  }
+  const r = (ref ?? '').trim()
+  if (!r) return useHome(home.path as string)
+  let loc: McpLoc | null = null
+  if (isAbs(r)) {
+    const key = store.norm(r)
+    loc = buildLocations(state).find((l) => l.path && store.norm(l.path) === key) ?? null
+    if (!loc) {
+      const abs = resolve(r)
+      if (!isDir(abs)) throw new ToolError(`${r} does not exist or is not a directory`)
+      return useHome(abs)
+    }
+  } else loc = findLocation(state, r)
+  if (!loc.path) throw new ToolError(`${loc.name} (${loc.id}) is a manual group with no directory of its own; pick a folder in it`)
+  if (loc.kind === 'home') return useHome(loc.path)
+  if (loc.missing || !isDir(loc.path)) throw new ToolError(`${loc.path} does not exist`)
+  return { loc, cwd: loc.path }
 }
 
 export function requireName(v: string | undefined, what: string): string {
@@ -345,11 +385,13 @@ export interface ToolDef {
   /** Mutating tools push the new state to the renderer. */
   mutates: boolean
   destructive?: boolean
-  run: (args: Record<string, unknown>, ctx: ToolContext) => unknown
+  /** readOnlyHint annotation; defaults to !mutates. */
+  readOnly?: boolean
+  run: (args: Record<string, unknown>, ctx: ToolContext) => unknown | Promise<unknown>
 }
 
 function defineTool<S extends z.ZodRawShape>(
-  def: Omit<ToolDef, 'shape' | 'run'> & { shape: S; run: (args: z.output<z.ZodObject<S>>, ctx: ToolContext) => unknown }
+  def: Omit<ToolDef, 'shape' | 'run'> & { shape: S; run: (args: z.output<z.ZodObject<S>>, ctx: ToolContext) => unknown | Promise<unknown> }
 ): ToolDef {
   return def as unknown as ToolDef
 }
@@ -360,6 +402,14 @@ const locationArg = z
   .describe("Location id, absolute path or unique name. Default: this terminal's location.")
 const groupRef = (what: string): z.ZodString => z.string().describe(`${what}: group id or unique group name`)
 const folderRef = z.string().describe('Saved folder: id, absolute path or unique name')
+/** Gate for the terminal tools: the toggle first, then the host. */
+function terminalsOrThrow(ctx: ToolContext): TerminalControl {
+  if (!ctx.allowRun()) throw new ToolError(RUN_DISABLED_ERROR)
+  if (!ctx.terminals) throw new ToolError('Terminal control is not available in this process.')
+  return ctx.terminals
+}
+const termId = z.string().describe('Terminal id from open_terminal or list_terminals')
+
 const stepsArg = z.array(z.string()).describe('Shell commands run in order, stopping at the first failure')
 
 export const TOOLS: ToolDef[] = [
@@ -408,7 +458,8 @@ export const TOOLS: ToolDef[] = [
                 children: g.children.map((c) => ({ id: c.id, name: c.name, path: c.path, hidden: c.hidden }))
               }
         ),
-        folders: s.folders.map((f) => ({ id: f.id, name: f.name, path: f.path, groupId: f.groupId, missing: f.missing }))
+        folders: s.folders.map((f) => ({ id: f.id, name: f.name, path: f.path, groupId: f.groupId, missing: f.missing })),
+        home: { id: s.home.id, name: s.home.name, path: s.home.path, missing: s.home.missing }
       }
     }
   }),
@@ -646,6 +697,97 @@ export const TOOLS: ToolDef[] = [
       const prompts = s.snippets.filter((p) => p.scope === f.id).length
       store.removeFolder(f.id)
       return { deleted: f.id, name: f.name, path: f.path, commandsDeleted: commands, promptsDeleted: prompts }
+    }
+  }),
+  defineTool({
+    name: 'open_terminal',
+    description:
+      'Open a visible PowerShell tab in the app, in the background (no focus change), and return its id. Needs "Allow MCP to run commands" in the app settings. Never elevated.',
+    shape: {
+      location: z
+        .string()
+        .optional()
+        .describe(
+          'Location id, name or absolute path. A saved location opens there; any other existing directory opens under Home with that cwd. Default: Home.'
+        )
+    },
+    mutates: false,
+    readOnly: false,
+    run: async (a, ctx) => {
+      const terminals = terminalsOrThrow(ctx)
+      const { loc, cwd } = resolveOpenTarget(store.getState(), a.location)
+      const t = await terminals.open({ locId: loc.id, cwd })
+      return { id: t.id, location: { id: loc.id, name: loc.name, kind: loc.kind }, cwd: t.cwd, shell: t.shell, agent: true }
+    }
+  }),
+  defineTool({
+    name: 'run_command',
+    description:
+      'Run a command in a terminal opened with open_terminal, in its live PowerShell (cd and variables persist between calls). Returns the output (ANSI-stripped, without the echoed input or prompt) and the exit code. One run at a time per terminal. On timeout the partial output is returned with timedOut: true and the shell keeps running (the terminal stays busy until the command ends; use read_terminal, or send_input "\\u0003" to interrupt). Only for terminals opened through MCP.',
+    shape: {
+      id: termId,
+      command: z.string().describe('PowerShell command or script text'),
+      timeoutSeconds: z.number().int().min(1).max(600).optional().describe('Default 60')
+    },
+    mutates: false,
+    readOnly: false,
+    run: async (a, ctx) => {
+      const terminals = terminalsOrThrow(ctx)
+      return terminals.run(a.id, a.command, (a.timeoutSeconds ?? 60) * 1000)
+    }
+  }),
+  defineTool({
+    name: 'send_input',
+    description:
+      'Type raw text into a terminal opened with open_terminal (for prompts, interactive programs, Ctrl+C as "\\u0003"). With enter: true a carriage return is appended. Only for terminals opened through MCP.',
+    shape: {
+      id: termId,
+      text: z.string().describe('Text to type, written raw'),
+      enter: z.boolean().optional().describe('Append Enter (CR)')
+    },
+    mutates: false,
+    readOnly: false,
+    run: (a, ctx) => {
+      const terminals = terminalsOrThrow(ctx)
+      terminals.send(a.id, a.enter ? a.text + '\r' : a.text)
+      return { id: a.id, sent: a.text.length }
+    }
+  }),
+  defineTool({
+    name: 'read_terminal',
+    description:
+      "Recent output of any terminal (including the user's own tabs), as ANSI-stripped lines from the raw stream. Full-screen programs read back poorly. Needs \"Allow MCP to run commands\" because output can hold secrets.",
+    shape: {
+      id: termId,
+      lines: z.number().int().min(1).max(2000).optional().describe('Last N lines. Default 100')
+    },
+    mutates: false,
+    readOnly: true,
+    run: (a, ctx) => terminalsOrThrow(ctx).read(a.id, a.lines ?? 100)
+  }),
+  defineTool({
+    name: 'list_terminals',
+    description:
+      "All terminals (the user's and those opened through MCP) with id, location, cwd, shell, alive and busy. allowRun tells whether terminal control is on; if not, ask the user to enable \"Allow MCP to run commands\".",
+    shape: {},
+    mutates: false,
+    readOnly: true,
+    run: (_a, ctx) => {
+      const s = store.getState()
+      const terminals = (ctx.terminals?.list() ?? []).map((t) => ({ ...t, locationName: locationById(s, t.locationId)?.name ?? null }))
+      return { allowRun: ctx.allowRun(), terminals }
+    }
+  }),
+  defineTool({
+    name: 'close_terminal',
+    description: 'Close a terminal opened with open_terminal (its tab disappears). Only for terminals opened through MCP.',
+    shape: { id: termId },
+    mutates: false,
+    readOnly: false,
+    destructive: true,
+    run: async (a, ctx) => {
+      await terminalsOrThrow(ctx).close(a.id)
+      return { closed: a.id }
     }
   })
 ]

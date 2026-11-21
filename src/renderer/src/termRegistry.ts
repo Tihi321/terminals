@@ -28,6 +28,8 @@ export interface TermEntry {
   startedAt: number
   /** Font changed while hidden: re-measure the cell size when shown. */
   remeasure: boolean
+  /** The pty was spawned by main (agent tab): attach to it instead of creating one. */
+  attach: boolean
   /** Resolves once the pty has been requested (success or failure). */
   ready: Promise<void>
   markReady: () => void
@@ -218,7 +220,7 @@ export function pasteInto(id: string, text: string, enter = false): boolean {
   return true
 }
 
-export function createTerm(id: string, opts: { command?: boolean; elevated?: boolean } = {}): TermEntry {
+export function createTerm(id: string, opts: { command?: boolean; elevated?: boolean; attach?: boolean } = {}): TermEntry {
   ensureListeners()
   const term = new Terminal({
     fontFamily: current.fontFamily,
@@ -338,6 +340,7 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     command: !!opts.command,
     stopped: false,
     elevated: !!opts.elevated,
+    attach: !!opts.attach,
     startedAt: Date.now(),
     remeasure: false,
     ready,

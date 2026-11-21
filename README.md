@@ -20,7 +20,7 @@ yarn typecheck   # tsc for main/preload/shared and renderer
 yarn smoke       # headless PTY checks inside Electron; prints a PASS line per check, exits 0 (1 on failure)
 ```
 
-`yarn smoke` runs two checks: an interactive shell echoing a marker, and a 2-step command (`Write-Output ('a'+'1')` then `exit 3`) whose output must contain `a1` and whose exit code must be 3.
+`yarn smoke` runs two pty checks: an interactive shell echoing a marker, and a 2-step command (`Write-Output ('a'+'1')` then `exit 3`) whose output must contain `a1` and whose exit code must be 3. It also checks the MCP tool logic, the terminal text helpers (ANSI stripping, run markers), `run_command` against a real PowerShell (output, exit code, persistent state, busy, timeout), and the MCP HTTP endpoint with the "Allow MCP to run commands" toggle off and on.
 
 ## Build an .exe
 
@@ -51,6 +51,7 @@ electron . --data-dir=C:\temp\terminals-test --remote-debugging-port=9333
 
 ## Sidebar: folders and groups
 
+- **Home** is pinned at the top of the sidebar. It is a real location: selectable, with its own tab list, and the Files, Git and Commands panels work on its directory as they do for a folder. It starts in your Documents folder; change it in Settings (Ctrl+,) under "Home folder". It cannot be renamed, removed or reordered.
 - **Add folder** saves a standalone folder. Folders missing on disk are greyed out ("not found") and cannot open terminals.
 - **Add parent folder** creates a parent-folder group. Its immediate subfolders are discovered automatically (names starting with `.` and `node_modules` are skipped). The list is rescanned when the window regains focus and with the refresh buttons. Child ids are derived from the path, so open terminals survive a rescan. Children with a `.git` entry show a git icon and the current branch as subtitle (read from `.git/HEAD`; for worktrees `.git` is a file and its `gitdir:` pointer is followed). The parent folder row itself is selectable and can open terminals.
 - **Hide / show hidden**: hide a child from its context menu or the eye button; the group's eye toggle shows hidden children again (dimmed). Hidden paths are persisted.
@@ -79,9 +80,9 @@ A command is a name, a mode (`parallel` or `sequential`) and a list of targets, 
 
 ## MCP server
 
-The app runs a small [MCP](https://modelcontextprotocol.io) server so a Claude Code session in one of its terminals can manage the app: saved commands, saved prompts, groups and folders. Changes show up in the open window straight away and are saved to `terminals.json` like any change made in the UI. There is deliberately no tool that runs a command or types into a terminal.
+The app runs a small [MCP](https://modelcontextprotocol.io) server so a Claude Code session in one of its terminals can manage the app: saved commands, saved prompts, groups and folders. Changes show up in the open window straight away and are saved to `terminals.json` like any change made in the UI. Tools that open, drive, read and close terminals exist too, but they are off until you turn on Settings > MCP > "Allow MCP to run commands" (see [Terminal control](#terminal-control)).
 
-Transport: Streamable HTTP (stateless, JSON responses) at `http://127.0.0.1:<port>/mcp`, built on `@modelcontextprotocol/sdk`. The port is 47821, or `TERMINALS_MCP_PORT` when set; when that port is taken (for example the dev build and the installed build at once) the app falls back to a free port chosen by the OS. Terminals always get the actual URL. The server is not started in `--smoke` mode.
+Transport: Streamable HTTP (stateless, JSON responses) at `http://127.0.0.1:<port>/mcp`, built on `@modelcontextprotocol/sdk`. The port is 47821, or `TERMINALS_MCP_PORT` when set; when that port is taken (for example the dev build and the installed build at once) the app falls back to a free port chosen by the OS. Terminals always get the actual URL. `--smoke` mode starts its own short-lived instance for its checks.
 
 ### Tools
 
@@ -101,8 +102,25 @@ Transport: Streamable HTTP (stateless, JSON responses) at `http://127.0.0.1:<por
 | `add_folders` | Save directories as folders, optionally into a manual group. Reports per path |
 | `move_folder` | Into a manual group, or out of it with `group: null` |
 | `rename_folder` / `remove_folder` | Rename / remove a folder. Removing deletes its commands and prompts and closes its terminals |
+| `open_terminal` | Open a visible PowerShell tab (Bot icon) and return its id. `location` is an id, name or absolute path; default Home. Needs the toggle |
+| `run_command` | Run a command in an agent terminal's live shell; returns output, exit code, `timedOut`, `exited`. `timeoutSeconds` 1-600 (default 60). Needs the toggle |
+| `send_input` | Type raw text into an agent terminal (`enter: true` appends Enter; Ctrl+C is `"\u0003"`). Needs the toggle |
+| `read_terminal` | Last `lines` (1-2000, default 100) of any terminal's output, user tabs included. Needs the toggle |
+| `list_terminals` | All terminals: id, location, cwd, shell, alive, busy, `agent`. Also reports whether control is on (`allowRun`). Always available |
+| `close_terminal` | Close an agent terminal. Needs the toggle |
 
 Folder-scoped tools take an optional `location`: a location id, an absolute path (a saved folder, a parent group, or a subfolder of a parent group) or a unique name (case-insensitive). Without it they use the terminal the request came from (the `X-Terminals-Location` header). Unknown paths are an error; nothing is added implicitly. Adding folders or groups through MCP never changes the selection in the UI.
+
+### Terminal control
+
+Off by default. Turn on Settings (Ctrl+,) > MCP > "Allow MCP to run commands" (`settings.allowMcpRun`). The setting is read at every tool call, so it takes effect without a restart. While it is off, `open_terminal`, `run_command`, `send_input`, `close_terminal` and `read_terminal` return an error telling the agent to ask you to enable it; only `list_terminals` keeps working. There are no per-command prompts.
+
+- **Agent terminals only.** `run_command`, `send_input` and `close_terminal` act only on terminals opened through `open_terminal`. `list_terminals` and `read_terminal` see every terminal, including the ones you opened. Writing into your tabs would break your work, and closing one would destroy its scrollback.
+- **Never elevated.** `open_terminal` always starts a plain PowerShell (your configured shell when it is `pwsh` or `powershell`, otherwise the auto-detected one). There is no admin option, and elevated tabs refuse every write tool.
+- **Where they open.** Without `location` a terminal opens under Home. A saved location opens there. Any other existing directory opens under Home with that directory as cwd, and nothing is added to the sidebar; a directory that does not exist is an error.
+- **Visible and in the background.** An agent tab is a normal tab with a Bot icon that you can watch and type in. It opens without activating itself or taking focus (it only becomes active when the pane showing that location has no active tab). MCP never shows, raises or focuses the window; with the window hidden in the tray the tab is created anyway and is there when you open it, with its full output. If the window does not answer within 5 s (still loading), the terminal is closed and the call fails. Agent tabs are restored after a restart with a new id and stay controllable; a restored Home tab falls back to the Home directory.
+- **`run_command`** types one line into the tab's live interactive PowerShell, so `cd` and variables persist between calls. The line appears in the terminal (preceded by an `[agent] ...` line) and in PSReadLine history. The output is the raw stream between hidden begin and end markers, ANSI-stripped: no echoed input and no prompt, the last 100 KB at most. The exit code is 0 on success, the last native exit code when it is non-zero, and 1 for an error or Ctrl+C. Only one run per terminal at a time; a second call gets a "busy" error and is not queued. On timeout the call returns the partial output with `timedOut: true`; the command keeps running and the terminal stays busy until it finishes (use `read_terminal`, or `send_input` with `"\u0003"` to interrupt). If the terminal exits during a run, the call returns `exited: true`. Only PowerShell is supported.
+- **`read_terminal`** reads the main process's per-terminal buffer (512 KiB of raw output), so it works while the window is hidden. Lines come from the ANSI-stripped stream, not the rendered screen, so full-screen programs (editors, TUIs) read back poorly.
 
 ### Per-terminal environment
 
@@ -123,6 +141,7 @@ They are always set (empty when unknown), so values inherited from another insta
 - Every request needs `Authorization: Bearer <token>`, otherwise 401. The token is random, created once and stored as `mcp-token` in the data directory (next to `terminals.json`, so `--data-dir` gets its own). It is compared in constant time.
 - The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), and requests carrying an `Origin` header (browsers) are rejected with 403.
 - Anything running as your user can read the token file; the server is a convenience for your own terminals, not a sandbox.
+- Because of that, the "Allow MCP to run commands" toggle is the only barrier to running commands in terminals. `read_terminal` is behind it too, since terminal output can hold secrets (tokens, pasted passwords). `list_terminals` returns metadata only and stays open.
 
 ### Register it in Claude Code (once)
 
@@ -142,7 +161,7 @@ Everything is stored in JSON at `%APPDATA%\terminals\terminals.json` (Electron `
   "groups": [{ "id": "...", "kind": "parent|manual", "name": "...", "path": "C:\\...", "order": 0, "collapsed": false, "showHidden": false, "hidden": ["c:\\..."] }],
   "commands": [{ "id": "...", "name": "...", "ownerId": "<folder|group|child id>", "mode": "parallel", "targets": [{ "cwd": "C:\\...", "steps": ["yarn build"] }] }],
   "selectedId": "...",
-  "settings": { "shell": "", "editor": "zed", "terminalFontSize": 15 },
+  "settings": { "shell": "", "editor": "zed", "terminalFontSize": 15, "homeDir": "", "allowMcpRun": false },
   "ui": { "sidebarWidth": 260, "panelWidth": 340, "panelOpen": false, "panelTab": "files" } }
 ```
 
@@ -150,7 +169,9 @@ Files without a `version` field are version 1 (folders, selection and `settings.
 
 The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mcp-server)).
 
-`settings.shell` is the shell executable. Empty means auto: `pwsh.exe` if it is on PATH, else `powershell.exe`. There is no settings UI; edit the file with the app closed.
+`settings.shell` is the shell executable. Empty means auto: `pwsh.exe` if it is on PATH, else `powershell.exe`. Settings are edited in the app (Ctrl+,).
+
+`settings.homeDir` is the directory Home terminals start in. Empty (the default) means your Documents folder; otherwise it must be an absolute Windows path (invalid values are ignored). `settings.allowMcpRun` (default `false`) lets MCP clients open terminals, run commands, type into and read them (see [Terminal control](#terminal-control)).
 
 ## Behaviour notes
 
