@@ -58,6 +58,8 @@ export interface PtyHandlers {
 /**
  * Arguments that make `shell` run the steps in order and stop at the first failing one,
  * propagating that step's exit code. PowerShell gets an -EncodedCommand so no quoting can go wrong.
+ * The user's profile is loaded (no -NoProfile) so steps see the same environment as interactive tabs
+ * (for example Node and yarn put on PATH by fnm).
  */
 export function buildRunArgs(shell: string, steps: string[]): string[] {
   const clean = steps.map((s) => s.trim()).filter(Boolean)
@@ -70,7 +72,7 @@ export function buildRunArgs(shell: string, steps: string[]): string[] {
       .join('\n')
     const script = `$__c = 0\ndo {\n${body}\n} while ($false)\n$host.SetShouldExit($__c)\n`
     const encoded = Buffer.from(script, 'utf16le').toString('base64')
-    return ['-NoLogo', '-NoProfile', '-EncodedCommand', encoded]
+    return ['-NoLogo', '-EncodedCommand', encoded]
   }
   return ['/d', '/s', '/c', clean.join(' && ')]
 }

@@ -76,7 +76,7 @@ A command is a name, a mode (`parallel` or `sequential`) and a list of targets, 
 - The Commands tab lists the commands of the selected folder plus those of its group (a selected group shows the group's commands). Each row has a status (idle, running with spinner, success, failed with exit code or stopped), Run / Run again / Stop, edit, duplicate and delete.
 - The editor picks each target's folder from the group's children, saved folders and parent folders, or a custom path with a folder picker.
 - Run: every target opens a tab titled `▶ <name>` (`▶ <name> · <folder>` for several targets) in the currently selected folder's tab bar. Steps run in order and the first failing step stops that target (native exit codes propagate). The tab stays open with the output and a `✓ done` or `✗ failed (exit N)` line, and shows a status dot. Parallel starts all targets at once; sequential starts the next target only after the previous one succeeded and stops at the first failure. Stop kills the run's terminals. Run again (command row or the tab's button) replaces the previous run's tabs.
-- Under PowerShell the steps are passed as an `-EncodedCommand`, so no quoting is needed. Under other shells they are joined with `&&`.
+- Under PowerShell the steps are passed as an `-EncodedCommand`, so no quoting is needed, and your PowerShell profile is loaded, so steps see the same PATH as a normal tab. Under other shells they are joined with `&&`.
 
 ## MCP server
 
