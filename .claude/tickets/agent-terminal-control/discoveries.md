@@ -1,0 +1,8 @@
+- 2026-11-21 planner: README "There is no settings UI" is stale (README.md:79) - suggested: point the line to Settings (Ctrl+,)
+- 2026-11-21 planner: README data example shows version 2; the schema is version 4 (README.md:142) - suggested: update the example to version 4
+- 2026-11-21 planner: README rename_group/delete_group row and Behaviour notes say a manual group's folders stay, contradicting the nested-groups cascade in src/main/mcpTools.ts:557 (README.md:96) - suggested: align the README with the cascade
+- 2026-11-21 planner: checkMigration uses 'C:\a\proj' where \a is not an escape, so the path is 'C:aproj', which is harmless (src/main/smoke.ts:89) - suggested: use 'C:\\a\\proj' or a forward-slash path
+- 2026-11-21 implementer: README Session restore bullet does not mention agent tabs or Home (README.md) - suggested: add a line about restored agent tabs and Home tabs
+- 2026-11-21 implementer: in pwsh 7, Write-Error output from run_command includes a "Line | . ([ScriptBlock]::Create(..." excerpt pointing at the wrapper, not the user command (src/main/termText.ts) - suggested: consider $ErrorView = 'ConciseView' scoped to the run, or accept as cosmetic
+- 2026-11-21 implementer: run_command 'exit 5' returns exitCode 1 instead of exited:true because finally writes the end marker before the shell exits (src/main/termText.ts) - suggested: document or detect exit in the wrapper
+- 2026-11-21 implementer: `yarn smoke` prints nothing under `fnm exec --using default cmd /c "yarn smoke"`, and the node_modules/.bin/electron shim fails from git-bash (package.json:12) - suggested: document running node_modules/electron/dist/electron.exe . --smoke
