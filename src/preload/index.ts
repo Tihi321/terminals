@@ -40,6 +40,8 @@ const api: TerminalsApi = {
   setSettings: (patch) => inv('settings:set', patch),
   initialThemeId: ipcRenderer.sendSync('theme:initial') as ThemeId,
   listShells: () => inv('settings:shells'),
+  getLoginItem: () => inv('login:get'),
+  setLoginItem: (enabled) => inv('login:set', enabled),
   setUi: (patch) => inv('ui:set', patch),
   pickFolder: () => inv('dialog:pickFolder'),
 

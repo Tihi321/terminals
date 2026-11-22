@@ -26,6 +26,12 @@ export interface Settings {
   allowMcpRun: boolean
 }
 
+export interface LoginItemState {
+  enabled: boolean
+  /** false when the app is not packaged: registering electron.exe at login would be wrong. */
+  supported: boolean
+}
+
 /** One entry of the default-shell picker. value '' = automatic. */
 export interface ShellOption {
   value: string
@@ -336,6 +342,10 @@ export interface TerminalsApi {
   readonly initialThemeId: ThemeId
   /** Known shells for the default-shell picker, with PATH availability. */
   listShells(): Promise<ShellOption[]>
+  /** Windows "open at login" state, read from the OS. supported=false in dev (unpackaged) builds. */
+  getLoginItem(): Promise<LoginItemState>
+  /** Sets "open at login" in the OS and returns the state read back from it. */
+  setLoginItem(enabled: boolean): Promise<LoginItemState>
   setUi(patch: Partial<UiState>): Promise<AppState>
   pickFolder(): Promise<string | null>
   /** Which paths exist and lie inside the saved roots (same order as the input). */

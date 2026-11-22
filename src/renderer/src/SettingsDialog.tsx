@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { FolderOpen, X } from 'lucide-react'
-import type { Settings, ShellOption } from '../../shared/types'
+import type { LoginItemState, Settings, ShellOption } from '../../shared/types'
 import {
   DEFAULT_SETTINGS,
   DEFAULT_TERMINAL_FONT,
@@ -202,6 +202,19 @@ export function SettingsDialog({
   onClose: () => void
 }): JSX.Element {
   const [shells, setShells] = useState<ShellOption[]>([])
+  // Read from the OS every time the dialog opens; it is not part of the saved settings.
+  const [login, setLogin] = useState<LoginItemState | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    window.api
+      .getLoginItem()
+      .then((s) => alive && setLogin(s))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -337,6 +350,25 @@ export function SettingsDialog({
             <section className="settings-section" key={s.title}>
               <h4>{s.title}</h4>
               {s.fields.map(renderField)}
+              {s.title === 'Integrations' && (
+                <label className="field settings-toggle">
+                  <span>Open at Windows login</span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    className="settings-switch"
+                    checked={login?.enabled ?? false}
+                    disabled={!login?.supported}
+                    onChange={(e) => {
+                      void window.api
+                        .setLoginItem(e.target.checked)
+                        .then(setLogin)
+                        .catch(() => {})
+                    }}
+                  />
+                  {login && !login.supported && <small className="settings-hint">Only available in the installed app.</small>}
+                </label>
+              )}
             </section>
           ))}
         </div>

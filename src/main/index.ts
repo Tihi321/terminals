@@ -16,7 +16,7 @@ import * as store from './store'
 import { runSmoke } from './smoke'
 import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } from './fsops'
 import * as gitcli from './gitcli'
-import type { GitDiffRequest } from '../shared/types'
+import type { GitDiffRequest, LoginItemState } from '../shared/types'
 import { startMcpServer, type McpInfo } from './mcp'
 import { locationById, ToolError } from './mcpTools'
 import { TerminalHost } from './terminalHost'
@@ -202,6 +202,20 @@ const host = new TerminalHost({
   configuredShell: () => store.getShell(),
   ownerWc: () => (win && !win.isDestroyed() ? win.webContents.id : null)
 })
+
+/** The portable build runs from a temp extraction dir, so it must register the original exe instead of process.execPath. */
+function loginItemPath(): { path?: string } {
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE
+  return portable ? { path: portable } : {}
+}
+
+/** "Open at login" as the OS reports it (the user may have changed it in Task Manager > Startup). */
+function readLoginItem(): LoginItemState {
+  if (!app.isPackaged) return { enabled: false, supported: false }
+  // executableWillLaunchAtLogin also reflects Task Manager > Startup; openAtLogin only checks the Run key exists.
+  const s = app.getLoginItemSettings(loginItemPath())
+  return { enabled: s.executableWillLaunchAtLogin ?? s.openAtLogin, supported: true }
+}
 
 function currentTheme(): Theme {
   return getTheme(resolveThemeId(store.getSettings().theme, nativeTheme.shouldUseDarkColors))
@@ -454,6 +468,11 @@ function registerIpc(): void {
     return s
   })
   ipcMain.handle('settings:shells', () => listShells())
+  ipcMain.handle('login:get', (): LoginItemState => readLoginItem())
+  ipcMain.handle('login:set', (_e, enabled: boolean): LoginItemState => {
+    if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!enabled, ...loginItemPath() })
+    return readLoginItem()
+  })
   ipcMain.on('theme:initial', (e) => {
     e.returnValue = resolveThemeId(store.getSettings().theme, nativeTheme.shouldUseDarkColors)
   })
