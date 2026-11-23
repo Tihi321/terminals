@@ -25,6 +25,8 @@ import {
   House,
   TriangleAlert,
   Pencil,
+  Pin,
+  PinOff,
   RefreshCw,
   Settings as SettingsIcon,
   SquareArrowOutUpRight,
@@ -68,6 +70,7 @@ interface Props {
   onCreateFolder: (parentDir: string, name: string, groupId: string | null) => Promise<string | null>
   /** Copies dropped OS files/folders into a folder on disk. */
   onCopyInto: (paths: string[], destDir: string) => Promise<CopyResult>
+  onSetPinned: (id: string, pinned: boolean) => void
   onToggleCollapse: (id: string, collapsed: boolean) => void
   onToggleShowHidden: (id: string, show: boolean) => void
   onHideChild: (groupId: string, path: string, hidden: boolean) => void
@@ -100,6 +103,7 @@ interface RowProps {
   selected: boolean
   missing?: boolean
   dim?: boolean
+  pinned?: boolean
   count: number
   dropActive?: boolean
   /** Highlighted as a target for copying dragged files into this folder. */
@@ -188,6 +192,7 @@ function Row(r: RowProps): JSX.Element {
             }
           >
             {r.name}
+            {r.pinned && <Pin size={11} strokeWidth={2.25} className="row-pin" />}
           </div>
         )}
         {r.subtitle && !r.editing && (
@@ -230,7 +235,22 @@ export function Sidebar(p: Props): JSX.Element {
   const dragGroupId = useRef<string | null>(null)
 
   const folders = state.folders
-  const standalone = folders.filter((f) => !f.groupId)
+  const pinnedIds = state.pinned ?? []
+  const isPinned = (id: string): boolean => pinnedIds.includes(id)
+  /** Pinned items in the order they were pinned. */
+  type PinnedItem = { kind: 'folder'; f: FolderView } | { kind: 'group'; g: GroupView }
+  const pinnedItems = pinnedIds.flatMap((id): PinnedItem[] => {
+    const f = folders.find((x) => x.id === id)
+    if (f) return [{ kind: 'folder', f }]
+    const g = state.groups.find((x) => x.id === id)
+    return g ? [{ kind: 'group', g }] : []
+  })
+  // A pinned standalone folder / top-level group is moved into Pinned; items nested in a group stay in place too.
+  const standalone = folders.filter((f) => !f.groupId && !isPinned(f.id))
+  const pinItem = (id: string): MenuItem =>
+    isPinned(id)
+      ? { label: 'Unpin', icon: <PinOff size={14} />, onClick: () => p.onSetPinned(id, false) }
+      : { label: 'Pin to top', icon: <Pin size={14} />, onClick: () => p.onSetPinned(id, true) }
   const membersOf = (gid: string): FolderView[] => folders.filter((f) => f.groupId === gid)
 
   const startRename = (kind: 'folder' | 'group', id: string, name: string): void => {
@@ -296,6 +316,7 @@ export function Sidebar(p: Props): JSX.Element {
     return [
       ...pathItems(f.id, f.path, f.missing),
       { separator: true },
+      pinItem(f.id),
       { label: 'Rename', icon: <Pencil size={14} />, onClick: () => startRename('folder', f.id, f.name) },
       ...arrangeItems(f.id),
       ...manual
@@ -369,13 +390,14 @@ export function Sidebar(p: Props): JSX.Element {
           setCreating({ parentId: g.id, name: '' })
         }
       }
-      return [sideItem(g.id, false), { separator: true }, rename, newSub, newFolderItem, ...folderItems, ...moveItems, { separator: true }, remove]
+      return [sideItem(g.id, false), { separator: true }, pinItem(g.id), rename, newSub, newFolderItem, ...folderItems, ...moveItems, { separator: true }, remove]
     }
     const path = g.path as string
     return [
       ...pathItems(g.id, path, g.missing),
       { separator: true },
       { label: 'New folder…', icon: <FolderPlus size={14} />, disabled: g.missing, onClick: () => startNewFolder(path) },
+      pinItem(g.id),
       rename,
       ...moveItems,
       { label: 'Refresh', icon: <RefreshCw size={14} />, onClick: p.onRefresh },
@@ -470,6 +492,7 @@ export function Sidebar(p: Props): JSX.Element {
       selected={f.id === state.selectedId}
       locId={f.id}
       missing={f.missing}
+      pinned={isPinned(f.id)}
       count={p.counts[f.id] ?? 0}
       dropActive={dragOver === f.id}
       copyActive={dragOver === 'copy:' + f.id}
@@ -689,6 +712,7 @@ export function Sidebar(p: Props): JSX.Element {
             selected={g.id === state.selectedId}
             locId={g.id}
             missing={g.missing}
+            pinned={isPinned(g.id)}
             count={count}
             dropActive={dragOver === g.id}
             editing={isEditing('group', g.id)}
@@ -886,9 +910,15 @@ export function Sidebar(p: Props): JSX.Element {
             <div>Add a folder or a parent folder with the buttons above, or drag folders here from Explorer.</div>
           </div>
         )}
+        {pinnedItems.length > 0 && (
+          <div className="pinned">
+            <div className="section-label">Pinned</div>
+            {pinnedItems.map((it) => (it.kind === 'folder' ? folderRow(it.f, 0) : groupBlock(it.g, 0, new Set<string>())))}
+          </div>
+        )}
         {(() => {
           const seen = new Set<string>()
-          return childGroups(state.groups, null).map((g) => (seen.has(g.id) ? null : groupBlock(g, 0, seen)))
+          return childGroups(state.groups, null).map((g) => (seen.has(g.id) || isPinned(g.id) ? null : groupBlock(g, 0, seen)))
         })()}
         {(standalone.length > 0 || state.groups.some((g) => g.kind === 'manual' || g.parentId)) && (
           <div

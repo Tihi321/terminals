@@ -715,6 +715,7 @@ function checkMcpLogic(dir: string): CheckResult {
       }
     ],
     snippets: [{ id: 's1', name: 'hi', body: 'hello', scope: 'global' }],
+    pinned: [],
     home: { id: 'home', name: 'Home', path: dir, isDefault: false, missing: false, isGit: false, branch: null },
     selectedId: null,
     settings: { ...DEFAULT_SETTINGS },

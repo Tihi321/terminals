@@ -176,6 +176,8 @@ export interface AppState {
   home: HomeView
   folders: FolderView[]
   groups: GroupView[]
+  /** Ids of pinned folders/groups, in the order they were pinned. */
+  pinned: string[]
   commands: Command[]
   snippets: Snippet[]
   /** Selected folder, group or child id. */
@@ -341,6 +343,8 @@ export interface TerminalsApi {
   createFolder(parentDir: string, name: string, groupId: string | null): Promise<Result<{ path: string; state: AppState }>>
   /** Copies dropped files/folders into `destDir` without overwriting ("name (2)"). */
   copyIntoFolder(paths: string[], destDir: string): Promise<CopyResult>
+  /** Pins or unpins a folder or group (shown in the Pinned section at the top of the sidebar). */
+  setPinned(id: string, pinned: boolean): Promise<AppState>
   setGroupCollapsed(id: string, collapsed: boolean): Promise<AppState>
   setShowHidden(groupId: string, show: boolean): Promise<AppState>
   setChildHidden(groupId: string, path: string, hidden: boolean): Promise<AppState>

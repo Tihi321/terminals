@@ -21,6 +21,7 @@ const api: TerminalsApi = {
   moveFolder: (id, groupId, beforeId) => inv('folders:move', id, groupId, beforeId),
   moveItem: (id, dir) => inv('items:move', id, dir),
   nestItem: (id, dir) => inv('items:nest', id, dir),
+  setPinned: (id, pinned) => inv('items:pin', id, pinned),
   setGroupCollapsed: (id, c) => inv('groups:collapsed', id, c),
   setShowHidden: (id, s) => inv('groups:showHidden', id, s),
   setGroupFolder: (id, folder) => inv('groups:setFolder', id, folder),

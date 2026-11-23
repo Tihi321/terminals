@@ -1010,6 +1010,7 @@ export function App(): JSX.Element {
               return null
             }}
             onCopyInto={(paths, dest) => window.api.copyIntoFolder(paths, dest)}
+            onSetPinned={async (id, pinned) => setState(await window.api.setPinned(id, pinned))}
             onToggleCollapse={async (id, c) => setState(await window.api.setGroupCollapsed(id, c))}
             onToggleShowHidden={async (id, s) => setState(await window.api.setShowHidden(id, s))}
             onHideChild={async (gid, path, h) => setState(await window.api.setChildHidden(gid, path, h))}

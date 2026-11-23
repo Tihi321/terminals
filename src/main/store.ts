@@ -51,6 +51,8 @@ export interface Persisted {
   version: number
   folders: Folder[]
   groups: PersistedGroup[]
+  /** Ids of pinned folders/groups, in the order they were pinned. Absent in older files. */
+  pinned: string[]
   commands: Command[]
   snippets: Snippet[]
   selectedId: string | null
@@ -65,6 +67,7 @@ function emptyData(): Persisted {
     version: SCHEMA_VERSION,
     folders: [],
     groups: [],
+    pinned: [],
     commands: [],
     snippets: [],
     selectedId: null,
@@ -156,6 +159,9 @@ export function migrate(raw: Record<string, unknown>): Persisted {
     // v3 -> v4 added ui.tabs (saved session) and panes.active
     tabs: sanitizeTabs(u.tabs)
   }
+  // Pins (added without a schema bump: absent = none). Keep only existing folder/group ids, once each.
+  const pinnable = new Set([...d.folders.map((f) => f.id), ...d.groups.map((g) => g.id)])
+  d.pinned = (Array.isArray(raw.pinned) ? raw.pinned : []).filter((x, i, a): x is string => typeof x === 'string' && pinnable.has(x) && a.indexOf(x) === i)
   // Drop dangling group references rather than losing the folder.
   const groupIds = new Set(d.groups.map((g) => g.id))
   for (const f of d.folders) if (f.groupId && !groupIds.has(f.groupId)) f.groupId = null
@@ -300,6 +306,7 @@ export function getState(): AppState {
       return { ...f, missing, isGit: git.isGit, branch: git.branch }
     }),
     groups,
+    pinned: data.pinned,
     commands: data.commands,
     snippets: data.snippets,
     selectedId: data.selectedId,
@@ -431,6 +438,7 @@ function fixSelection(d: Persisted): void {
 
 export function removeFolder(id: string): AppState {
   data.folders = data.folders.filter((f) => f.id !== id)
+  data.pinned = data.pinned.filter((x) => x !== id)
   data.commands = data.commands.filter((c) => c.ownerId !== id)
   data.snippets = data.snippets.filter((s) => s.scope !== id)
   fixSelection(data)
@@ -467,6 +475,7 @@ export function removeGroupData(d: Persisted, id: string): RemovalSummary {
   d.snippets = snips
   d.groups = d.groups.filter((g) => !gset.has(g.id))
   d.folders = d.folders.filter((f) => !fset.has(f.id))
+  d.pinned = d.pinned.filter((x) => !gset.has(x) && !fset.has(x))
   if (selRemoved) d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? HOME_ID
   else fixSelection(d)
   return summary
@@ -612,6 +621,15 @@ function withGroup(id: string, fn: (g: PersistedGroup) => void): AppState {
     fn(g)
     save()
   }
+  return getState()
+}
+
+/** Pins (appended, so order = order pinned) or unpins a folder or group. Unknown ids are ignored. */
+export function setPinned(id: string, pinned: boolean): AppState {
+  const exists = data.folders.some((f) => f.id === id) || data.groups.some((g) => g.id === id)
+  data.pinned = data.pinned.filter((x) => x !== id)
+  if (pinned && exists) data.pinned.push(id)
+  save()
   return getState()
 }
 
