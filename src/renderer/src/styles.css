@@ -514,8 +514,22 @@ kbd,
 .row:hover .row-actions {
   display: flex;
 }
-.row:hover .badge {
+.row:hover .badge,
+.row:hover .fin-dot {
   display: none;
+}
+.fin-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.fin-dot.success {
+  background: var(--success);
+}
+.fin-dot.failed {
+  background: var(--danger);
 }
 .badge {
   flex: none;

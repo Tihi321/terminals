@@ -5,6 +5,7 @@ import type { AgentTabRequest, AppState, Command, ElevatorInfo, GitDiffRequest, 
 import { GSUDO_HINT, INSTALL_GSUDO_COMMAND } from '../../shared/elevation'
 import { removalSet } from '../../shared/groupTree'
 import { Sidebar } from './Sidebar'
+import type { Finished } from './Sidebar'
 import { TerminalView } from './TerminalView'
 import { FileTree } from './FileTree'
 import { CommandsPanel } from './CommandsPanel'
@@ -864,6 +865,21 @@ export function App(): JSX.Element {
     return c
   }, [tabs])
 
+  // Tabs that finished but are still open, per location (the sidebar rolls them up through groups).
+  const finished = useMemo(() => {
+    const f: Record<string, Finished> = {}
+    for (const t of tabs) {
+      const st = t.kind === 'command' ? t.run?.status : t.kind === 'shell' && t.exited ? 'exited' : undefined
+      if (st !== 'success' && st !== 'failed' && st !== 'exited') continue
+      const e = (f[t.locId] ??= { total: 0, failed: 0, ok: 0, items: [] })
+      e.total++
+      if (st === 'failed') e.failed++
+      if (st === 'success') e.ok++
+      e.items.push(`${t.title} ${st === 'success' ? '✓' : st === 'failed' ? '✗' : '(exited)'}`)
+    }
+    return f
+  }, [tabs])
+
   const closeTabsOf = useCallback(
     (ids: string[]) => {
       for (const t of tabsRef.current.filter((t) => ids.includes(t.locId))) closeTab(t.id)
@@ -969,6 +985,7 @@ export function App(): JSX.Element {
             state={state}
             onOpenSettings={() => setSettingsOpen(true)}
             counts={counts}
+            finished={finished}
             onSelect={(id) => void select(id)}
             onNestMove={(id, op, dir) =>
               void (op === 'move' ? window.api.moveItem(id, dir) : window.api.nestItem(id, dir)).then(setState)

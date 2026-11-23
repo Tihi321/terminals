@@ -42,9 +42,29 @@ import type { MenuItem } from './ContextMenu'
 import { LOC_DRAG_TYPE, locDrag } from './TabBar'
 import { childGroups, groupPath, nestError, nestTarget, removalSet, subtreeGroupIds } from '../../shared/groupTree'
 
+/** Tabs that have finished (command done, shell exited) but are still open, per location or rolled up. */
+export interface Finished {
+  total: number
+  failed: number
+  ok: number
+  items: string[]
+}
+
+function mergeFinished(a: Finished | undefined, b: Finished | undefined): Finished | undefined {
+  if (!a) return b
+  if (!b) return a
+  return { total: a.total + b.total, failed: a.failed + b.failed, ok: a.ok + b.ok, items: [...a.items, ...b.items] }
+}
+
+function finishedTitle(f: Finished): string {
+  const shown = f.items.slice(0, 4).join(', ')
+  return `${f.total} finished ${f.total === 1 ? 'tab' : 'tabs'} still open: ${shown}${f.items.length > 4 ? ', …' : ''}`
+}
+
 interface Props {
   state: AppState
   counts: Record<string, number>
+  finished: Record<string, Finished>
   onSelect: (id: string) => void
   /** Move (up/down among siblings) or nest (into group above / out of group) a folder or group. */
   onNestMove: (id: string, op: 'move' | 'nest', dir: -1 | 1) => void
@@ -105,6 +125,7 @@ interface RowProps {
   dim?: boolean
   pinned?: boolean
   count: number
+  finished?: Finished
   dropActive?: boolean
   /** Highlighted as a target for copying dragged files into this folder. */
   copyActive?: boolean
@@ -203,6 +224,12 @@ function Row(r: RowProps): JSX.Element {
           </div>
         )}
       </div>
+      {r.finished && r.finished.total > 0 && (
+        <span
+          className={`fin-dot ${r.finished.failed > 0 ? 'failed' : r.finished.ok > 0 ? 'success' : 'neutral'}`}
+          title={finishedTitle(r.finished)}
+        />
+      )}
       {r.count > 0 && <span className="badge">{r.count}</span>}
       {r.actions && (
         <div className="row-actions" onClick={(e) => e.stopPropagation()}>
@@ -494,6 +521,7 @@ export function Sidebar(p: Props): JSX.Element {
       missing={f.missing}
       pinned={isPinned(f.id)}
       count={p.counts[f.id] ?? 0}
+      finished={p.finished[f.id]}
       dropActive={dragOver === f.id}
       copyActive={dragOver === 'copy:' + f.id}
       editing={isEditing('folder', f.id)}
@@ -549,6 +577,7 @@ export function Sidebar(p: Props): JSX.Element {
         selected={HOME_ID === state.selectedId}
         missing={h.missing}
         count={p.counts[HOME_ID] ?? 0}
+        finished={p.finished[HOME_ID]}
         onClick={() => p.onSelect(HOME_ID)}
         onContext={(e) =>
           openMenu(e, [
@@ -672,6 +701,12 @@ export function Sidebar(p: Props): JSX.Element {
           : x.children.reduce((n, c) => n + (p.counts[c.id] ?? 0), 0)
       return sum + (p.counts[x.id] ?? 0) + own
     }, 0)
+    const finished = subtreeGroupIds(state.groups, g.id).reduce<Finished | undefined>((sum, gid) => {
+      const x = state.groups.find((y) => y.id === gid)
+      if (!x) return sum
+      const kids = x.kind === 'manual' ? membersOf(x.id) : x.children
+      return kids.reduce((s, c) => mergeFinished(s, p.finished[c.id]), mergeFinished(sum, p.finished[x.id]))
+    }, undefined)
     const removal = removalSet(state.groups, state.folders, g.id)
     const total = removal.folderIds.length
     const subCount = removal.groupIds.length - 1
@@ -714,6 +749,7 @@ export function Sidebar(p: Props): JSX.Element {
             missing={g.missing}
             pinned={isPinned(g.id)}
             count={count}
+            finished={finished}
             dropActive={dragOver === g.id}
             editing={isEditing('group', g.id)}
             draft={draft}
@@ -829,6 +865,7 @@ export function Sidebar(p: Props): JSX.Element {
                   locId={c.id}
                   dim={c.hidden}
                   count={p.counts[c.id] ?? 0}
+                  finished={p.finished[c.id]}
                   copyActive={dragOver === 'copy:' + c.id}
                   drag={{ onDragStart: () => undefined, onDragEnd: () => setDragOver(null), ...copyTargetDrag(c.id, c.path, c.name) }}
                   onClick={() => p.onSelect(c.id)}
