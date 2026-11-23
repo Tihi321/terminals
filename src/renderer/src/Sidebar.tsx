@@ -173,7 +173,20 @@ function Row(r: RowProps): JSX.Element {
             }}
           />
         ) : (
-          <div className="row-name" onDoubleClick={r.onDoubleClick}>
+          <div
+            className="row-name"
+            onMouseDown={(e) => {
+              if (e.detail > 1 && r.onDoubleClick) e.preventDefault()
+            }}
+            onDoubleClick={
+              r.onDoubleClick
+                ? (e) => {
+                    e.stopPropagation()
+                    r.onDoubleClick?.()
+                  }
+                : undefined
+            }
+          >
             {r.name}
           </div>
         )}
@@ -697,7 +710,7 @@ export function Sidebar(p: Props): JSX.Element {
             }
             onClick={() => p.onSelect(g.id)}
             onContext={(e) => openMenu(e, groupMenu(g))}
-            onDoubleClick={() => startRename('group', g.id, g.name)}
+            onDoubleClick={() => p.onToggleCollapse(g.id, !g.collapsed)}
             drag={{
               onDragStart: () => (dragGroupId.current = g.id),
               onDragEnd: () => {

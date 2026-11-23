@@ -585,7 +585,10 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
               const files = commitFiles[c.hash]
               return (
                 <div key={c.hash} className="git-commit-item">
-                  <div className={`git-commit-row ${open ? 'open' : ''}`} onClick={() => toggleCommit(c)} title={c.subject}>
+                  <div className={`git-commit-row ${open ? 'open' : ''}`} onMouseDown={(e) => e.detail > 1 && e.preventDefault()}
+                    onClick={(e) => e.detail <= 1 && toggleCommit(c)}
+                    title={c.subject}
+                  >
                     {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     <div className="git-commit-main">
                       <div className="git-commit-subject">{c.subject || '(no message)'}</div>

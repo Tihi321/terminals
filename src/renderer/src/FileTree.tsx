@@ -207,7 +207,16 @@ export function FileTree({ root, rootMissing, onOpenTerminalHere, onOpenFile }: 
               e.dataTransfer.setData(PATHS_DRAG_TYPE, JSON.stringify([entry.path]))
               e.dataTransfer.setData('text/plain', entry.path)
             }}
-            onClick={() => (entry.isDir ? toggle(entry.path) : onOpenFile(entry.path, false))}
+            onMouseDown={(e) => {
+              if (e.detail > 1 && entry.isDir) e.preventDefault()
+            }}
+            onClick={(e) => {
+              // A directory row toggles on the first click; the second click of a double-click is ignored so the
+              // double-click toggles once in total (same as clicking the arrow) instead of toggling back.
+              if (entry.isDir) {
+                if (e.detail <= 1) toggle(entry.path)
+              } else onOpenFile(entry.path, false)
+            }}
             onDoubleClick={() => !entry.isDir && onOpenFile(entry.path, true)}
             onContextMenu={(e) => menuFor(e, entry)}
           >
