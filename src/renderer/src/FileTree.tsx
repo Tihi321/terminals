@@ -26,6 +26,7 @@ import type { DirEntry } from '../../shared/types'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { relPath } from './locations'
+import { PATHS_DRAG_TYPE } from './TabBar'
 
 interface Props {
   root: string | null
@@ -200,6 +201,12 @@ export function FileTree({ root, rootMissing, onOpenTerminalHere, onOpenFile }: 
             key={entry.path}
             className="file-row"
             title={entry.path}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = 'copy'
+              e.dataTransfer.setData(PATHS_DRAG_TYPE, JSON.stringify([entry.path]))
+              e.dataTransfer.setData('text/plain', entry.path)
+            }}
             onClick={() => (entry.isDir ? toggle(entry.path) : onOpenFile(entry.path, false))}
             onDoubleClick={() => !entry.isDir && onOpenFile(entry.path, true)}
             onContextMenu={(e) => menuFor(e, entry)}

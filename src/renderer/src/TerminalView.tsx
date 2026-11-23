@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, JSX } from 'react'
 import { formatPaths, getTerm, refreshTerm } from './termRegistry'
+import { PATHS_DRAG_TYPE } from './TabBar'
 import { sidebarKeepsFocus } from './sidebarFocus'
 
 interface Props {
@@ -103,13 +104,26 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
 
   const [dropping, setDropping] = useState(false)
 
+  /** OS file drops and file-tree row drags both insert paths. */
+  const acceptsDrag = (e: React.DragEvent): boolean => e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(PATHS_DRAG_TYPE)
+  const parsePaths = (raw: string): string[] => {
+    try {
+      const v: unknown = JSON.parse(raw)
+      return Array.isArray(v) ? v.filter((p): p is string => typeof p === 'string' && p !== '') : []
+    } catch {
+      return []
+    }
+  }
+
   const onDrop = (e: React.DragEvent): void => {
-    if (!e.dataTransfer.types.includes('Files')) return
+    if (!acceptsDrag(e)) return
     e.preventDefault()
     setDropping(false)
-    const paths = Array.from(e.dataTransfer.files)
-      .map((f) => window.api.getPathForFile(f))
-      .filter(Boolean)
+    const paths = e.dataTransfer.types.includes(PATHS_DRAG_TYPE)
+      ? parsePaths(e.dataTransfer.getData(PATHS_DRAG_TYPE))
+      : Array.from(e.dataTransfer.files)
+          .map((f) => window.api.getPathForFile(f))
+          .filter(Boolean)
     const entry = getTerm(id)
     if (paths.length > 0 && entry) {
       entry.term.paste(formatPaths(paths))
@@ -123,7 +137,7 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
       className={`term-host${dropping ? ' drop-target' : ''}`}
       style={{ ...style, display: visible ? 'block' : 'none' }}
       onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes('Files')) return
+        if (!acceptsDrag(e)) return
         e.preventDefault()
         e.dataTransfer.dropEffect = 'copy'
         if (!dropping) setDropping(true)

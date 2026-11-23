@@ -44,6 +44,8 @@ export interface Tab {
 export const TAB_DRAG_TYPE = 'application/x-terminals-tab'
 /** dataTransfer type set by sidebar rows (folder, child, group) so a pane can take them. */
 export const LOC_DRAG_TYPE = 'application/x-terminals-loc'
+/** dataTransfer type set by file-tree rows; payload is a JSON array of absolute paths a terminal can take. */
+export const PATHS_DRAG_TYPE = 'application/x-terminals-paths'
 /** The sidebar location being dragged (dataTransfer data is unreadable during dragover). */
 export const locDrag: { id: string | null } = { id: null }
 /** The tab being dragged (dataTransfer data is unreadable during dragover). */
