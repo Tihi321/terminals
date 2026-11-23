@@ -36,6 +36,8 @@ interface PersistedGroup {
   kind: 'parent' | 'manual'
   name: string
   path?: string
+  /** Manual groups only: optional folder on disk where "New folder" creates folders. */
+  folder?: string
   /** Containing manual group; absent or null = top level. */
   parentId?: string | null
   order: number
@@ -127,6 +129,7 @@ export function migrate(raw: Record<string, unknown>): Persisted {
       kind: g.kind === 'parent' ? 'parent' : 'manual',
       name: String(g.name ?? 'Group'),
       path: typeof g.path === 'string' ? g.path : undefined,
+      folder: g.kind !== 'parent' && typeof g.folder === 'string' && g.folder ? g.folder : undefined,
       parentId: typeof g.parentId === 'string' ? g.parentId : null,
       order: typeof g.order === 'number' ? g.order : i,
       collapsed: !!g.collapsed,
@@ -267,6 +270,7 @@ export function getState(): AppState {
       name: g.name,
       parentId: g.parentId ?? null,
       path: g.path ?? null,
+      folder: g.kind === 'manual' ? g.folder ?? null : null,
       order: g.order,
       collapsed: g.collapsed,
       showHidden: g.showHidden,
@@ -327,6 +331,7 @@ export function getRoots(): string[] {
   return [
     ...data.folders.map((f) => f.path),
     ...data.groups.filter((g) => g.path).map((g) => g.path as string),
+    ...data.groups.filter((g) => g.kind === 'manual' && g.folder).map((g) => g.folder as string),
     getHomeDir()
   ]
 }
@@ -579,6 +584,26 @@ export function nestItemData(d: Persisted, id: string, dir: -1 | 1): boolean {
 export function nestItem(id: string, dir: -1 | 1): AppState {
   if (nestItemData(data, String(id), dir)) save()
   return getState()
+}
+
+/** Sets or clears (null) the folder of manual group `id`. Returns false when the group is missing or not manual. Pure on `d`. */
+export function setGroupFolderData(d: Persisted, id: string, folder: string | null): boolean {
+  const g = d.groups.find((x) => x.id === id)
+  if (!g || g.kind !== 'manual') return false
+  if (folder) g.folder = resolve(folder)
+  else delete g.folder
+  return true
+}
+
+export function setGroupFolder(id: string, folder: string | null): AppState {
+  if (setGroupFolderData(data, String(id), typeof folder === 'string' && folder ? folder : null)) save()
+  return getState()
+}
+
+/** Folder on disk of manual group `id`, or null. */
+export function getGroupFolder(id: string): string | null {
+  const g = data.groups.find((x) => x.id === id && x.kind === 'manual')
+  return g?.folder ?? null
 }
 
 function withGroup(id: string, fn: (g: PersistedGroup) => void): AppState {

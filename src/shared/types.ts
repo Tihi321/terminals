@@ -118,6 +118,8 @@ export interface GroupView {
   parentId: string | null
   /** Parent-folder groups only. */
   path: string | null
+  /** Manual groups only: optional folder on disk new folders are created in. Null for parent groups. */
+  folder: string | null
   order: number
   collapsed: boolean
   showHidden: boolean
@@ -304,6 +306,11 @@ export type GitResult<T = object> = ({ ok: true } & T) | { ok: false; error: str
 
 export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string }
 
+/** Outcome of copying dropped files/folders into a folder. Names are the final names in the destination. */
+export type CopyResult =
+  | { ok: true; copied: string[]; skipped: string[]; failed: { name: string; error: string }[] }
+  | { ok: false; error: string }
+
 export interface TerminalsApi {
   getState(): Promise<AppState>
   /** State changed outside the renderer's own calls (the MCP server). */
@@ -325,6 +332,15 @@ export interface TerminalsApi {
   moveItem(id: string, dir: -1 | 1): Promise<AppState>
   /** Alt+Shift+Right (1) nests a folder or group into the manual group above it; Left (-1) moves it out one level. No-op when not applicable. */
   nestItem(id: string, dir: -1 | 1): Promise<AppState>
+  /** Sets (or clears with null) the optional folder on disk of a manual group. */
+  setGroupFolder(id: string, folder: string | null): Promise<AppState>
+  /**
+   * Creates `name` (one level, never recursive) inside `parentDir`. When `groupId` is a manual group the new folder is
+   * also saved in it. Fails on empty/invalid/existing names with a message to show inline.
+   */
+  createFolder(parentDir: string, name: string, groupId: string | null): Promise<Result<{ path: string; state: AppState }>>
+  /** Copies dropped files/folders into `destDir` without overwriting ("name (2)"). */
+  copyIntoFolder(paths: string[], destDir: string): Promise<CopyResult>
   setGroupCollapsed(id: string, collapsed: boolean): Promise<AppState>
   setShowHidden(groupId: string, show: boolean): Promise<AppState>
   setChildHidden(groupId: string, path: string, hidden: boolean): Promise<AppState>

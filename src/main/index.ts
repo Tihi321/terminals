@@ -10,10 +10,11 @@ import { HOME_ID, type AgentTabRequest, type Command, type PasteContent, type Pt
 import { listShells, resolveShell, spawnElevated, spawnShell, spawnSteps, stepsShell } from './pty'
 import { checkElevatedRequest, elevatedCommand, readSudoMode, resolveElevator } from './elevation'
 import { GSUDO_HINT } from '../shared/elevation'
-import type { ElevatorInfo } from '../shared/types'
+import type { AppState, CopyResult, ElevatorInfo } from '../shared/types'
 import { getTheme, resolveThemeId, windowColors, type Theme } from '../shared/themes'
 import * as store from './store'
 import { runSmoke } from './smoke'
+import { copyIntoDir, createFolderIn } from './fsCopy'
 import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } from './fsops'
 import * as gitcli from './gitcli'
 import type { GitDiffRequest, LoginItemState } from '../shared/types'
@@ -558,7 +559,21 @@ function registerIpc(): void {
   ipcMain.handle('clipboard:readForPaste', () => readForPaste())
   ipcMain.handle('clipboard:write', (_e, text: string) => clipboard.writeText(String(text)))
 
-  ipcMain.handle('fs:exists', (_e, paths: string[]) =>
+  ipcMain.handle('groups:setFolder', (_e, id: string, folder: string | null) =>
+    store.setGroupFolder(String(id), typeof folder === 'string' && folder ? folder : null)
+  )
+  ipcMain.handle('fs:createFolder', (_e, parentDir: string, name: string, groupId: string | null): Result<{ path: string; state: AppState }> => {
+    if (!allowed(parentDir)) return { ok: false, error: 'That folder is not part of the workspace' }
+    const r = createFolderIn(parentDir, String(name ?? ''))
+    if (!r.ok) return r
+    if (typeof groupId === 'string' && groupId) store.createFolders([r.path], groupId)
+    return { ok: true, path: r.path, state: store.getState() }
+  })
+  ipcMain.handle('fs:copyInto', (_e, paths: string[], destDir: string): CopyResult => {
+    if (!allowed(destDir)) return { ok: false, error: 'That folder is not part of the workspace' }
+    return copyIntoDir(Array.isArray(paths) ? paths.filter((x) => typeof x === 'string') : [], destDir)
+  })
+  ipcMain.handle('fs:exists',(_e, paths: string[]) =>
     (Array.isArray(paths) ? paths.slice(0, 500) : []).map((p) => typeof p === 'string' && store.isInsideRoots(p) && existsSync(p))
   )
 

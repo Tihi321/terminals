@@ -33,7 +33,7 @@ import {
   Terminal,
   Trash2
 } from 'lucide-react'
-import type { AppState, ChildView, FolderView, GroupView } from '../../shared/types'
+import type { AppState, ChildView, CopyResult, FolderView, GroupView } from '../../shared/types'
 import { HOME_ID } from '../../shared/types'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
@@ -61,6 +61,13 @@ interface Props {
   onMoveFolder: (id: string, groupId: string | null, beforeId?: string) => void
   /** Folders dragged in from the OS (Explorer). */
   onDropPaths: (paths: string[], groupId: string | null, beforeId?: string) => void
+  /** Opens the folder picker and stores the choice as the group's folder. Resolves to the chosen path or null. */
+  onPickGroupFolder: (id: string) => Promise<string | null>
+  onClearGroupFolder: (id: string) => void
+  /** Creates `name` in `parentDir` (and saves it in manual group `groupId`). Resolves to an error message, or null on success. */
+  onCreateFolder: (parentDir: string, name: string, groupId: string | null) => Promise<string | null>
+  /** Copies dropped OS files/folders into a folder on disk. */
+  onCopyInto: (paths: string[], destDir: string) => Promise<CopyResult>
   onToggleCollapse: (id: string, collapsed: boolean) => void
   onToggleShowHidden: (id: string, show: boolean) => void
   onHideChild: (groupId: string, path: string, hidden: boolean) => void
@@ -95,6 +102,8 @@ interface RowProps {
   dim?: boolean
   count: number
   dropActive?: boolean
+  /** Highlighted as a target for copying dragged files into this folder. */
+  copyActive?: boolean
   editing?: boolean
   draft?: string
   onDraft?: (v: string) => void
@@ -123,7 +132,8 @@ function Row(r: RowProps): JSX.Element {
         r.selected ? 'selected' : '',
         r.missing ? 'missing' : '',
         r.dim ? 'dim' : '',
-        r.dropActive ? 'drag-over' : ''
+        r.dropActive ? 'drag-over' : '',
+        r.copyActive ? 'copy-target' : ''
       ].join(' ')}
       style={{ paddingLeft: 8 + r.indent * 18 }}
       title={r.title}
@@ -190,6 +200,15 @@ export function Sidebar(p: Props): JSX.Element {
   const [editing, setEditing] = useState<{ kind: 'folder' | 'group'; id: string } | null>(null)
   const [draft, setDraft] = useState('')
   const [creating, setCreating] = useState<{ parentId: string | null; name: string } | null>(null)
+  /** Inline "New folder" input under group `groupId`; `dir` is the folder it will be created in. */
+  const [newFolder, setNewFolder] = useState<{ groupId: string; dir: string; name: string; error: string | null } | null>(null)
+  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null)
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const showNote = (text: string, error: boolean): void => {
+    clearTimeout(noteTimer.current)
+    setNote({ text, error })
+    noteTimer.current = setTimeout(() => setNote(null), error ? 8000 : 4000)
+  }
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
@@ -307,7 +326,28 @@ export function Sidebar(p: Props): JSX.Element {
         ? [{ label: 'Move to top level', icon: <FolderMinus size={14} />, onClick: () => p.onMoveGroup(g.id, null) } as MenuItem]
         : [])
     ]
+    const startNewFolder = (dir: string): void => {
+      if (g.collapsed) p.onToggleCollapse(g.id, false)
+      setCreating(null)
+      setNewFolder({ groupId: g.id, dir, name: '', error: null })
+    }
     if (g.kind === 'manual') {
+      const newFolderItem: MenuItem = {
+        label: 'New folder…',
+        icon: <FolderPlus size={14} />,
+        // Without a group folder there is nowhere to create it: ask for the group folder first.
+        hint: g.folder ? undefined : 'asks for a group folder',
+        onClick: () => {
+          if (g.folder) return startNewFolder(g.folder)
+          void p.onPickGroupFolder(g.id).then((dir) => dir && startNewFolder(dir))
+        }
+      }
+      const folderItems: MenuItem[] = g.folder
+        ? [
+            { label: 'Change group folder…', icon: <FolderInput size={14} />, onClick: () => void p.onPickGroupFolder(g.id) },
+            { label: 'Clear group folder', icon: <FolderX size={14} />, onClick: () => p.onClearGroupFolder(g.id) }
+          ]
+        : [{ label: 'Set group folder…', icon: <FolderInput size={14} />, onClick: () => void p.onPickGroupFolder(g.id) }]
       const newSub: MenuItem = {
         label: 'New subgroup',
         icon: <FolderPlus size={14} />,
@@ -316,12 +356,13 @@ export function Sidebar(p: Props): JSX.Element {
           setCreating({ parentId: g.id, name: '' })
         }
       }
-      return [sideItem(g.id, false), { separator: true }, rename, newSub, ...moveItems, { separator: true }, remove]
+      return [sideItem(g.id, false), { separator: true }, rename, newSub, newFolderItem, ...folderItems, ...moveItems, { separator: true }, remove]
     }
     const path = g.path as string
     return [
       ...pathItems(g.id, path, g.missing),
       { separator: true },
+      { label: 'New folder…', icon: <FolderPlus size={14} />, disabled: g.missing, onClick: () => startNewFolder(path) },
       rename,
       ...moveItems,
       { label: 'Refresh', icon: <RefreshCw size={14} />, onClick: p.onRefresh },
@@ -357,8 +398,43 @@ export function Sidebar(p: Props): JSX.Element {
     if (paths.length > 0) p.onDropPaths(paths, groupId, beforeId)
   }
 
+  /** Files/folders dropped ONTO a folder row are copied into that folder on disk (never added to the list). */
+  const copyDrop = (e: React.DragEvent, destDir: string, label: string): void => {
+    e.preventDefault()
+    e.stopPropagation() // keep the enclosing group's onDrop from also adding them as saved folders
+    setDragOver(null)
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.api.getPathForFile(f))
+      .filter(Boolean)
+    if (paths.length === 0) return
+    void p.onCopyInto(paths, destDir).then((r) => {
+      if (!r.ok) {
+        console.warn('copy failed:', r.error)
+        return showNote(`Copy to ${label} failed: ${r.error}`, true)
+      }
+      for (const f of r.failed) console.warn(`copy failed: ${f.name}: ${f.error}`)
+      const n = r.copied.length
+      const parts: string[] = []
+      if (n > 0) parts.push(`Copied ${n} ${n === 1 ? 'item' : 'items'} to ${label}`)
+      if (r.skipped.length > 0) parts.push(`${r.skipped.length} already in the folder`)
+      if (r.failed.length > 0) parts.push(`${r.failed.length} failed: ${r.failed.map((f) => `${f.name} (${f.error})`).join(', ')}`)
+      if (parts.length > 0) showNote(parts.join('. '), r.failed.length > 0)
+    })
+  }
+  /** Drag handlers that make a row an OS-file copy target (not for missing folders: those bubble to the group). */
+  const copyTargetDrag = (id: string, path: string, label: string): { onDragOver: (e: React.DragEvent) => void; onDragLeave: () => void; onDrop: (e: React.DragEvent) => void } => ({
+    onDragOver: (e) => {
+      if (!isOsDrag(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.dataTransfer.dropEffect = 'copy'
+      setDragOver('copy:' + id)
+    },
+    onDragLeave: () => setDragOver((d) => (d === 'copy:' + id ? null : d)),
+    onDrop: (e) => copyDrop(e, path, label)
+  })
+
   const drop = (target: FolderView, e: React.DragEvent): void => {
-    if (isOsDrag(e)) return osDrop(e, target.groupId, target.id)
     e.preventDefault()
     e.stopPropagation()
     const from = dragId.current
@@ -367,7 +443,9 @@ export function Sidebar(p: Props): JSX.Element {
     if (from && from !== target.id) p.onMoveFolder(from, target.groupId, target.id)
   }
 
-  const folderRow = (f: FolderView, indent: number): JSX.Element => (
+  const folderRow = (f: FolderView, indent: number): JSX.Element => {
+    const osCopy = copyTargetDrag(f.id, f.path, f.name)
+    return (
     <Row
       key={f.id}
       indent={indent}
@@ -381,6 +459,7 @@ export function Sidebar(p: Props): JSX.Element {
       missing={f.missing}
       count={p.counts[f.id] ?? 0}
       dropActive={dragOver === f.id}
+      copyActive={dragOver === 'copy:' + f.id}
       editing={isEditing('folder', f.id)}
       draft={draft}
       onDraft={setDraft}
@@ -396,14 +475,19 @@ export function Sidebar(p: Props): JSX.Element {
           setDragOver(null)
         },
         onDragOver: (e) => {
-          if (dragId.current || isOsDrag(e)) {
+          if (isOsDrag(e)) {
+            if (!f.missing) osCopy.onDragOver(e)
+          } else if (dragId.current) {
             e.preventDefault()
             e.stopPropagation()
             setDragOver(f.id)
           }
         },
-        onDragLeave: () => setDragOver((d) => (d === f.id ? null : d)),
-        onDrop: (e) => drop(f, e)
+        onDragLeave: () => {
+          setDragOver((d) => (d === f.id ? null : d))
+          osCopy.onDragLeave()
+        },
+        onDrop: (e) => (isOsDrag(e) ? (f.missing ? undefined : osCopy.onDrop(e)) : drop(f, e))
       }}
       actions={
         <button className="icon-btn" title="New terminal" disabled={f.missing} onClick={() => p.onOpenTerminal(f.id)}>
@@ -411,7 +495,8 @@ export function Sidebar(p: Props): JSX.Element {
         </button>
       }
     />
-  )
+    )
+  }
 
   /** Pinned Home location: selectable, has its own tabs; cannot be renamed, removed, dragged or reordered. */
   const homeRow = (): JSX.Element => {
@@ -470,6 +555,38 @@ export function Sidebar(p: Props): JSX.Element {
       </div>
     )
 
+  const commitNewFolder = async (): Promise<void> => {
+    const nf = newFolder
+    if (!nf) return
+    const err = await p.onCreateFolder(nf.dir, nf.name, state.groups.find((x) => x.id === nf.groupId)?.kind === 'manual' ? nf.groupId : null)
+    if (err) setNewFolder((cur) => (cur ? { ...cur, error: err } : cur))
+    else setNewFolder(null)
+  }
+
+  const newFolderRow = (depth: number): JSX.Element | null =>
+    newFolder === null ? null : (
+      <div className="row creating creating-folder" style={{ paddingLeft: 8 + depth * 18 }}>
+        <span className="row-chevron" />
+        <span className="row-icon">
+          <FolderPlus size={16} />
+        </span>
+        <input
+          className="rename-input"
+          autoFocus
+          placeholder="New folder name"
+          title={`Created in ${newFolder.dir}`}
+          value={newFolder.name}
+          onChange={(e) => setNewFolder({ ...newFolder, name: e.target.value, error: null })}
+          onBlur={() => setNewFolder(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void commitNewFolder()
+            if (e.key === 'Escape') setNewFolder(null)
+          }}
+        />
+        {newFolder.error && <div className="row-error">{newFolder.error}</div>}
+      </div>
+    )
+
   const confirmRow = (g: GroupView, depth: number): JSX.Element => {
     const { groupIds, folderIds } = removalSet(state.groups, state.folders, g.id)
     const n = groupIds.length - 1
@@ -523,7 +640,8 @@ export function Sidebar(p: Props): JSX.Element {
     const total = removal.folderIds.length
     const subCount = removal.groupIds.length - 1
     const manualSubtitle = `${subCount > 0 ? `${subCount} ${subCount === 1 ? 'group' : 'groups'}, ` : ''}${total} ${total === 1 ? 'folder' : 'folders'}`
-    const showEmpty = g.kind === 'manual' && members.length === 0 && subgroups.length === 0 && creating?.parentId !== g.id
+    const folderLabel = g.folder ? g.folder.split(/[\\/]/).filter(Boolean).pop() ?? g.folder : null
+    const showEmpty = g.kind === 'manual' && members.length === 0 && subgroups.length === 0 && creating?.parentId !== g.id && newFolder?.groupId !== g.id
     return (
       <div
         key={g.id}
@@ -551,10 +669,10 @@ export function Sidebar(p: Props): JSX.Element {
             indent={depth}
             icon={g.kind === 'manual' ? <Group size={16} /> : <FolderTree size={16} />}
             name={g.name}
-            subtitle={g.missing ? 'Folder not found' : g.kind === 'parent' ? g.branch ?? g.path : manualSubtitle}
+            subtitle={g.missing ? 'Folder not found' : g.kind === 'parent' ? g.branch ?? g.path : folderLabel ? `${manualSubtitle} · ${folderLabel}` : manualSubtitle}
             subKind={g.missing ? 'missing' : g.kind === 'parent' ? (g.branch ? 'branch' : 'path') : 'text'}
             group
-            title={g.path ? (g.missing ? `${g.path}\n(folder not found on disk)` : g.path) : g.name}
+            title={g.path ? (g.missing ? `${g.path}\n(folder not found on disk)` : g.path) : g.folder ? `${g.name}\nGroup folder: ${g.folder}` : g.name}
             selected={g.id === state.selectedId}
             locId={g.id}
             missing={g.missing}
@@ -641,6 +759,7 @@ export function Sidebar(p: Props): JSX.Element {
         )}
         {!g.collapsed && (
           <div className="group-children">
+            {newFolder?.groupId === g.id && newFolderRow(depth + 1)}
             {g.kind === 'manual' && creating?.parentId === g.id && creatingRow(depth + 1)}
             {g.kind === 'manual' && subgroups.map((c) => groupBlock(c, depth + 1, seen))}
             {showEmpty && (
@@ -673,6 +792,8 @@ export function Sidebar(p: Props): JSX.Element {
                   locId={c.id}
                   dim={c.hidden}
                   count={p.counts[c.id] ?? 0}
+                  copyActive={dragOver === 'copy:' + c.id}
+                  drag={{ onDragStart: () => undefined, onDragEnd: () => setDragOver(null), ...copyTargetDrag(c.id, c.path, c.name) }}
                   onClick={() => p.onSelect(c.id)}
                   onContext={(e) => openMenu(e, childMenu(g, c))}
                   actions={
@@ -788,6 +909,7 @@ export function Sidebar(p: Props): JSX.Element {
           </div>
         )}
       </div>
+      {note && <div className={`sidebar-note ${note.error ? 'error' : ''}`}>{note.text}</div>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
     </aside>
   )

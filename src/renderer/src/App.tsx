@@ -997,6 +997,19 @@ export function App(): JSX.Element {
             onRenameGroup={async (id, name) => setState(await window.api.renameGroup(id, name))}
             onMoveFolder={async (id, gid, before) => setState(await window.api.moveFolder(id, gid, before))}
             onDropPaths={async (paths, gid, before) => setState(await window.api.addFolderPaths(paths, gid, before))}
+            onPickGroupFolder={async (id) => {
+              const dir = await window.api.pickFolder()
+              if (dir) setState(await window.api.setGroupFolder(id, dir))
+              return dir
+            }}
+            onClearGroupFolder={async (id) => setState(await window.api.setGroupFolder(id, null))}
+            onCreateFolder={async (dir, name, gid) => {
+              const r = await window.api.createFolder(dir, name, gid)
+              if (!r.ok) return r.error
+              setState(r.state)
+              return null
+            }}
+            onCopyInto={(paths, dest) => window.api.copyIntoFolder(paths, dest)}
             onToggleCollapse={async (id, c) => setState(await window.api.setGroupCollapsed(id, c))}
             onToggleShowHidden={async (id, s) => setState(await window.api.setShowHidden(id, s))}
             onHideChild={async (gid, path, h) => setState(await window.api.setChildHidden(gid, path, h))}

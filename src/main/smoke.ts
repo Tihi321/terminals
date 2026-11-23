@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
-import { childId, migrate, moveGroupData, moveItemData, nestItemData, removeGroupData, type Persisted } from './store'
+import { childId, migrate, moveGroupData, moveItemData, nestItemData, removeGroupData, setGroupFolderData, type Persisted } from './store'
+import { copyIntoDir, createFolderIn, uniqueName } from './fsCopy'
 import { subtreeGroupIds } from '../shared/groupTree'
 import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
@@ -441,6 +442,74 @@ function checkWrite(): CheckResult {
   }
 }
 
+/** Check: group folder (set/clear/persist), folder creation errors, copy-into with the "name (2)" rule and the self-copy guard. */
+function checkGroupFolder(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'group folder: ' + m })
+  const root = mkdtempSync(join(tmpdir(), 'terminals-smoke-gf-'))
+  try {
+    // Store: optional field, cleared, parent groups refuse it, survives migrate, old files without it load.
+    const d = migrate({
+      version: 4,
+      groups: [
+        { id: 'm', kind: 'manual', name: 'm', order: 0 },
+        { id: 'p', kind: 'parent', name: 'p', path: join(root, 'p'), order: 1 }
+      ]
+    })
+    if (d.groups.some((g) => g.folder !== undefined)) return fail('old state should load without a folder')
+    if (!setGroupFolderData(d, 'm', join(root, 'target'))) return fail('set on manual group refused')
+    if (setGroupFolderData(d, 'p', join(root, 'x')) || setGroupFolderData(d, 'nope', join(root, 'x'))) return fail('parent / unknown group should refuse a folder')
+    const again = migrate(JSON.parse(JSON.stringify(d)) as Record<string, unknown>)
+    if (again.groups.find((g) => g.id === 'm')?.folder !== join(root, 'target')) return fail('folder did not survive a save/load round trip')
+    if (!setGroupFolderData(d, 'm', null) || d.groups.find((g) => g.id === 'm')?.folder !== undefined) return fail('clear did not remove the folder')
+
+    // createFolderIn
+    const made = createFolderIn(root, 'fresh')
+    if (!made.ok || !statSync(join(root, 'fresh')).isDirectory()) return fail('create ' + JSON.stringify(made))
+    const dup = createFolderIn(root, 'FRESH')
+    if (dup.ok || !/already exists/.test(dup.error)) return fail('duplicate name should be refused ' + JSON.stringify(dup))
+    for (const bad of ['', '   ', 'a/b', 'a\\b', 'a:b', 'a*', 'q?', 'x.', 'con', '..']) {
+      if (createFolderIn(root, bad).ok) return fail(`invalid name accepted: "${bad}"`)
+    }
+    if (createFolderIn(join(root, 'missing-parent'), 'x').ok) return fail('missing parent should be refused')
+    if (existsSync(join(root, 'a'))) return fail('invalid name created something')
+
+    // uniqueName
+    const u = join(root, 'u')
+    mkdirSync(u)
+    writeFileSync(join(u, 'a.txt'), '1')
+    writeFileSync(join(u, 'a (2).txt'), '2')
+    mkdirSync(join(u, 'dir.v1'))
+    if (uniqueName(u, 'a.txt', false) !== 'a (3).txt') return fail('a.txt -> ' + uniqueName(u, 'a.txt', false))
+    if (uniqueName(u, 'b.txt', false) !== 'b.txt') return fail('free name should be kept')
+    if (uniqueName(u, 'dir.v1', true) !== 'dir.v1 (2)') return fail('folder counter goes after the whole name: ' + uniqueName(u, 'dir.v1', true))
+
+    // copyIntoDir
+    const src = join(root, 'src')
+    mkdirSync(join(src, 'sub'), { recursive: true })
+    writeFileSync(join(src, 'a.txt'), 'new')
+    writeFileSync(join(src, 'sub', 'deep.txt'), 'deep')
+    const r1 = copyIntoDir([join(src, 'a.txt'), join(src, 'sub')], u)
+    if (!r1.ok || r1.copied.join('|') !== 'a (3).txt|sub' || r1.failed.length) return fail('copy ' + JSON.stringify(r1))
+    if (readFileSync(join(u, 'a.txt'), 'utf8') !== '1') return fail('existing file was overwritten')
+    if (readFileSync(join(u, 'sub', 'deep.txt'), 'utf8') !== 'deep') return fail('folder not copied recursively')
+    const r2 = copyIntoDir([join(src, 'sub')], u)
+    if (!r2.ok || r2.copied[0] !== 'sub (2)') return fail('second copy of a folder should be "sub (2)" ' + JSON.stringify(r2))
+    // Self-copy guard and same-parent skip.
+    const r3 = copyIntoDir([src], join(src, 'sub'))
+    if (!r3.ok || r3.copied.length || r3.failed.length !== 1 || existsSync(join(src, 'sub', 'src'))) return fail('folder into its own subfolder must be refused ' + JSON.stringify(r3))
+    const r4 = copyIntoDir([src], src)
+    if (!r4.ok || r4.copied.length || r4.failed.length !== 1) return fail('folder into itself must be refused ' + JSON.stringify(r4))
+    const r5 = copyIntoDir([join(src, 'a.txt')], src)
+    if (!r5.ok || r5.copied.length || r5.skipped[0] !== 'a.txt' || existsSync(join(src, 'a (2).txt'))) return fail('source already in the destination should be skipped ' + JSON.stringify(r5))
+    if (copyIntoDir([join(src, 'a.txt')], join(root, 'gone')).ok) return fail('missing destination should be refused')
+    return { ok: true, msg: 'group folder: set/clear/persist, create (duplicate + invalid names refused), copy-into with "name (2)", self-copy and same-parent guards' }
+  } catch (err) {
+    return fail(String(err))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
 /** Check: extra env vars given to spawnShell reach the shell and override inherited values (the MCP per-terminal context). */
 function checkPtyEnv(dir: string, shell: string, track: (p: IPty) => void): Promise<CheckResult> {
   return new Promise((resolve) => {
@@ -610,6 +679,7 @@ function checkMcpLogic(dir: string): CheckResult {
     kind,
     name,
     path,
+    folder: null,
     parentId: null,
     order: 0,
     collapsed: false,
@@ -888,6 +958,7 @@ export async function runSmoke(): Promise<void> {
     await checkPtyEnv(dir, shell, track),
     checkMigration(),
     checkGroupTree(),
+    checkGroupFolder(),
     checkSettings(),
     checkPanes(),
     checkTabs(),

@@ -2338,3 +2338,33 @@ kbd,
   flex: none;
   color: var(--accent);
 }
+
+.row.copy-target {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+  outline: 1px dashed var(--accent-line);
+  outline-offset: -3px;
+  color: var(--text);
+}
+.row.creating-folder {
+  flex-wrap: wrap;
+}
+.row-error {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--danger, #e5484d);
+  padding: 2px 0 0 38px;
+}
+.sidebar-note {
+  flex: none;
+  margin: 6px 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--text-2);
+}
+.sidebar-note.error {
+  color: var(--danger, #e5484d);
+}
