@@ -209,11 +209,26 @@ function loginItemPath(): { path?: string } {
   return portable ? { path: portable } : {}
 }
 
+/** Windows starts the login item with this flag so the app stays in the tray. It must match on set and get. */
+const HIDDEN_ARG = '--hidden'
+const startHidden = process.argv.includes(HIDDEN_ARG)
+
+function loginItemQuery(): { path?: string; args: string[] } {
+  return { ...loginItemPath(), args: [HIDDEN_ARG] }
+}
+
+/** Entries written before --hidden existed have no args; re-register them so login starts in the tray. */
+function migrateLoginItem(): void {
+  if (!app.isPackaged) return
+  const old = app.getLoginItemSettings(loginItemPath())
+  if (old.executableWillLaunchAtLogin ?? old.openAtLogin) app.setLoginItemSettings({ openAtLogin: true, ...loginItemQuery() })
+}
+
 /** "Open at login" as the OS reports it (the user may have changed it in Task Manager > Startup). */
 function readLoginItem(): LoginItemState {
   if (!app.isPackaged) return { enabled: false, supported: false }
   // executableWillLaunchAtLogin also reflects Task Manager > Startup; openAtLogin only checks the Run key exists.
-  const s = app.getLoginItemSettings(loginItemPath())
+  const s = app.getLoginItemSettings(loginItemQuery())
   return { enabled: s.executableWillLaunchAtLogin ?? s.openAtLogin, supported: true }
 }
 
@@ -233,7 +248,7 @@ function applyWindowTheme(): void {
   }
 }
 
-function createWindow(): void {
+function createWindow(hidden = false): void {
   const c = windowColors(currentTheme())
   win = new BrowserWindow({
     width: 1280,
@@ -241,6 +256,7 @@ function createWindow(): void {
     minWidth: 760,
     minHeight: 440,
     title: 'Terminals',
+    show: !hidden,
     icon,
     backgroundColor: c.background,
     autoHideMenuBar: true,
@@ -470,7 +486,7 @@ function registerIpc(): void {
   ipcMain.handle('settings:shells', () => listShells())
   ipcMain.handle('login:get', (): LoginItemState => readLoginItem())
   ipcMain.handle('login:set', (_e, enabled: boolean): LoginItemState => {
-    if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!enabled, ...loginItemPath() })
+    if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!enabled, ...loginItemQuery() })
     return readLoginItem()
   })
   ipcMain.on('theme:initial', (e) => {
@@ -707,8 +723,9 @@ if (SMOKE) {
       console.error('MCP server failed to start', e)
     }
     // A second-instance launch during the await above may already have created it.
-    if (!win) createWindow()
+    if (!win) createWindow(startHidden)
     createTray()
+    migrateLoginItem()
   })
   app.on('before-quit', () => {
     quitting = true
