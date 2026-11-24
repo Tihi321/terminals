@@ -41,7 +41,7 @@ import { Keys } from './Keys'
 import { visibleSnippets } from './SnippetEditor'
 import type { RunInfo } from './CommandsPanel'
 import { baseName, buildLocs } from './locations'
-import { createTerm, getTerm, pasteInto, recentlyActiveIds, setTermHooks } from './termRegistry'
+import { createTerm, getTerm, pasteInto, setTermHooks } from './termRegistry'
 import { SettingsDialog } from './SettingsDialog'
 import { useAppearance } from './appearance'
 import { DEFAULT_SETTINGS, FONT_SIZE_MAX, FONT_SIZE_MIN } from '../../shared/settings'
@@ -116,16 +116,11 @@ function finishedStatus(t: Tab): 'success' | 'failed' | 'exited' | undefined {
   return st === 'success' || st === 'failed' || st === 'exited' ? st : undefined
 }
 
-/** A shell with output in the last this-many ms counts as working (e.g. Claude Code's spinner redraws). */
-const SHELL_WORKING_MS = 8000
-/** How often the output-activity set is re-derived. */
-const ACTIVITY_TICK_MS = 1500
-
 /** Working state of a tab for the sidebar's Activity grouping: a command whose run is still going, or a
- *  live shell that produced output recently (`activeShells`, derived from termRegistry's output timestamps). */
-function isWorkingTab(t: Tab, activeShells: ReadonlySet<string>): boolean {
+ *  shell that is open (still spawning counts) and has not exited. */
+function isWorkingTab(t: Tab): boolean {
   if (t.kind === 'command') return t.run?.status === 'running'
-  return t.kind === 'shell' && !t.exited && !t.pending && activeShells.has(t.id)
+  return t.kind === 'shell' && !t.exited
 }
 
 export function App(): JSX.Element {
@@ -883,30 +878,12 @@ export function App(): JSX.Element {
     return c
   }, [tabs])
 
-  // Shell tabs with recent output. Timestamps live in termRegistry; this set is re-derived on a tick and only
-  // stored (re-rendering) when its contents change. Runs only while Group by: Activity is on.
-  const [activeShells, setActiveShells] = useState<ReadonlySet<string>>(new Set())
-  const activityOn = state?.ui.groupBy === 'activity'
-  useEffect(() => {
-    if (!activityOn) {
-      setActiveShells((cur) => (cur.size === 0 ? cur : new Set()))
-      return
-    }
-    const tick = (): void => {
-      const recent = recentlyActiveIds(SHELL_WORKING_MS)
-      setActiveShells((cur) => (cur.size === recent.size && [...recent].every((id) => cur.has(id)) ? cur : recent))
-    }
-    tick()
-    const h = setInterval(tick, ACTIVITY_TICK_MS)
-    return () => clearInterval(h)
-  }, [activityOn])
-
   // Working tabs per location; the sidebar rolls them up for Group by: Activity.
   const working = useMemo(() => {
     const w: Record<string, number> = {}
-    for (const t of tabs) if (isWorkingTab(t, activeShells)) w[t.locId] = (w[t.locId] ?? 0) + 1
+    for (const t of tabs) if (isWorkingTab(t)) w[t.locId] = (w[t.locId] ?? 0) + 1
     return w
-  }, [tabs, activeShells])
+  }, [tabs])
 
   // Tabs that finished but are still open, per location (the sidebar rolls them up through groups).
   const finished = useMemo(() => {

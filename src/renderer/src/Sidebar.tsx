@@ -305,7 +305,7 @@ export function Sidebar(p: Props): JSX.Element {
       : { label: 'Pin to top', icon: <Pin size={14} />, onClick: () => p.onSetPinned(id, true) }
   const membersOf = (gid: string): FolderView[] => folders.filter((f) => f.groupId === gid)
 
-  // Group by: Activity. "Working" = a location with a running command (see isWorkingTab in App.tsx).
+  // Group by: Activity. "Working" = a location with an open shell or a running command (see isWorkingTab in App.tsx).
   const activity = p.groupBy === 'activity'
   const isWorking = (id: string): boolean => (p.working[id] ?? 0) > 0
   /** A group is working when it, or any folder/child in its subtree, has a working tab. */

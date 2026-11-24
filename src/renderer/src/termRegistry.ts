@@ -171,41 +171,10 @@ export function refreshTerm(id: string): void {
   e.remeasure = false
 }
 
-// Output-activity tracking for the sidebar's "working" state (timestamps only; no React state here).
-const OUTPUT_ECHO_MS = 300 // output this soon after a keypress is the echo of typing
-const OUTPUT_RESIZE_MS = 700 // a resize makes the shell redraw; that is not work
-const lastOutputAt = new Map<string, number>()
-const lastInputAt = new Map<string, number>()
-const lastResizeAt = new Map<string, number>()
-
-/** Call right before telling the pty about a resize (fit, attach). */
-export function markResized(id: string): void {
-  lastResizeAt.set(id, performance.now())
-}
-
-/** Ids of terminals that produced real output (not typing echo, not resize redraws) within the last `windowMs`. */
-export function recentlyActiveIds(windowMs: number): Set<string> {
-  const now = performance.now()
-  const out = new Set<string>()
-  for (const [id, at] of lastOutputAt) {
-    if (entries.has(id) && now - at <= windowMs) out.add(id)
-    else if (!entries.has(id)) lastOutputAt.delete(id)
-  }
-  return out
-}
-
-function noteOutput(id: string): void {
-  const now = performance.now()
-  if (now - (lastInputAt.get(id) ?? -1e9) < OUTPUT_ECHO_MS) return
-  if (now - (lastResizeAt.get(id) ?? -1e9) < OUTPUT_RESIZE_MS) return
-  lastOutputAt.set(id, now)
-}
-
 function ensureListeners(): void {
   if (listenersReady) return
   listenersReady = true
   window.api.onPtyData((id, data) => {
-    noteOutput(id)
     entries.get(id)?.term.write(data)
   })
   window.api.onPtyExit((id, code) => {
@@ -248,10 +217,7 @@ export function pasteInto(id: string, text: string, enter = false): boolean {
   const e = entries.get(id)
   if (!e) return false
   e.term.paste(text)
-  if (enter) {
-    lastInputAt.set(id, performance.now())
-    window.api.ptyWrite(id, '\r')
-  }
+  if (enter) window.api.ptyWrite(id, '\r')
   e.term.focus()
   return true
 }
@@ -363,14 +329,8 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     return true
   })
 
-  term.onData((d) => {
-    lastInputAt.set(id, performance.now())
-    window.api.ptyWrite(id, d)
-  })
-  term.onResize(({ cols, rows }) => {
-    markResized(id)
-    window.api.ptyResize(id, cols, rows)
-  })
+  term.onData((d) => window.api.ptyWrite(id, d))
+  term.onResize(({ cols, rows }) => window.api.ptyResize(id, cols, rows))
 
   let resolveReady = (): void => {}
   const ready = new Promise<void>((res) => (resolveReady = res))
@@ -393,9 +353,6 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     dispose: () => {
       term.dispose()
       entries.delete(id)
-      lastOutputAt.delete(id)
-      lastInputAt.delete(id)
-      lastResizeAt.delete(id)
     }
   }
   entries.set(id, entry)

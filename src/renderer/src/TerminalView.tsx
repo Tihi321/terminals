@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, JSX } from 'react'
-import { formatPaths, getTerm, markResized, refreshTerm } from './termRegistry'
+import { formatPaths, getTerm, refreshTerm } from './termRegistry'
 import { PATHS_DRAG_TYPE } from './TabBar'
 import { sidebarKeepsFocus } from './sidebarFocus'
 
@@ -53,7 +53,6 @@ export function TerminalView({ id, cwd, visible, focused, style, steps, locId, s
           if (r.ok) {
             if (r.backlog) entry.term.write(r.backlog)
             entry.markReady()
-            markResized(id)
             window.api.ptyResize(id, entry.term.cols, entry.term.rows)
           } else {
             entry.markReady()
