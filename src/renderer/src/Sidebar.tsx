@@ -6,6 +6,8 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Activity,
+  Check,
   Eye,
   EyeOff,
   Folder as FolderIcon,
@@ -66,6 +68,15 @@ interface Props {
   state: AppState
   counts: Record<string, number>
   finished: Record<string, Finished>
+  /** Working tabs (running commands) per location. */
+  working: Record<string, number>
+  groupBy: 'none' | 'activity'
+  idleCollapsed: boolean
+  /** Groups whose "Idle (N)" sub-row is expanded. */
+  idleOpen: string[]
+  onSetGroupBy: (mode: 'none' | 'activity') => void
+  onSetIdleCollapsed: (collapsed: boolean) => void
+  onSetIdleOpen: (ids: string[]) => void
   /** Close the finished tabs (command done, shell exited) of these locations. */
   onCloseFinished: (locIds: string[]) => void
   onSelect: (id: string) => void
@@ -294,6 +305,28 @@ export function Sidebar(p: Props): JSX.Element {
       : { label: 'Pin to top', icon: <Pin size={14} />, onClick: () => p.onSetPinned(id, true) }
   const membersOf = (gid: string): FolderView[] => folders.filter((f) => f.groupId === gid)
 
+  // Group by: Activity. "Working" = a location with a running command (see isWorkingTab in App.tsx).
+  const activity = p.groupBy === 'activity'
+  const isWorking = (id: string): boolean => (p.working[id] ?? 0) > 0
+  /** A group is working when it, or any folder/child in its subtree, has a working tab. */
+  const groupWorking = (g: GroupView): boolean =>
+    subtreeGroupIds(state.groups, g.id).some((gid) => {
+      const x = state.groups.find((y) => y.id === gid)
+      if (!x) return false
+      return isWorking(x.id) || (x.kind === 'manual' ? membersOf(x.id) : x.children).some((c) => isWorking(c.id))
+    })
+  /** True when the selected location is this group or anything in its subtree (keeps the selection visible in Activity mode). */
+  const groupHasSelected = (g: GroupView): boolean =>
+    state.selectedId !== null &&
+    subtreeGroupIds(state.groups, g.id).some((gid) => {
+      const x = state.groups.find((y) => y.id === gid)
+      if (!x) return false
+      return x.id === state.selectedId || (x.kind === 'manual' ? membersOf(x.id) : x.children).some((c) => c.id === state.selectedId)
+    })
+  const idleIsOpen =(gid: string): boolean => p.idleOpen.includes(gid)
+  const toggleIdleOpen = (gid: string): void =>
+    p.onSetIdleOpen(idleIsOpen(gid) ? p.idleOpen.filter((x) => x !== gid) : [...p.idleOpen, gid])
+
   const startRename = (kind: 'folder' | 'group', id: string, name: string): void => {
     setDraft(name)
     setEditing({ kind, id })
@@ -343,8 +376,9 @@ export function Sidebar(p: Props): JSX.Element {
       return i >= 0 && !!sibs[i + dir]
     }
     const items: MenuItem[] = []
-    if (idx(-1)) items.push({ label: 'Move up', icon: <ArrowUp size={14} />, hint: 'Alt+Shift+Up', onClick: () => p.onNestMove(id, 'move', -1) })
-    if (idx(1)) items.push({ label: 'Move down', icon: <ArrowDown size={14} />, hint: 'Alt+Shift+Down', onClick: () => p.onNestMove(id, 'move', 1) })
+    // Reordering is disabled in Activity mode: the visible order is sectioned, so up/down would be misleading.
+    if (!activity && idx(-1)) items.push({ label: 'Move up', icon: <ArrowUp size={14} />, hint: 'Alt+Shift+Up', onClick: () => p.onNestMove(id, 'move', -1) })
+    if (!activity && idx(1)) items.push({ label: 'Move down', icon: <ArrowDown size={14} />, hint: 'Alt+Shift+Down', onClick: () => p.onNestMove(id, 'move', 1) })
     if (nestTarget(state.groups, state.folders, id, 1) !== undefined)
       items.push({ label: 'Move into group above', icon: <ArrowRightToLine size={14} />, hint: 'Alt+Shift+Right', onClick: () => p.onNestMove(id, 'nest', 1) })
     if (nestTarget(state.groups, state.folders, id, -1) !== undefined)
@@ -556,7 +590,8 @@ export function Sidebar(p: Props): JSX.Element {
         onDragOver: (e) => {
           if (isOsDrag(e)) {
             if (!f.missing) osCopy.onDragOver(e)
-          } else if (dragId.current) {
+          } else if (dragId.current && !activity) {
+            // Reordering by dropping on a folder is off in Activity mode (the list is sectioned).
             e.preventDefault()
             e.stopPropagation()
             setDragOver(f.id)
@@ -730,6 +765,16 @@ export function Sidebar(p: Props): JSX.Element {
     const subCount = removal.groupIds.length - 1
     const manualSubtitle = `${subCount > 0 ? `${subCount} ${subCount === 1 ? 'group' : 'groups'}, ` : ''}${total} ${total === 1 ? 'folder' : 'folders'}`
     const folderLabel = g.folder ? g.folder.split(/[\\/]/).filter(Boolean).pop() ?? g.folder : null
+    // Child entries in their original order (subgroups, then member folders / discovered children), tagged for Activity grouping.
+    const sel = state.selectedId
+    const kids: { el: JSX.Element; working: boolean; sel: boolean }[] = g.collapsed ? [] : [
+      ...subgroups.map((c) => ({ el: groupBlock(c, depth + 1, seen), working: groupWorking(c), sel: groupHasSelected(c) })),
+      ...members.map((f) => ({ el: folderRow(f, depth + 1), working: isWorking(f.id), sel: f.id === sel })),
+      ...(g.kind === 'parent' ? visibleChildren.map((c) => ({ el: childRow(g, c, depth), working: isWorking(c.id), sel: c.id === sel })) : [])
+    ]
+    const idleKids = kids.filter((k) => !k.working)
+    // Expanded on request, or forced open while the selection sits inside it (not persisted).
+    const idleOpen = idleIsOpen(g.id) || idleKids.some((k) => k.sel)
     const showEmpty = g.kind === 'manual' && members.length === 0 && subgroups.length === 0 && creating?.parentId !== g.id && newFolder?.groupId !== g.id
     return (
       <div
@@ -853,13 +898,11 @@ export function Sidebar(p: Props): JSX.Element {
           <div className="group-children">
             {newFolder?.groupId === g.id && newFolderRow(depth + 1)}
             {g.kind === 'manual' && creating?.parentId === g.id && creatingRow(depth + 1)}
-            {g.kind === 'manual' && subgroups.map((c) => groupBlock(c, depth + 1, seen))}
             {showEmpty && (
               <div className="group-empty" style={{ paddingLeft: 50 + depth * 18 }}>
                 Drag folders or groups here or use "Move to group"
               </div>
             )}
-            {g.kind === 'manual' && members.map((f) => folderRow(f, depth + 1))}
             {g.kind === 'parent' && g.missing && (
               <div className="group-empty" style={{ paddingLeft: 50 + depth * 18 }}>
                 Parent folder not found
@@ -870,47 +913,70 @@ export function Sidebar(p: Props): JSX.Element {
                 {g.hiddenCount > 0 ? 'All subfolders are hidden' : 'No subfolders'}
               </div>
             )}
-            {g.kind === 'parent' &&
-              visibleChildren.map((c) => (
-                <Row
-                  key={c.id}
-                  indent={depth + 1}
-                  icon={c.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
-                  name={c.name}
-                  subtitle={c.hidden ? 'hidden' : c.isGit ? c.branch ?? 'git' : null}
-                  subKind={c.hidden ? 'text' : 'branch'}
-                  title={c.path}
-                  selected={c.id === state.selectedId}
-                  locId={c.id}
-                  dim={c.hidden}
-                  count={p.counts[c.id] ?? 0}
-                  finished={p.finished[c.id]}
-                  onCloseFinished={() => p.onCloseFinished([c.id])}
-                  copyActive={dragOver === 'copy:' + c.id}
-                  drag={{ onDragStart: () => undefined, onDragEnd: () => setDragOver(null), ...copyTargetDrag(c.id, c.path, c.name) }}
-                  onClick={() => p.onSelect(c.id)}
-                  onContext={(e) => openMenu(e, childMenu(g, c))}
-                  actions={
-                    <>
-                      <button className="icon-btn" title="New terminal" onClick={() => p.onOpenTerminal(c.id)}>
-                        <Terminal size={14} />
-                      </button>
-                      <button
-                        className="icon-btn"
-                        title={c.hidden ? 'Unhide' : 'Hide from this group'}
-                        onClick={() => p.onHideChild(g.id, c.path, !c.hidden)}
-                      >
-                        {c.hidden ? <Eye size={14} /> : <EyeOff size={14} />}
-                      </button>
-                    </>
-                  }
-                />
-              ))}
+            {activity ? (
+              <>
+                {kids.filter((k) => k.working).map((k) => k.el)}
+                {idleKids.length > 0 && (
+                  <div
+                    className="row idle-row"
+                    style={{ paddingLeft: 8 + (depth + 1) * 18 }}
+                    title={idleOpen ? 'Hide idle entries' : 'Show idle entries'}
+                    onClick={() => toggleIdleOpen(g.id)}
+                    onMouseDown={(e) => e.detail > 1 && e.preventDefault()}
+                  >
+                    <span className="row-chevron">{idleOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
+                    <div className="row-main">
+                      <div className="row-name">Idle ({idleKids.length})</div>
+                    </div>
+                  </div>
+                )}
+                {idleOpen && idleKids.map((k) => k.el)}
+              </>
+            ) : (
+              kids.map((k) => k.el)
+            )}
           </div>
         )}
       </div>
     )
   }
+
+  /** Row for a child folder of a parent-kind group. */
+  const childRow = (g: GroupView, c: ChildView, depth: number): JSX.Element => (
+    <Row
+      key={c.id}
+      indent={depth + 1}
+      icon={c.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
+      name={c.name}
+      subtitle={c.hidden ? 'hidden' : c.isGit ? c.branch ?? 'git' : null}
+      subKind={c.hidden ? 'text' : 'branch'}
+      title={c.path}
+      selected={c.id === state.selectedId}
+      locId={c.id}
+      dim={c.hidden}
+      count={p.counts[c.id] ?? 0}
+      finished={p.finished[c.id]}
+      onCloseFinished={() => p.onCloseFinished([c.id])}
+      copyActive={dragOver === 'copy:' + c.id}
+      drag={{ onDragStart: () => undefined, onDragEnd: () => setDragOver(null), ...copyTargetDrag(c.id, c.path, c.name) }}
+      onClick={() => p.onSelect(c.id)}
+      onContext={(e) => openMenu(e, childMenu(g, c))}
+      actions={
+        <>
+          <button className="icon-btn" title="New terminal" onClick={() => p.onOpenTerminal(c.id)}>
+            <Terminal size={14} />
+          </button>
+          <button
+            className="icon-btn"
+            title={c.hidden ? 'Unhide' : 'Hide from this group'}
+            onClick={() => p.onHideChild(g.id, c.path, !c.hidden)}
+          >
+            {c.hidden ? <Eye size={14} /> : <EyeOff size={14} />}
+          </button>
+        </>
+      }
+    />
+  )
 
   const empty = state.groups.length === 0 && standalone.length === 0 && creating === null
 
@@ -927,6 +993,23 @@ export function Sidebar(p: Props): JSX.Element {
           </button>
           <button className="icon-btn" onClick={() => setCreating({ parentId: null, name: '' })} title="New group">
             <Group size={16} />
+          </button>
+          <button
+            className={`icon-btn ${activity ? 'active' : ''}`}
+            title={`Group by: ${activity ? 'Activity' : 'None'}`}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect()
+              setMenu({
+                x: r.left,
+                y: r.bottom + 4,
+                items: [
+                  { label: 'Group by: None', icon: !activity ? <Check size={14} /> : <span style={{ width: 14 }} />, onClick: () => p.onSetGroupBy('none') },
+                  { label: 'Group by: Activity (working / idle)', icon: activity ? <Check size={14} /> : <span style={{ width: 14 }} />, onClick: () => p.onSetGroupBy('activity') }
+                ]
+              })
+            }}
+          >
+            <Activity size={16} />
           </button>
           <button className="icon-btn" onClick={p.onRefresh} title="Rescan folders">
             <RefreshCw size={16} />
@@ -973,40 +1056,105 @@ export function Sidebar(p: Props): JSX.Element {
             {pinnedItems.map((it) => (it.kind === 'folder' ? folderRow(it.f, 0) : groupBlock(it.g, 0, new Set<string>())))}
           </div>
         )}
-        {(() => {
-          const seen = new Set<string>()
-          return childGroups(state.groups, null).map((g) => (seen.has(g.id) || isPinned(g.id) ? null : groupBlock(g, 0, seen)))
-        })()}
-        {(standalone.length > 0 || state.groups.some((g) => g.kind === 'manual' || g.parentId)) && (
-          <div
-            className="standalone"
-            onDragOver={(e) => {
-              if (dragId.current || (dragGroupId.current && canDropGroup(dragGroupId.current, null))) {
-                e.preventDefault()
-                setDragOver('standalone')
-              }
-            }}
-            onDragLeave={() => setDragOver((d) => (d === 'standalone' ? null : d))}
-            onDrop={(e) => {
-              e.preventDefault()
-              setDragOver(null)
-              if (dragGroupId.current) {
-                const gid = dragGroupId.current
-                dragGroupId.current = null
-                if (canDropGroup(gid, null)) p.onMoveGroup(gid, null)
-                return
-              }
-              const from = dragId.current
-              dragId.current = null
-              if (from) p.onMoveFolder(from, null)
-            }}
-          >
-            {state.groups.length > 0 && <div className="section-label">Folders</div>}
-            <div className={dragOver === 'standalone' ? 'drop-zone active' : 'drop-zone'}>
-              {standalone.map((f) => folderRow(f, 0))}
-              {standalone.length === 0 && <div className="group-empty">Drop a folder or group here to move it to the top level</div>}
-            </div>
-          </div>
+        {activity ? (
+          (() => {
+            // Top-level entries (unpinned groups, then standalone folders) split into WORKING and IDLE, original order kept.
+            const seen = new Set<string>()
+            const entries = [
+              ...childGroups(state.groups, null)
+                .filter((g) => !isPinned(g.id))
+                .map((g) => ({ working: groupWorking(g), sel: groupHasSelected(g), el: (): JSX.Element | null => (seen.has(g.id) ? null : groupBlock(g, 0, seen)) })),
+              ...standalone.map((f) => ({ working: isWorking(f.id), sel: f.id === state.selectedId, el: (): JSX.Element | null => folderRow(f, 0) }))
+            ]
+            const work = entries.filter((e) => e.working)
+            const idle = entries.filter((e) => !e.working)
+            // Forced open while the selection is in it, so the selected row stays visible.
+            const idleShown = !p.idleCollapsed || idle.some((e) => e.sel)
+            return (
+              <div
+                className="standalone"
+                onDragOver={(e) => {
+                  if (dragId.current || (dragGroupId.current && canDropGroup(dragGroupId.current, null))) {
+                    e.preventDefault()
+                    setDragOver('standalone')
+                  }
+                }}
+                onDragLeave={() => setDragOver((d) => (d === 'standalone' ? null : d))}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setDragOver(null)
+                  if (dragGroupId.current) {
+                    const gid = dragGroupId.current
+                    dragGroupId.current = null
+                    if (canDropGroup(gid, null)) p.onMoveGroup(gid, null)
+                    return
+                  }
+                  const from = dragId.current
+                  dragId.current = null
+                  if (from) p.onMoveFolder(from, null)
+                }}
+              >
+                {work.length > 0 && (
+                  <div className="activity-section working">
+                    <div className="section-label">Working ({work.length})</div>
+                    {work.map((e) => e.el())}
+                  </div>
+                )}
+                {idle.length > 0 && (
+                  <div className="activity-section idle">
+                    <div
+                      className="section-label section-toggle"
+                      title={idleShown ? 'Hide idle entries' : 'Show idle entries'}
+                      onClick={() => p.onSetIdleCollapsed(idleShown)}
+                      onMouseDown={(e) => e.detail > 1 && e.preventDefault()}
+                    >
+                      {idleShown ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      <span>Idle ({idle.length})</span>
+                    </div>
+                    {idleShown && idle.map((e) => e.el())}
+                  </div>
+                )}
+              </div>
+            )
+          })()
+        ) : (
+          <>
+            {(() => {
+              const seen = new Set<string>()
+              return childGroups(state.groups, null).map((g) => (seen.has(g.id) || isPinned(g.id) ? null : groupBlock(g, 0, seen)))
+            })()}
+            {(standalone.length > 0 || state.groups.some((g) => g.kind === 'manual' || g.parentId)) && (
+              <div
+                className="standalone"
+                onDragOver={(e) => {
+                  if (dragId.current || (dragGroupId.current && canDropGroup(dragGroupId.current, null))) {
+                    e.preventDefault()
+                    setDragOver('standalone')
+                  }
+                }}
+                onDragLeave={() => setDragOver((d) => (d === 'standalone' ? null : d))}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setDragOver(null)
+                  if (dragGroupId.current) {
+                    const gid = dragGroupId.current
+                    dragGroupId.current = null
+                    if (canDropGroup(gid, null)) p.onMoveGroup(gid, null)
+                    return
+                  }
+                  const from = dragId.current
+                  dragId.current = null
+                  if (from) p.onMoveFolder(from, null)
+                }}
+              >
+                {state.groups.length > 0 && <div className="section-label">Folders</div>}
+                <div className={dragOver === 'standalone' ? 'drop-zone active' : 'drop-zone'}>
+                  {standalone.map((f) => folderRow(f, 0))}
+                  {standalone.length === 0 && <div className="group-empty">Drop a folder or group here to move it to the top level</div>}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
       {note && <div className={`sidebar-note ${note.error ? 'error' : ''}`}>{note.text}</div>}

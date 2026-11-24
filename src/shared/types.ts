@@ -82,6 +82,12 @@ export interface UiState {
   panelTab: 'files' | 'commands' | 'git'
   /** Saved session: every open tab, restored on the next launch. */
   tabs: PersistedTab[]
+  /** Sidebar "Group by": 'activity' splits entries into Working / Idle. */
+  groupBy: 'none' | 'activity'
+  /** Activity mode: the top-level IDLE section is collapsed. */
+  idleCollapsed: boolean
+  /** Activity mode: ids of groups whose "Idle (N)" sub-row is expanded (collapsed by default). */
+  idleOpen: string[]
 }
 
 export interface Folder {

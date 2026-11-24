@@ -719,7 +719,7 @@ function checkMcpLogic(dir: string): CheckResult {
     home: { id: 'home', name: 'Home', path: dir, isDefault: false, missing: false, isGit: false, branch: null },
     selectedId: null,
     settings: { ...DEFAULT_SETTINGS },
-    ui: { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [] },
+    ui: { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [], groupBy: 'none', idleCollapsed: false, idleOpen: [] },
     resolvedShell: ''
   }
   const fail = (m: string): CheckResult => ({ ok: false, msg: 'mcp logic: ' + m })

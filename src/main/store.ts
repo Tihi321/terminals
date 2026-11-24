@@ -60,7 +60,7 @@ export interface Persisted {
   ui: UiState
 }
 
-const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [] }
+const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [], groupBy: 'none', idleCollapsed: false, idleOpen: [] }
 
 function emptyData(): Persisted {
   return {
@@ -157,7 +157,11 @@ export function migrate(raw: Record<string, unknown>): Persisted {
     panelOpen: !!u.panelOpen,
     panelTab: u.panelTab === 'commands' || u.panelTab === 'git' ? u.panelTab : 'files',
     // v3 -> v4 added ui.tabs (saved session) and panes.active
-    tabs: sanitizeTabs(u.tabs)
+    tabs: sanitizeTabs(u.tabs),
+    // Sidebar "Group by" prefs (absent in older files = defaults)
+    groupBy: u.groupBy === 'activity' ? 'activity' : 'none',
+    idleCollapsed: !!u.idleCollapsed,
+    idleOpen: (Array.isArray(u.idleOpen) ? u.idleOpen : []).filter((x, i, a): x is string => typeof x === 'string' && a.indexOf(x) === i)
   }
   // Pins (added without a schema bump: absent = none). Keep only existing folder/group ids, once each.
   const pinnable = new Set([...d.folders.map((f) => f.id), ...d.groups.map((g) => g.id)])
@@ -737,6 +741,9 @@ export function setUi(patch: Partial<UiState>): AppState {
   if (patch.sidebarCollapsed !== undefined) u.sidebarCollapsed = !!patch.sidebarCollapsed
   if (patch.panes !== undefined) u.panes = sanitizePersisted(patch.panes)
   if (patch.tabs !== undefined) u.tabs = sanitizeTabs(patch.tabs)
+  if (patch.groupBy === 'none' || patch.groupBy === 'activity') u.groupBy = patch.groupBy
+  if (patch.idleCollapsed !== undefined) u.idleCollapsed = !!patch.idleCollapsed
+  if (Array.isArray(patch.idleOpen)) u.idleOpen = patch.idleOpen.filter((x, i, a): x is string => typeof x === 'string' && a.indexOf(x) === i)
   if (patch.panelOpen !== undefined) u.panelOpen = !!patch.panelOpen
   if (patch.panelTab === 'files' || patch.panelTab === 'commands' || patch.panelTab === 'git') u.panelTab = patch.panelTab
   save()
