@@ -1558,8 +1558,17 @@ kbd,
   font-size: 12.5px;
   color: var(--text);
 }
-.ctx-item:hover:not(:disabled) {
+.ctx-item:hover:not(:disabled),
+.ctx-item.open:not(:disabled) {
   background: var(--active);
+}
+.ctx-sub {
+  overflow-y: auto;
+  min-width: 180px;
+}
+.ctx-chevron {
+  flex: none;
+  color: var(--text-3);
 }
 .ctx-label {
   flex: 1;

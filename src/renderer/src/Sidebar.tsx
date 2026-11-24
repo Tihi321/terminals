@@ -42,7 +42,7 @@ import { HOME_ID } from '../../shared/types'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { LOC_DRAG_TYPE, locDrag } from './TabBar'
-import { childGroups, groupPath, nestError, nestTarget, removalSet, subtreeGroupIds } from '../../shared/groupTree'
+import { childGroups, nestError, nestTarget, removalSet, subtreeGroupIds } from '../../shared/groupTree'
 
 /** Tabs that have finished (command done, shell exited) but are still open, per location or rolled up. */
 export interface Finished {
@@ -386,21 +386,33 @@ export function Sidebar(p: Props): JSX.Element {
     return items
   }
 
+  /**
+   * One "Move to group" item with a submenu of the group tree (parents before children, depth-indented).
+   * A non-target group with target descendants is shown disabled; branches without targets are left out.
+   * Returns [] when there is no target at all.
+   */
+  const moveToGroupItems = (isTarget: (id: string) => boolean, onPick: (id: string) => void): MenuItem[] => {
+    const walk = (parentId: string | null, depth: number, seen: Set<string>): MenuItem[] =>
+      childGroups(state.groups, parentId).flatMap((g) => {
+        if (seen.has(g.id)) return []
+        seen.add(g.id)
+        const kids = walk(g.id, depth + 1, seen)
+        const target = g.kind === 'manual' && isTarget(g.id)
+        if (!target && kids.length === 0) return []
+        return [{ label: g.name, depth, disabled: !target, onClick: () => onPick(g.id) } as MenuItem, ...kids]
+      })
+    const submenu = walk(null, 0, new Set())
+    return submenu.length ? [{ label: 'Move to group', icon: <FolderInput size={14} />, submenu }] : []
+  }
+
   const folderMenu = (f: FolderView): MenuItem[] => {
-    const manual = state.groups.filter((g) => g.kind === 'manual')
     return [
       ...pathItems(f.id, f.path, f.missing),
       { separator: true },
       pinItem(f.id),
       { label: 'Rename', icon: <Pencil size={14} />, onClick: () => startRename('folder', f.id, f.name) },
       ...arrangeItems(f.id),
-      ...manual
-        .filter((g) => g.id !== f.groupId)
-        .map<MenuItem>((g) => ({
-          label: `Move to group: ${groupPath(state.groups, g.id)}`,
-          icon: <FolderInput size={14} />,
-          onClick: () => p.onMoveFolder(f.id, g.id)
-        })),
+      ...moveToGroupItems((id) => id !== f.groupId, (id) => p.onMoveFolder(f.id, id)),
       ...(f.groupId
         ? [{ label: 'Remove from group', icon: <FolderMinus size={14} />, onClick: () => p.onMoveFolder(f.id, null) } as MenuItem]
         : []),
@@ -424,13 +436,10 @@ export function Sidebar(p: Props): JSX.Element {
     }
     const moveItems: MenuItem[] = [
       ...arrangeItems(g.id),
-      ...state.groups
-        .filter((x) => x.kind === 'manual' && x.id !== g.parentId && nestError(state.groups, g.id, x.id) === null)
-        .map<MenuItem>((x) => ({
-          label: `Move to group: ${groupPath(state.groups, x.id)}`,
-          icon: <FolderInput size={14} />,
-          onClick: () => p.onMoveGroup(g.id, x.id)
-        })),
+      ...moveToGroupItems(
+        (id) => id !== g.parentId && nestError(state.groups, g.id, id) === null,
+        (id) => p.onMoveGroup(g.id, id)
+      ),
       ...(g.parentId
         ? [{ label: 'Move to top level', icon: <FolderMinus size={14} />, onClick: () => p.onMoveGroup(g.id, null) } as MenuItem]
         : [])
