@@ -110,6 +110,12 @@ function ResizeHandle({ onDrag, onEnd }: { onDrag: (clientX: number) => void; on
   )
 }
 
+/** Finished-but-open state of a tab: a command whose run ended, or an exited shell. */
+function finishedStatus(t: Tab): 'success' | 'failed' | 'exited' | undefined {
+  const st = t.kind === 'command' ? t.run?.status : t.kind === 'shell' && t.exited ? 'exited' : undefined
+  return st === 'success' || st === 'failed' || st === 'exited' ? st : undefined
+}
+
 export function App(): JSX.Element {
   const [state, setStateRaw] = useState<AppState | null>(null)
   const stateRef = useRef<AppState | null>(null)
@@ -869,8 +875,8 @@ export function App(): JSX.Element {
   const finished = useMemo(() => {
     const f: Record<string, Finished> = {}
     for (const t of tabs) {
-      const st = t.kind === 'command' ? t.run?.status : t.kind === 'shell' && t.exited ? 'exited' : undefined
-      if (st !== 'success' && st !== 'failed' && st !== 'exited') continue
+      const st = finishedStatus(t)
+      if (!st) continue
       const e = (f[t.locId] ??= { total: 0, failed: 0, ok: 0, items: [] })
       e.total++
       if (st === 'failed') e.failed++
@@ -883,6 +889,14 @@ export function App(): JSX.Element {
   const closeTabsOf = useCallback(
     (ids: string[]) => {
       for (const t of tabsRef.current.filter((t) => ids.includes(t.locId))) closeTab(t.id)
+    },
+    [closeTab]
+  )
+
+  /** Middle-click on a sidebar row: close the finished tabs (what the fin-dot counts) of these locations. */
+  const closeFinishedOf = useCallback(
+    (ids: string[]) => {
+      for (const t of tabsRef.current.filter((t) => ids.includes(t.locId) && finishedStatus(t))) closeTab(t.id)
     },
     [closeTab]
   )
@@ -986,6 +1000,7 @@ export function App(): JSX.Element {
             onOpenSettings={() => setSettingsOpen(true)}
             counts={counts}
             finished={finished}
+            onCloseFinished={closeFinishedOf}
             onSelect={(id) => void select(id)}
             onNestMove={(id, op, dir) =>
               void (op === 'move' ? window.api.moveItem(id, dir) : window.api.nestItem(id, dir)).then(setState)
