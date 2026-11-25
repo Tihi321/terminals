@@ -16,6 +16,7 @@ import { hostAllowed, startMcpServer, tokenMatches } from './mcp'
 import { TerminalHost } from './terminalHost'
 import { buildRunInput, findMarkers, toLines } from './termText'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
+import { applyOrder, moveId, shiftId } from '../shared/order'
 import { activateIn, moveTab, reconcileActive, shiftTab } from '../shared/tabs'
 import { planRestore, restorePaths, sanitizeTabs, toPersistedTabs, type RestoreCtx } from '../shared/session'
 import { checkElevatedRequest, elevatedCommand, gsudoCandidates, parseSudoMode, resolveElevator } from './elevation'
@@ -272,6 +273,24 @@ function checkTabs(): CheckResult {
   const moved = activateIn(panes, tabs, valid, 'p0', 'a2')
   if (moved.p0 !== 'a2' || moved.p1 !== 'a3') return fail('activateIn should give the old pane its neighbour ' + JSON.stringify(moved))
   return { ok: true, msg: 'tabs: moveTab/shiftTab keep other folders in place; reconcileActive and activateIn keep a tab in one pane' }
+}
+
+/** Check: reordering saved items moves one id, keeps ids, and leaves items outside the visible list in place. */
+function checkOrder(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'order: ' + m })
+  const abc = ['a', 'b', 'c']
+  if (moveId(abc, 'c', 'a').join() !== 'c,a,b') return fail('moveId before')
+  if (moveId(abc, 'a', null).join() !== 'b,c,a') return fail('moveId to the end')
+  if (moveId(abc, 'b', 'b') !== abc || moveId(abc, 'a', 'b') !== abc || moveId(abc, 'x', null) !== abc || moveId(abc, 'a', 'x') !== abc)
+    return fail('moveId no-ops should keep the reference')
+  if (shiftId(abc, 'a', -1) !== abc || shiftId(abc, 'c', 1) !== abc || shiftId(abc, 'x', 1) !== abc) return fail('shiftId edge / unknown')
+  if (shiftId(abc, 'b', -1).join() !== 'b,a,c' || shiftId(abc, 'b', 1).join() !== 'a,c,b') return fail('shiftId')
+  const items = [{ id: 'g1' }, { id: 'f1' }, { id: 'g2' }, { id: 'f2' }, { id: 'g3' }]
+  if (ids(applyOrder(items, ['g3', 'g1', 'g2'])) !== 'g3,f1,g1,f2,g2') return fail('applyOrder subset ' + ids(applyOrder(items, ['g3', 'g1', 'g2'])))
+  if (ids(applyOrder(items, ['f2', 'f1'])) !== 'g1,f2,g2,f1,g3') return fail('applyOrder other subset')
+  if (applyOrder(items, ['g1', 'g2']) !== items || applyOrder(items, ['g1', 'nope']) !== items || applyOrder(items, ['g1', 'g1']) !== items)
+    return fail('applyOrder same order / unknown / repeated id should keep the reference')
+  return { ok: true, msg: 'order: moveId/shiftId/applyOrder reorder a visible subset and keep everything else in place' }
 }
 
 /** Check: saved tabs are sanitised, and the restore plan keeps order, skips missing things, falls back cwd, anchors runs and maps ids. */
@@ -963,6 +982,7 @@ export async function runSmoke(): Promise<void> {
     checkSettings(),
     checkPanes(),
     checkTabs(),
+    checkOrder(),
     checkSession(),
     checkElevation(),
     checkWrite(),

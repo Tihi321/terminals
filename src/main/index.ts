@@ -477,6 +477,8 @@ function registerIpc(): void {
   ipcMain.handle('commands:delete', (_e, id: string) => store.deleteCommand(id))
   ipcMain.handle('snippets:save', (_e, s: Snippet) => store.saveSnippet(s))
   ipcMain.handle('snippets:delete', (_e, id: string) => store.deleteSnippet(id))
+  ipcMain.handle('commands:reorder', (_e, ids: string[]) => store.reorderCommands(ids))
+  ipcMain.handle('snippets:reorder', (_e, ids: string[]) => store.reorderSnippets(ids))
   ipcMain.handle('folders:addPaths', (_e, paths: string[], groupId: string | null, beforeId?: string) =>
     store.addFolderPaths(Array.isArray(paths) ? paths : [], typeof groupId === 'string' ? groupId : null, beforeId)
   )

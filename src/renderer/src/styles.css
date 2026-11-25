@@ -1255,6 +1255,35 @@ kbd,
 .cmd-row:hover {
   border-color: var(--line-strong);
 }
+.cmd-row.drop-before::after,
+.cmd-row.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.cmd-row.drop-before::after {
+  top: -4px;
+}
+.cmd-row.drop-after::after {
+  bottom: -4px;
+}
+.card-grip {
+  flex: none;
+  display: inline-flex;
+  margin-left: -6px;
+  color: var(--text-3);
+  opacity: 0.45;
+  cursor: grab;
+}
+.cmd-row:hover .card-grip,
+.cmd-row:focus-visible .card-grip {
+  opacity: 0.9;
+}
 .cmd-row::before {
   content: '';
   position: absolute;

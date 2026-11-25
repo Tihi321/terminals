@@ -19,6 +19,7 @@ import type { AppState, Command, Snippet } from '../../shared/types'
 import { CommandEditor } from './CommandEditor'
 import { ownerInfo, remapCommandTargets } from './copyPaste'
 import type { AppClipboard } from './copyPaste'
+import { useCardReorder } from './cardReorder'
 import { PromptsPanel } from './PromptsPanel'
 import { baseName } from './locations'
 import type { Loc } from './locations'
@@ -47,6 +48,8 @@ interface Props {
   onRunShell: (body: string) => void
   onSaveSnippet: (s: Snippet) => void
   onDeleteSnippet: (id: string) => void
+  onReorder: (ids: string[]) => void
+  onReorderSnippets: (ids: string[]) => void
   onCopy: (text: string) => void
 }
 
@@ -100,6 +103,7 @@ export function CommandsPanel(p: Props): JSX.Element {
           onInsert={p.onInsertSnippet}
           onSave={p.onSaveSnippet}
           onDelete={p.onDeleteSnippet}
+          onReorder={p.onReorderSnippets}
           onCopy={p.onCopy}
           clipboard={clipboard}
           setClipboard={setClipboard}
@@ -120,12 +124,23 @@ function CommandsList({
   onSave,
   onDelete,
   onDuplicate,
+  onReorder,
   clipboard,
   setClipboard
 }: Props & { clipboard: AppClipboard; setClipboard: (c: AppClipboard) => void }): JSX.Element {
   const [editing, setEditing] = useState<Command | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const commands = selected
+    ? state.commands.filter(
+        (c) => c.ownerId === 'global' || c.ownerId === selected.id || (selected.groupId && c.ownerId === selected.groupId)
+      )
+    : []
+  const reorder = useCardReorder(
+    'commands',
+    commands.map((c) => c.id),
+    onReorder
+  )
 
   if (!selected) {
     return (
@@ -137,10 +152,6 @@ function CommandsList({
       </div>
     )
   }
-
-  const commands = state.commands.filter(
-    (c) => c.ownerId === 'global' || c.ownerId === selected.id || (selected.groupId && c.ownerId === selected.groupId)
-  )
 
   const create = (): void =>
     setEditing({
@@ -212,10 +223,16 @@ function CommandsList({
           const running = run?.status === 'running'
           const from = ownerName(c.ownerId)
           const needsPath = c.targets.some((t) => !t.cwd)
+          const rp = reorder.rowProps(c.id)
           return (
-            <div key={c.id} className={`cmd-row ${run ? (run.stopped && !running ? 'is-stopped' : `is-${run.status}`) : ''}`}>
+            <div
+              key={c.id}
+              {...rp}
+              className={`cmd-row ${run ? (run.stopped && !running ? 'is-stopped' : `is-${run.status}`) : ''}${rp.className}`}
+            >
               <div className="cmd-main">
                 <div className="cmd-name">
+                  {reorder.grip(c.id)}
                   <span className="cmd-title">{c.name}</span>
                   {from && <span className="cmd-owner">{from}</span>}
                 </div>

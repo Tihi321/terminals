@@ -33,6 +33,8 @@ const api: TerminalsApi = {
   deleteCommand: (id) => inv('commands:delete', id),
   saveSnippet: (s) => inv('snippets:save', s),
   deleteSnippet: (id) => inv('snippets:delete', id),
+  reorderCommands: (ids) => inv('commands:reorder', ids),
+  reorderSnippets: (ids) => inv('snippets:reorder', ids),
   addFolderPaths: (paths, groupId, beforeId) => inv('folders:addPaths', paths, groupId, beforeId),
   getPathForFile: (file) => {
     try {

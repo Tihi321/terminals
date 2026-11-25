@@ -6,6 +6,7 @@ import type { Loc } from './locations'
 import type { AppClipboard } from './copyPaste'
 import { SnippetEditor, scopeLabel, visibleSnippets } from './SnippetEditor'
 import { Keys } from './Keys'
+import { useCardReorder } from './cardReorder'
 
 interface Props {
   state: AppState
@@ -13,6 +14,7 @@ interface Props {
   onInsert: (body: string, enter: boolean) => void
   onSave: (s: Snippet) => void
   onDelete: (id: string) => void
+  onReorder: (ids: string[]) => void
   onCopy: (text: string) => void
   clipboard: AppClipboard
   setClipboard: (c: AppClipboard) => void
@@ -27,6 +29,7 @@ export function PromptsPanel({
   onInsert,
   onSave,
   onDelete,
+  onReorder,
   onCopy,
   clipboard,
   setClipboard,
@@ -39,6 +42,11 @@ export function PromptsPanel({
   const shell = kind === 'shell'
   const noun = shell ? 'shell command' : 'prompt'
   const snippets = visibleSnippets(state, selected, kind)
+  const reorder = useCardReorder(
+    kind,
+    snippets.map((s) => s.id),
+    onReorder
+  )
   const canPaste = !!selected?.path && !selected.missing
 
   const create = (): void =>
@@ -101,10 +109,13 @@ export function PromptsPanel({
             </div>
           </div>
         )}
-        {snippets.map((s) => (
-          <div key={s.id} className="cmd-row">
+        {snippets.map((s) => {
+          const rp = reorder.rowProps(s.id)
+          return (
+          <div key={s.id} {...rp} className={`cmd-row${rp.className}`}>
             <div className="cmd-main">
               <div className="cmd-name">
+                {reorder.grip(s.id)}
                 <span className="cmd-title">{s.name}</span>
                 {!shell && s.scope !== 'global' && <span className="cmd-owner">{scopeLabel(state, s.scope)}</span>}
               </div>
@@ -169,7 +180,8 @@ export function PromptsPanel({
               </div>
             </div>
           </div>
-        ))}
+          )
+        })}
       </div>
       {editing && (
         <SnippetEditor

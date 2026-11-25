@@ -1423,6 +1423,8 @@ export function App(): JSX.Element {
                   onRunShell={(body) => void runShellLine(body)}
                   onSaveSnippet={async (s) => setState(await window.api.saveSnippet(s))}
                   onDeleteSnippet={async (id) => setState(await window.api.deleteSnippet(id))}
+                  onReorder={async (ids) => setState(await window.api.reorderCommands(ids))}
+                  onReorderSnippets={async (ids) => setState(await window.api.reorderSnippets(ids))}
                   onCopy={(t) => void window.api.clipboardWrite(t)}
                 />
               )}

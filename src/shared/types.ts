@@ -361,6 +361,10 @@ export interface TerminalsApi {
   deleteCommand(id: string): Promise<AppState>
   saveSnippet(s: Snippet): Promise<AppState>
   deleteSnippet(id: string): Promise<AppState>
+  /** Reorders the listed saved commands among the slots they occupy; ids are kept. */
+  reorderCommands(ids: string[]): Promise<AppState>
+  /** Same for prompts / shell lines. */
+  reorderSnippets(ids: string[]): Promise<AppState>
   /** Add dropped directories (files are ignored, known paths skipped). Selects the first new one. */
   addFolderPaths(paths: string[], groupId: string | null, beforeId?: string): Promise<AppState>
   /** Real filesystem path of a dropped File (File.path is gone in Electron 32+). */

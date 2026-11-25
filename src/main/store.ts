@@ -28,6 +28,7 @@ import { sanitizePersisted } from '../shared/panes'
 import { sanitizeTabs } from '../shared/session'
 import { DEFAULT_SETTINGS, patchSettings, sanitizeSettings } from '../shared/settings'
 import { childGroups, nestError, nestTarget, removalSet } from '../shared/groupTree'
+import { applyOrder } from '../shared/order'
 import { resolveShell } from './pty'
 import { readGit } from './git'
 
@@ -670,6 +671,26 @@ export function saveCommand(cmd: Command): AppState {
 export function deleteCommand(id: string): AppState {
   data.commands = data.commands.filter((c) => c.id !== id)
   save()
+  return getState()
+}
+
+/** Gives the saved commands named in `ids` that order, in the slots they already occupy. Ids are kept; unknown or repeated ids are ignored. */
+export function reorderCommands(ids: string[]): AppState {
+  const next = applyOrder(data.commands, ids)
+  if (next !== data.commands) {
+    data.commands = next
+    save()
+  }
+  return getState()
+}
+
+/** Same as reorderCommands, for prompts and shell lines. */
+export function reorderSnippets(ids: string[]): AppState {
+  const next = applyOrder(data.snippets, ids)
+  if (next !== data.snippets) {
+    data.snippets = next
+    save()
+  }
   return getState()
 }
 
