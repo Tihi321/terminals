@@ -32,6 +32,10 @@ export interface TermEntry {
   attach: boolean
   /** Resolves once the pty has been requested (success or failure). */
   ready: Promise<void>
+  /** Set once the pty has produced any output (the shell started drawing). */
+  gotOutput: boolean
+  /** Called on every chunk of pty output; used by whenShellQuiet. */
+  onOutput?: () => void
   markReady: () => void
   dispose: () => void
 }
@@ -175,7 +179,11 @@ function ensureListeners(): void {
   if (listenersReady) return
   listenersReady = true
   window.api.onPtyData((id, data) => {
-    entries.get(id)?.term.write(data)
+    const e = entries.get(id)
+    if (!e) return
+    e.gotOutput = true
+    e.term.write(data)
+    e.onOutput?.()
   })
   window.api.onPtyExit((id, code) => {
     const e = entries.get(id)
@@ -210,6 +218,32 @@ async function pasteClipboard(term: Terminal): Promise<void> {
     if (c.text) term.paste(c.text)
   } else if (c.kind === 'image') term.paste(formatPaths([c.path]))
   else if (c.paths.length > 0) term.paste(formatPaths(c.paths))
+}
+
+/**
+ * Resolves when a freshly started shell has drawn its prompt: the pty is up, it has produced output, and the output
+ * has been quiet for `quietMs`. Gives up after `maxMs` so a silent shell still gets the text.
+ */
+export async function whenShellQuiet(id: string, quietMs = 350, maxMs = 8000): Promise<void> {
+  const e = entries.get(id)
+  if (!e) return
+  await e.ready
+  await new Promise<void>((resolve) => {
+    let quiet: ReturnType<typeof setTimeout> | undefined
+    const done = (): void => {
+      clearTimeout(quiet)
+      clearTimeout(cap)
+      e.onOutput = undefined
+      resolve()
+    }
+    const cap = setTimeout(done, maxMs)
+    const arm = (): void => {
+      clearTimeout(quiet)
+      quiet = setTimeout(done, quietMs)
+    }
+    e.onOutput = arm
+    if (e.gotOutput) arm()
+  })
 }
 
 /** Paste text into a terminal (bracketed paste), optionally pressing Enter, and focus it. */
@@ -345,6 +379,7 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     attach: !!opts.attach,
     startedAt: Date.now(),
     remeasure: false,
+    gotOutput: false,
     ready,
     markReady: () => {
       entry.startedAt = Date.now()

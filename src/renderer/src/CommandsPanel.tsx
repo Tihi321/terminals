@@ -44,6 +44,7 @@ interface Props {
   onDelete: (id: string) => void
   onDuplicate: (cmd: Command) => void
   onInsertSnippet: (body: string, enter: boolean) => void
+  onRunShell: (body: string) => void
   onSaveSnippet: (s: Snippet) => void
   onDeleteSnippet: (id: string) => void
   onCopy: (text: string) => void
@@ -72,7 +73,7 @@ function Status({ run }: { run?: RunInfo }): JSX.Element {
 }
 
 export function CommandsPanel(p: Props): JSX.Element {
-  const [sub, setSub] = useState<'commands' | 'prompts'>('commands')
+  const [sub, setSub] = useState<'commands' | 'prompts' | 'shell'>('commands')
   const [clipboard, setClipboard] = useState<AppClipboard>(null)
   return (
     <div className="commands">
@@ -84,10 +85,16 @@ export function CommandsPanel(p: Props): JSX.Element {
           <button className={sub === 'prompts' ? 'active' : ''} onClick={() => setSub('prompts')}>
             Prompts
           </button>
+          <button className={sub === 'shell' ? 'active' : ''} onClick={() => setSub('shell')}>
+            Shell
+          </button>
         </div>
       </div>
-      {sub === 'prompts' ? (
+      {sub !== 'commands' ? (
         <PromptsPanel
+          key={sub}
+          kind={sub === 'shell' ? 'shell' : 'prompt'}
+          onRun={p.onRunShell}
           state={p.state}
           selected={p.selected}
           onInsert={p.onInsertSnippet}

@@ -14,9 +14,13 @@ interface Props {
 }
 
 /** Snippets shown for the selected owner: every global one plus those scoped to it (or to its group). */
-export function visibleSnippets(state: AppState, selected: Loc | null): Snippet[] {
+export function visibleSnippets(state: AppState, selected: Loc | null, kind: 'prompt' | 'shell' = 'prompt'): Snippet[] {
+  // Shell lines are always global; prompts are global or scoped to the selection.
+  if (kind === 'shell') return state.snippets.filter((s) => s.kind === 'shell')
   return state.snippets.filter(
-    (s) => s.scope === 'global' || (!!selected && (s.scope === selected.id || (!!selected.groupId && s.scope === selected.groupId)))
+    (s) =>
+      s.kind !== 'shell' &&
+      (s.scope === 'global' || (!!selected && (s.scope === selected.id || (!!selected.groupId && s.scope === selected.groupId))))
   )
 }
 
@@ -35,6 +39,8 @@ export function SnippetEditor({ initial, state, selected, onSave, onCancel }: Pr
   const [name, setName] = useState(initial.name)
   const [body, setBody] = useState(initial.body)
   const [scope, setScope] = useState(initial.scope)
+  const shell = initial.kind === 'shell'
+  const noun = shell ? 'shell command' : 'prompt'
 
   const scopes: { id: string; label: string }[] = [{ id: 'global', label: 'Global (all folders)' }]
   const add = (id: string | null | undefined, label: string): void => {
@@ -48,7 +54,7 @@ export function SnippetEditor({ initial, state, selected, onSave, onCancel }: Pr
 
   const valid = name.trim().length > 0 && body.trim().length > 0
   const save = (): void => {
-    if (valid) onSave({ id: initial.id, name: name.trim(), body, scope })
+    if (valid) onSave({ id: initial.id, name: name.trim(), body, scope: shell ? 'global' : scope, ...(shell ? { kind: 'shell' as const } : {}) })
   }
 
   useEffect(() => {
@@ -71,10 +77,10 @@ export function SnippetEditor({ initial, state, selected, onSave, onCancel }: Pr
           }
         }}
         role="dialog"
-        aria-label="Edit prompt"
+        aria-label={`Edit ${noun}`}
       >
         <div className="modal-head">
-          <h3>{initial.name ? 'Edit prompt' : 'New prompt'}</h3>
+          <h3>{initial.name ? `Edit ${noun}` : `New ${noun}`}</h3>
           <button className="icon-btn" title="Close" onClick={onCancel}>
             <X size={16} />
           </button>
@@ -82,26 +88,30 @@ export function SnippetEditor({ initial, state, selected, onSave, onCancel }: Pr
         <div className="modal-body">
           <label className="field">
             <span>Name</span>
-            <input autoFocus value={name} placeholder="Handoff prompt" onChange={(e) => setName(e.target.value)} />
+            <input autoFocus value={name} placeholder={shell ? 'Claude (experimental)' : 'Handoff prompt'}
+              onChange={(e) => setName(e.target.value)}
+            />
           </label>
+          {!shell && (
+            <label className="field">
+              <span>Available in</span>
+              <select value={scope} onChange={(e) => setScope(e.target.value)}>
+                {scopes.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="field">
-            <span>Available in</span>
-            <select value={scope} onChange={(e) => setScope(e.target.value)}>
-              {scopes.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>Text</span>
+            <span>{shell ? 'Command' : 'Text'}</span>
             <textarea
               className="snippet-body"
-              rows={12}
+              rows={shell ? 4 : 12}
               spellCheck={false}
               value={body}
-              placeholder="Text to paste into a terminal"
+              placeholder={shell ? 'claude --some-flag' : 'Text to paste into a terminal'}
               onChange={(e) => setBody(e.target.value)}
             />
           </label>

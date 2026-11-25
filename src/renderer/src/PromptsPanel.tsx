@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { JSX } from 'react'
-import { Check, ClipboardCopy, ClipboardPaste, CornerDownLeft, FileText, Pencil, Plus, TextCursorInput, Trash2 } from 'lucide-react'
+import { Check, ClipboardCopy, ClipboardPaste, CornerDownLeft, FileText, Pencil, Plus, SquareTerminal, TextCursorInput, Trash2 } from 'lucide-react'
 import type { AppState, Snippet } from '../../shared/types'
 import type { Loc } from './locations'
 import type { AppClipboard } from './copyPaste'
@@ -16,26 +16,51 @@ interface Props {
   onCopy: (text: string) => void
   clipboard: AppClipboard
   setClipboard: (c: AppClipboard) => void
+  /** 'shell' lists saved shell lines (always global) and adds a Run button. */
+  kind?: 'prompt' | 'shell'
+  onRun?: (body: string) => void
 }
 
-export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCopy, clipboard, setClipboard }: Props): JSX.Element {
+export function PromptsPanel({
+  state,
+  selected,
+  onInsert,
+  onSave,
+  onDelete,
+  onCopy,
+  clipboard,
+  setClipboard,
+  kind = 'prompt',
+  onRun
+}: Props): JSX.Element {
   const [editing, setEditing] = useState<Snippet | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
-  const snippets = visibleSnippets(state, selected)
+  const shell = kind === 'shell'
+  const noun = shell ? 'shell command' : 'prompt'
+  const snippets = visibleSnippets(state, selected, kind)
   const canPaste = !!selected?.path && !selected.missing
 
-  const create = (): void => setEditing({ id: crypto.randomUUID(), name: '', body: '', scope: 'global' })
+  const create = (): void =>
+    setEditing({ id: crypto.randomUUID(), name: '', body: '', scope: 'global', ...(shell ? { kind: 'shell' as const } : {}) })
   const clipped = clipboard?.kind === 'prompt' ? clipboard.item : null
   const paste = (): void => {
-    if (clipped) onSave({ ...clipped, id: crypto.randomUUID(), scope: selected ? selected.id : 'global' })
+    if (!clipped) return
+    // Pasting keeps the active tab's kind; shell lines are always global.
+    const { kind: _k, ...rest } = clipped
+    void _k
+    onSave(
+      shell
+        ? { ...rest, id: crypto.randomUUID(), scope: 'global', kind: 'shell' }
+        : { ...rest, id: crypto.randomUUID(), scope: selected ? selected.id : 'global' }
+    )
   }
 
   return (
     <>
       <div className="panel-toolbar">
         <span className="toolbar-title">
-          {selected ? (
+          {selected && !shell ? (
             <>
               Global and <b>{selected.name}</b>
             </>
@@ -47,11 +72,11 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
           className="btn small"
           onClick={paste}
           disabled={!clipped}
-          title={clipped ? `Paste "${clipped.name}" here` : 'Copy a prompt first'}
+          title={clipped ? `Paste "${clipped.name}" here` : `Copy a ${noun} first`}
         >
           <ClipboardPaste size={14} /> Paste
         </button>
-        <button className="btn small primary" onClick={create} title="Create a saved prompt">
+        <button className="btn small primary" onClick={create} title={`Create a saved ${noun}`}>
           <Plus size={14} /> New
         </button>
       </div>
@@ -62,8 +87,17 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
               <FileText size={18} />
             </span>
             <div>
-              Prompts are saved text snippets, such as a handoff prompt or a note. Insert one into the active terminal with a click, or press{' '}
-              <Keys combo="Ctrl+Shift+P" />.
+              {shell ? (
+                <>
+                  Shell commands are saved lines such as <code>claude</code> or <code>claude --some-flag</code>. Insert or send one to the
+                  active terminal, or run it in a new terminal.
+                </>
+              ) : (
+                <>
+                  Prompts are saved text snippets, such as a handoff prompt or a note. Insert one into the active terminal with a click, or
+                  press <Keys combo="Ctrl+Shift+P" />.
+                </>
+              )}
             </div>
           </div>
         )}
@@ -72,7 +106,7 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
             <div className="cmd-main">
               <div className="cmd-name">
                 <span className="cmd-title">{s.name}</span>
-                {s.scope !== 'global' && <span className="cmd-owner">{scopeLabel(state, s.scope)}</span>}
+                {!shell && s.scope !== 'global' && <span className="cmd-owner">{scopeLabel(state, s.scope)}</span>}
               </div>
               <div className="cmd-preview">{s.body.replace(/\s+/g, ' ')}</div>
             </div>
@@ -109,6 +143,16 @@ export function PromptsPanel({ state, selected, onInsert, onSave, onDelete, onCo
                 ) : (
                   <button className="icon-btn danger" title="Delete" onClick={() => setConfirmDelete(s.id)}>
                     <Trash2 size={14} />
+                  </button>
+                )}
+                {shell && onRun && (
+                  <button
+                    className="btn small"
+                    disabled={!canPaste}
+                    title="Open a new terminal here and run it"
+                    onClick={() => onRun(s.body)}
+                  >
+                    <SquareTerminal size={13} /> Run
                   </button>
                 )}
                 <button className="btn small" disabled={!canPaste} title="Insert and press Enter" onClick={() => onInsert(s.body, true)}>

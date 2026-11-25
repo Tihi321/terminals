@@ -102,6 +102,9 @@ function sanitizeCommand(c: Partial<Command>): Command | null {
 
 function sanitizeSnippet(s: Partial<Snippet>): Snippet | null {
   if (!s || typeof s.id !== 'string') return null
+  if (s.kind === 'shell') {
+    return { id: s.id, name: String(s.name ?? '').trim() || 'Untitled shell command', body: String(s.body ?? ''), scope: 'global', kind: 'shell' }
+  }
   return {
     id: s.id,
     name: String(s.name ?? '').trim() || 'Untitled prompt',

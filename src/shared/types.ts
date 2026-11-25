@@ -159,6 +159,8 @@ export interface Snippet {
   body: string
   /** 'global' or a folder, group or child id. */
   scope: string
+  /** 'shell' = a saved shell line (always global); absent = a prompt. */
+  kind?: 'prompt' | 'shell'
 }
 
 export type PasteContent =

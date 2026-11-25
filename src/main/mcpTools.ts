@@ -308,7 +308,10 @@ export function planPrompt(state: AppState, a: SavePromptArgs, header: string | 
   if (a.scope !== undefined && a.scope.trim().toLowerCase() === 'global') scope = 'global'
   else if (a.scope !== undefined || !existing) scope = contextLocation(state, a.scope, header).id
   else scope = existing.scope
-  return { prompt: { id: existing?.id ?? randomUUID(), name, body, scope }, created: !existing }
+  return {
+    prompt: { id: existing?.id ?? randomUUID(), name, body, scope, ...(existing?.kind ? { kind: existing.kind } : {}) },
+    created: !existing
+  }
 }
 
 type PathResult =
@@ -523,6 +526,7 @@ export const TOOLS: ToolDef[] = [
       const s = store.getState()
       const loc = contextLocation(s, a.location, ctx.headerLocation)
       const prompts = s.snippets
+        .filter((p) => p.kind !== 'shell')
         .filter((p) => p.scope === 'global' || p.scope === loc.id || (!!loc.groupId && p.scope === loc.groupId))
         .map((p) => ({ ...p, scopeKind: p.scope === 'global' ? 'global' : p.scope === loc.id ? 'location' : 'group' }))
       return { location: { id: loc.id, name: loc.name }, prompts }

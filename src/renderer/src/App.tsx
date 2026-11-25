@@ -41,7 +41,7 @@ import { Keys } from './Keys'
 import { visibleSnippets } from './SnippetEditor'
 import type { RunInfo } from './CommandsPanel'
 import { baseName, buildLocs } from './locations'
-import { createTerm, getTerm, pasteInto, setTermHooks } from './termRegistry'
+import { createTerm, getTerm, pasteInto, setTermHooks, whenShellQuiet } from './termRegistry'
 import { SettingsDialog } from './SettingsDialog'
 import { useAppearance } from './appearance'
 import { DEFAULT_SETTINGS, FONT_SIZE_MAX, FONT_SIZE_MIN } from '../../shared/settings'
@@ -734,6 +734,19 @@ export function App(): JSX.Element {
     return cur?.panes[cur.focused]?.id
   }
 
+  /** Open a new plain shell tab at the selected location and, once its prompt is up, type the line and press Enter. */
+  const runShellLine = useCallback(
+    async (body: string) => {
+      const locId = stateRef.current?.selectedId
+      if (!locId) return
+      const id = newTab(locId, undefined, focusedPaneId())
+      if (!id) return
+      await whenShellQuiet(id)
+      pasteInto(id, body, true)
+    },
+    [newTab]
+  )
+
   /** Paste a saved prompt into the selected folder's active shell tab, opening one first when needed. */
   const insertSnippet = useCallback(
     async (body: string, enter: boolean) => {
@@ -1407,6 +1420,7 @@ export function App(): JSX.Element {
                     setState(await window.api.saveCommand({ ...c, id: crypto.randomUUID(), name: `${c.name} (copy)` }))
                   }
                   onInsertSnippet={(body, enter) => void insertSnippet(body, enter)}
+                  onRunShell={(body) => void runShellLine(body)}
                   onSaveSnippet={async (s) => setState(await window.api.saveSnippet(s))}
                   onDeleteSnippet={async (id) => setState(await window.api.deleteSnippet(id))}
                   onCopy={(t) => void window.api.clipboardWrite(t)}
@@ -1418,7 +1432,7 @@ export function App(): JSX.Element {
       </div>
       {pickerOpen && (
         <SnippetPicker
-          snippets={visibleSnippets(state, selected)}
+          snippets={visibleSnippets(state, selected, 'prompt')}
           onClose={() => setPickerOpen(false)}
           onPick={(s) => {
             setPickerOpen(false)
