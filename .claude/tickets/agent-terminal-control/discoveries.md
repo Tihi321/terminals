@@ -8,3 +8,5 @@
 - 2026-11-21 implementer: `yarn smoke` prints nothing under `fnm exec --using default cmd /c "yarn smoke"`, and the node_modules/.bin/electron shim fails from git-bash (package.json:12) - suggested: document running node_modules/electron/dist/electron.exe . --smoke
 - 2026-11-26 implement: PSReadLine history file on this machine already holds ~320 run lines leaked by earlier builds, so a "history count is 0" check is environment-dependent (src/main/smoke.ts:1138) - suggested: user may prune the history file by hand
 - 2026-11-26 implement: an agent tab opened via open() keeps its screen mirror at 120x30 until the renderer sends pty:resize (src/main/terminalHost.ts:299) - suggested: none needed while the pty is also 120x30
+- 2026-11-27 implement: the screen mirror has no scrollback, so rows added on resize stay blank until the program redraws (src/main/screen.ts) - suggested: decide whether a resize should trigger a repaint
+- 2026-11-27 implement: the wrapper's $global:__terminalsHist check throws under global Set-StrictMode in a shell started without init args; not reachable today (src/main/termText.ts) - suggested: read the variable with a safe lookup

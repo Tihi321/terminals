@@ -1,9 +1,9 @@
 ---
-status: in-progress
+status: done
 request: REQ-0007
 repos: [C:/projects/Personal/terminals]
 branch: feat/open-requests
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 # Plan: REQ-0007 extras, round 2
 

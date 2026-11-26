@@ -29,3 +29,5 @@
 {"ts":"2026-11-26T21:31:15Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"agent-terminal-control","detail":"E1-E10 implemented; E8 5.1 NOT DONE","data":{"tasks":["E1","E2","E3","E4","E5","E6","E7","E8","E9","E10"]}}
 {"ts":"2026-11-26T21:32:30Z","actor":"implement","type":"verify.passed","request":"REQ-0007","ticket":"agent-terminal-control","detail":"typecheck 0, smoke 21 PASS, dist:dir built with @xterm/headless"}
 {"ts":"2026-11-26T21:32:30Z","actor":"implement","type":"changelog.written","request":"REQ-0007","ticket":"agent-terminal-control","detail":"extras round 2 entry; E8 5.1 NOT DONE"}
+{"ts":"2026-11-27T07:00:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0007","ticket":"agent-terminal-control","detail":"extras-2 checker on a0b9c7e: PASS with unchecked items","data":{"verdict":"PASS","commit":"a0b9c7e"}}
+{"ts":"2026-11-27T07:00:01Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0007","ticket":"agent-terminal-control","detail":"extras-2 done after polish bd8681b","data":{"commit":"bd8681b"}}
