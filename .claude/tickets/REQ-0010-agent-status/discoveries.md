@@ -2,3 +2,10 @@
 - 2026-11-26 implementer: Reset-to-defaults tooltip does not mention the agent heuristic toggle that is now kept (src/renderer/src/SettingsDialog.tsx:376) - suggested: add it to the tooltip text
 - 2026-11-26 implementer: old build/smoke leftovers in the temp folder (.claude/temp/) - suggested: clean up
 - 2026-11-26 implementer: renamed command tabs lose userTitle on restore, only shell tabs carry it (src/shared/session.ts) - suggested: decide whether command tabs should keep renames
+- 2026-11-26 implementer: typing within 1 s of a stock prompt can show a brief false working/done badge (src/main/agentStatus.ts) - suggested: triage later (low)
+- 2026-11-26 implementer: Meta+F3 (\x1b[1;9..16R) is classified as a terminal reply (src/main/agentStatus.ts) - suggested: triage later (low)
+- 2026-11-26 implementer: a real CPR at row 1, cols 2-8 counts as input (src/main/agentStatus.ts) - suggested: triage later (low)
+- 2026-11-26 implementer: no smoke asserts for 413, toggle-off clear, outdated flag, backup-once, BOM (src/main/smoke.ts) - suggested: triage later (low)
+- 2026-11-26 implementer: custom-prompt shells emitting OSC in the detection chunk can still be marked agent (src/main/agentStatus.ts) - suggested: triage later (low)
+- 2026-11-26 implementer: stale tab titles after Claude exits and after restart; "Use terminal title" is a no-op (src/main/agentStatus.ts) - suggested: triage later (low)
+- 2026-11-26 implementer: empty user event arrays are not removed on hook Remove (src/main/agentStatus.ts) - suggested: triage later (low)

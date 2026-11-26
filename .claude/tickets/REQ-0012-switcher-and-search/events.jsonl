@@ -5,3 +5,6 @@
 {"ts":"2026-11-26T19:39:10Z","actor":"implement","type":"slice.done","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"T0-T4 implemented; typecheck and smoke pass per child","data":{"tasks":["T0","T1","T2","T3","T4"]}}
 {"ts":"2026-11-26T19:40:28Z","actor":"implement","type":"verify.passed","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"yarn typecheck and yarn smoke pass; manual criteria 4-10 untested"}
 {"ts":"2026-11-26T19:40:28Z","actor":"implement","type":"changelog.written","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"changelog.md written; status stays in-progress for checker"}
+{"ts":"2026-11-27T01:00:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"PASS with unchecked items (integration check, 9 findings) on 088a89a","data":{"commit":"088a89a"}}
+{"ts":"2026-11-27T01:00:01Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"PASS (re-check 1) on b328862","data":{"commit":"b328862"}}
+{"ts":"2026-11-27T01:00:02Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"ticket done after PASS re-check 1"}

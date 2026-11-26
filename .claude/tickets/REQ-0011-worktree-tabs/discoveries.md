@@ -1,3 +1,7 @@
 - 2026-11-26 implement: Tabs of a worktree removed outside the app (MCP or on disk) are not closed; onStateChanged only cleans folders/groups (src/renderer/src/App.tsx:1045) - suggested: decide whether vanished worktree locs should close their tabs.
 - 2026-11-26 implement: Exporting Row from Sidebar.tsx may trigger a react-refresh only-export-components lint warning (src/renderer/src/Sidebar.tsx) - suggested: run the linter, move Row to its own file if it warns.
 - 2026-11-26 implement: HASH_RE lacks a space after = (src/main/gitcli.ts:22) - suggested: cosmetic fix.
+- 2026-11-26 director-checker: a repo both saved in a group and a parent-group child shares wt: ids, so removing one drops worktree-owned commands for the other (path not given in brief) - suggested: key worktree ids per row or refuse removal while the other row uses it.
+- 2026-11-26 director-checker: smoke lacks cases for the half-failed removal warning, the wt: cascade in removeGroupData and the sibling point-back (path not given in brief) - suggested: add smoke cases for these three.
+- 2026-11-26 director-checker: notice text says "removed" twice (path not given in brief) - suggested: reword one occurrence.
+- 2026-11-26 director-checker: Branch-view poll runs resolveBase twice when a base is stored (path not given in brief) - suggested: resolve once per poll.

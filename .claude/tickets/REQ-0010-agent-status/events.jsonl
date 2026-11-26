@@ -9,3 +9,7 @@
 {"ts":"2026-11-26T17:48:40Z","actor":"implement","type":"slice.done","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"renderer status UI and auto titles done","data":{"tasks":["T4","T5"]}}
 {"ts":"2026-11-26T17:49:28Z","actor":"implement","type":"verify.passed","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"typecheck ok, smoke 19 PASS; A10-A15 untested"}
 {"ts":"2026-11-26T17:49:48Z","actor":"implement","type":"changelog.written","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"changelog written; status stays in-progress for checker"}
+{"ts":"2026-11-26T19:30:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"PASS with unchecked items (A10-A15 manual UNTESTED); 13 findings","data":{"commit":"734aa8a"}}
+{"ts":"2026-11-26T19:30:01Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"FAIL: README JSON invalid (re-check 1)","data":{"commit":"12d56b3"}}
+{"ts":"2026-11-26T19:30:02Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"PASS (re-check 2)","data":{"commit":"59afe4b"}}
+{"ts":"2026-11-26T19:30:03Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"done after PASS re-check 2; A10-A15 still UNTESTED in the app"}

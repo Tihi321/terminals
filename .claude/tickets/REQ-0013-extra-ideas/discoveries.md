@@ -1,1 +1,5 @@
 - 2026-11-26 implementer: smoke runs log "MCP port 47821 unavailable (EADDRINUSE)" when a dev/stale app holds the port; smoke falls back to a free port, harmless (src/main/smoke.ts) - suggested: none, or note it in README
+- 2026-11-26 implementer: useMinute snapshot refreshes only on the first subscriber, so a newly opened switcher can show ages up to 59 s stale and "1m ago" can take up to about 2 min to appear (src/renderer/src/useMinute.ts) - suggested: capture Date.now() on every subscribe too
+- 2026-11-26 implementer: hook Test does not kill the cmd child when its 6 s timeout fires; curl -m 2 bounds it in practice (src/main/hookTest.ts) - suggested: kill the child on timeout
+- 2026-11-26 implementer: a hooktest request with a malformed body gets 400 before the registry callback runs, so Test reports no-request instead of bad-payload (src/main/mcp.ts) - suggested: call the test callback before the body check
+- 2026-11-26 implementer: the usedAt MRU map in the renderer is never pruned for closed tabs; memory only, cleared on restart, few entries (src/renderer/src/App.tsx) - suggested: delete entries for closed tabs when the switcher opens

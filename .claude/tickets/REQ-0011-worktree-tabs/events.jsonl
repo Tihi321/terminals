@@ -9,3 +9,7 @@
 {"ts":"2026-11-26T18:26:24Z","actor":"implement","type":"slice.done","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"slice B done; typecheck and smoke pass","data":{"tasks":["T3","T6"]}}
 {"ts":"2026-11-26T18:28:09Z","actor":"implement","type":"verify.passed","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"yarn typecheck and yarn smoke pass; manual 3-11 untested"}
 {"ts":"2026-11-26T18:28:09Z","actor":"implement","type":"changelog.written","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"changelog.md written; status stays in-progress"}
+{"ts":"2026-11-26T22:00:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"FAIL: list_locations omits worktrees + 10 findings","data":{"commit":"d6017be"}}
+{"ts":"2026-11-26T22:00:01Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"FAIL: rmSync fallback follows junctions (data loss)","data":{"commit":"d06921d"}}
+{"ts":"2026-11-26T22:00:02Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"PASS with unchecked items (re-check 2)","data":{"commit":"042e54e"}}
+{"ts":"2026-11-26T22:00:03Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"ticket done on PASS re-check 2; real-app 3-11 untested"}

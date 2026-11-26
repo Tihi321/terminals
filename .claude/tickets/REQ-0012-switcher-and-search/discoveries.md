@@ -1,2 +1,8 @@
 - 2026-11-26 implementer: `fnm exec --using default yarn|npx|corepack` fails with "program not found" while node works; yarn is on PATH directly (global environment note in ~/.claude/CLAUDE.md) - suggested: update the environment note
 - 2026-11-26 implementer: termTitle.ts has LF line endings while its siblings are CRLF (src/shared/termTitle.ts) - suggested: normalise line endings
+- 2026-11-26 director-checker: switcher repo row rolls up worktree tabs but the sidebar repo-row badge does not, only group badges do (src/renderer/src/App.tsx) - suggested: decide which rule is wanted and apply it to both places
+- 2026-11-26 director-checker: README switcher section does not mention the worktree or subtree rollup, nor that command, exited, diff and file tabs carry no status (README.md:101) - suggested: add one sentence to the switcher section
+- 2026-11-26 director-checker: an idle-only folder shows an Idle badge in the switcher but nothing in the sidebar (src/renderer/src/QuickSwitcher.tsx) - suggested: make the two match
+- 2026-11-26 director-checker: smoke fixture nests a manual group under a parent group, which nestError forbids (src/main/smoke.ts) - suggested: fix the fixture to use a legal structure
+- 2026-11-26 director-checker: find highlight contrast in light and dark themes is unverified (src/renderer/src/termRegistry.ts) - suggested: check manual criterion 10 in the real app
+- 2026-11-26 director-checker: theme tokens --warning and --info do not exist, so fallback colours show everywhere (src/renderer/src/styles.css) - suggested: define the tokens or use existing ones

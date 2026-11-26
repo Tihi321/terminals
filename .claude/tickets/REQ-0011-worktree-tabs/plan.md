@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0011
 repos: [C:/projects/Personal/terminals]
 branch: feat/herdr-agent-workflow
