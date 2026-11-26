@@ -72,6 +72,7 @@ export function statusFromHookEvent(payload: unknown): HookOutcome {
     case 'SessionStart':
       return { kind: 'set', status: 'idle' }
     case 'UserPromptSubmit':
+    case 'PreToolUse':
     case 'PostToolUse':
       return { kind: 'set', status: 'working' }
     case 'PermissionRequest':

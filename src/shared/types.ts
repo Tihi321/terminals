@@ -441,7 +441,7 @@ export interface TerminalsApi {
   getTermStatuses(): Promise<Record<string, TermStatus>>
   /** The user viewed the tab: a `done` status becomes idle. */
   termSeen(id: string): void
-  getClaudeHooks(): Promise<Result<{ installed: boolean; path: string; scriptPath: string; config: object }>>
+  getClaudeHooks(): Promise<Result<{ installed: boolean; outdated: boolean; path: string; scriptPath: string; config: object }>>
   installClaudeHooks(): Promise<Result<{ installed: boolean; path: string; backup: string | null }>>
   removeClaudeHooks(): Promise<Result<{ installed: boolean; path: string; backup: string | null }>>
 }

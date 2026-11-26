@@ -5,6 +5,7 @@ export const HOOK_MARKER = HOOK_SCRIPT_NAME
 export const HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
+  'PreToolUse',
   'PostToolUse',
   'PermissionRequest',
   'Notification',
@@ -44,7 +45,7 @@ export function hookEntry(scriptPath: string): HookCommand {
   return { type: 'command', command: 'cmd.exe', args: ['/d', '/c', scriptPath], timeout: 5 }
 }
 
-const MATCHER_EVENTS = new Set<string>(['PostToolUse', 'PermissionRequest'])
+const MATCHER_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse', 'PermissionRequest'])
 
 function ourGroup(event: string, scriptPath: string): HookGroup {
   return { ...(MATCHER_EVENTS.has(event) ? { matcher: '*' } : {}), hooks: [hookEntry(scriptPath)] }
@@ -93,11 +94,21 @@ export function mergeClaudeHooks(settings: ClaudeSettings, mode: 'install' | 're
   return out
 }
 
-export function hooksInstalled(settings: ClaudeSettings): boolean {
+function eventGroups(settings: ClaudeSettings, e: string): unknown[] {
   const hooks = settings.hooks
-  if (!hooks || typeof hooks !== 'object') return false
-  return HOOK_EVENTS.every((e) => {
-    const groups = (hooks as Record<string, unknown>)[e]
-    return Array.isArray(groups) && groups.some((g) => groupHooks(g).some(isOurHook))
-  })
+  const groups = hooks && typeof hooks === 'object' ? (hooks as Record<string, unknown>)[e] : undefined
+  return Array.isArray(groups) ? groups : []
+}
+
+/** True when any of our hooks is present, whatever the script path or event set (an outdated install). */
+export function hooksPresent(settings: ClaudeSettings): boolean {
+  return HOOK_EVENTS.some((e) => eventGroups(settings, e).some((g) => groupHooks(g).some(isOurHook)))
+}
+
+/** True only for a current install: every event has our hook pointing at exactly `scriptPath`. */
+export function hooksInstalled(settings: ClaudeSettings, scriptPath: string): boolean {
+  const want = scriptPath.toLowerCase()
+  const current = (h: unknown): boolean =>
+    isOurHook(h) && Array.isArray((h as { args?: unknown }).args) && (h as { args: unknown[] }).args.some((a) => typeof a === 'string' && a.toLowerCase() === want)
+  return HOOK_EVENTS.every((e) => eventGroups(settings, e).some((g) => groupHooks(g).some(current)))
 }

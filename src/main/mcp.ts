@@ -21,7 +21,7 @@ const LOCATION_HEADER = 'x-terminals-location'
 /** Sent from the terminal's TERMINALS_TERM_ID (the pty/tab id). */
 const TERM_HEADER = 'x-terminals-term'
 export const STATUS_PATH = '/status'
-const STATUS_BODY_CAP = 64 * 1024
+const STATUS_BODY_CAP = 4 * 1024 * 1024
 const TOKEN_FILE = 'mcp-token'
 
 export interface McpInfo {
@@ -142,6 +142,7 @@ function reply(res: ServerResponse, status: number): void {
 }
 
 function readBody(req: IncomingMessage): Promise<string | null> {
+  // Resolves 'too-large' (after discarding the rest) when over the cap; null on a read error.
   return new Promise((resolvePromise) => {
     const chunks: Buffer[] = []
     let size = 0
@@ -149,8 +150,9 @@ function readBody(req: IncomingMessage): Promise<string | null> {
       size += c.length
       if (size > STATUS_BODY_CAP) {
         chunks.length = 0
-        req.destroy()
-        resolvePromise(null)
+        req.removeAllListeners('data')
+        req.resume()
+        resolvePromise('too-large')
         return
       }
       chunks.push(c)
@@ -171,6 +173,11 @@ async function handleStatus(req: IncomingMessage, res: ServerResponse, terminals
   const raw = req.headers[TERM_HEADER]
   const id = ((Array.isArray(raw) ? raw[0] : raw) || url.searchParams.get('term') || '').trim()
   const text = await readBody(req)
+  if (text === 'too-large') {
+    res.writeHead(413, { Connection: 'close' })
+    res.end()
+    return
+  }
   if (text === null || !id) return reply(res, 400)
   let body: unknown = null
   if (text.trim()) {

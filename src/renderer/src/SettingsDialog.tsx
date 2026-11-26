@@ -202,6 +202,7 @@ function DraftInput(p: {
 
 interface HooksState {
   installed: boolean
+  outdated: boolean
   path: string
   config: object
 }
@@ -214,7 +215,7 @@ function ClaudeHooksRow(): JSX.Element {
 
   const load = async (): Promise<void> => {
     const r = await window.api.getClaudeHooks()
-    if (r.ok) setState({ installed: r.installed, path: r.path, config: r.config })
+    if (r.ok) setState({ installed: r.installed, outdated: r.outdated, path: r.path, config: r.config })
     else setMsg({ text: r.error, error: true })
   }
 
@@ -224,7 +225,7 @@ function ClaudeHooksRow(): JSX.Element {
       .getClaudeHooks()
       .then((r) => {
         if (!alive) return
-        if (r.ok) setState({ installed: r.installed, path: r.path, config: r.config })
+        if (r.ok) setState({ installed: r.installed, outdated: r.outdated, path: r.path, config: r.config })
         else setMsg({ text: r.error, error: true })
       })
       .catch((e) => alive && setMsg({ text: String(e), error: true }))
@@ -264,11 +265,11 @@ function ClaudeHooksRow(): JSX.Element {
     <div className="field">
       <span>Claude Code hooks</span>
       <div className="settings-path">
-        <span className="hint">{state ? (state.installed ? 'Installed' : 'Not installed') : 'Checking…'}</span>
+        <span className="hint">{state ? (state.installed ? 'Installed' : state.outdated ? 'Installed (outdated) – Reinstall' : 'Not installed') : 'Checking…'}</span>
         <button className="btn" disabled={busy || !state} onClick={() => void run('install')}>
-          {state?.installed ? 'Reinstall' : 'Install'}
+          {state?.installed || state?.outdated ? 'Reinstall' : 'Install'}
         </button>
-        <button className="btn" disabled={busy || !state?.installed} onClick={() => void run('remove')}>
+        <button className="btn" disabled={busy || !(state?.installed || state?.outdated)} onClick={() => void run('remove')}>
           Remove
         </button>
         <button className="btn" disabled={!state} onClick={() => void copy()}>

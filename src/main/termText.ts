@@ -122,3 +122,11 @@ export function findMarkers(
   const e = endRe.exec(buf)
   return { begin, end: e ? { index: e.index, code: Number(e[1]), abnormal: e[2] === 'x' } : null }
 }
+
+// Replies the terminal emulator itself writes to the pty: focus in/out, cursor position, DA1/DA2, OSC 4/10/11 colors.
+const TERMINAL_REPLY_RE = /^(?:\u001b\[[IO]|\u001b\[\d+;\d+R|\u001b\[[?>][\d;]*c|\u001b\](?:1[01]|4);[^\u0007\u001b]*(?:\u0007|\u001b\\))+$/
+
+/** True when `data` is only terminal-generated replies, not something the user typed. */
+export function isTerminalReply(data: string): boolean {
+  return TERMINAL_REPLY_RE.test(data)
+}

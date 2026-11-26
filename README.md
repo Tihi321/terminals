@@ -99,7 +99,7 @@ Tabs that run an agent show a live status, so you can see from the tab bar and t
 ### Where the status comes from
 
 1. **Reports** (exact): [Claude Code hooks](#claude-code-hooks), the MCP tool `report_status { state, terminal? }`, or `POST /status` (below). Once a tab has received any report, the heuristic is off for that tab until a SessionEnd report or the shell exits.
-2. **Heuristic** (fallback): the main process reads each terminal's ANSI-stripped output. A tab only gets a status once known agent text shows up in it. After that, new output means working, about 3 s of quiet after working means done, and a known permission prompt means needs-you. Output right after you typed (300 ms) or after a resize (700 ms) is ignored, and a shell prompt coming back (OSC 7 or OSC 9;9) drops the agent state.
+2. **Heuristic** (fallback): the main process reads each terminal's ANSI-stripped output. A tab only gets a status once known agent text shows up in it. After that, new output means working, about 3 s of quiet after working means done, and a known permission prompt means needs-you. Output right after you typed (300 ms) or after a resize (700 ms) is ignored, and a shell prompt coming back (OSC 7 or OSC 9;9, or the stock `PS C:\x>` / `C:\x>` prompt at the end of the output) drops the agent state. Turning the heuristic off clears the states it set within a second; reported states stay.
 
 The heuristic rules are one small table, `AGENT_RULES` in `src/main/agentStatus.ts`. Only Claude Code ships:
 
@@ -113,34 +113,34 @@ Add an entry (`agent`, `detect`, `needsYou`) to teach it another agent. Turn the
 
 Settings > Agent status > "Claude Code hooks" has three buttons:
 
-- **Install** writes the hooks to `~/.claude/settings.json` (`%CLAUDE_CONFIG_DIR%\settings.json` when that variable is set) and writes the script `status-hook.cmd` into the data directory (`%APPDATA%\terminals`). The previous settings file is copied to `settings.json.terminals-backup` first. Installing twice changes nothing, and your other settings and hooks are left alone. An invalid settings file is reported and never overwritten.
-- **Remove** takes out only the hooks that point at `status-hook.cmd`, with the same backup. The script stays on disk, harmless.
+- **Install** writes the hooks to `~/.claude/settings.json` (`%CLAUDE_CONFIG_DIR%\settings.json` when that variable is set) and writes the script `status-hook.cmd` into the data directory (`%APPDATA%\terminals`). The settings file is copied to `settings.json.terminals-backup` first, only when that backup does not exist yet, so it keeps your original through Install and Remove (delete it to take a fresh one). A UTF-8 BOM at the start of the settings file is dropped when it is rewritten. Installing twice changes nothing, and your other settings and hooks are left alone. An invalid settings file is reported and never overwritten.
+- **Remove** takes out only the hooks that point at `status-hook.cmd`, with the same backup rule. The script stays on disk, harmless.
 - **Copy JSON** puts the same config on the clipboard, with the absolute script path, to paste by hand. It does not write the script, so click Install once first.
 
-Nothing is written to `~/.claude/settings.json` without a click. While the hooks are installed, the app rewrites `status-hook.cmd` at start, which keeps it current after an update or a changed `--data-dir`. Hooks are user-level only; project `.claude/settings.json` is never edited.
+Nothing is written to `~/.claude/settings.json` without a click. While the hooks are installed, the app rewrites `status-hook.cmd` at start, which keeps the script itself current. The hook entries in `settings.json` hold the absolute script path and the event list, so after an update that adds events (PreToolUse was added later) or a changed `--data-dir`, Settings shows "Installed (outdated) - Reinstall"; click Reinstall. Hooks are user-level only; project `.claude/settings.json` is never edited.
 
-The config has this shape (`<dir>` is your data directory; PostToolUse and PermissionRequest also carry `"matcher": "*"`):
+The config (the script path is in your data directory; PreToolUse, PostToolUse and PermissionRequest also carry `"matcher": "*"`):
 
 ```json
 {
   "hooks": {
-    "SessionStart":      [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "<dir>\\status-hook.cmd"], "timeout": 5 }] }],
-    "UserPromptSubmit":  [ "same entry" ],
-    "PostToolUse":       [ "same entry, with matcher *" ],
-    "PermissionRequest": [ "same entry, with matcher *" ],
-    "Notification":      [ "same entry" ],
-    "Stop":              [ "same entry" ],
-    "SessionEnd":        [ "same entry" ]
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
+    "PreToolUse": [{  "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
+    "PostToolUse": [{  "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
+    "PermissionRequest": [{  "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }]
   }
 }
 ```
-
 Every event runs the same script, which POSTs the hook's own stdin JSON to `/status`; the mapping lives in the app:
 
 | Event | Status |
 | --- | --- |
 | SessionStart | idle (the tab now counts as reporting) |
-| UserPromptSubmit, PostToolUse | working |
+| UserPromptSubmit, PreToolUse, PostToolUse | working |
 | PermissionRequest, Notification with `notification_type: permission_prompt` | needs-you |
 | Stop | done |
 | SessionEnd | cleared, the heuristic takes over again |
@@ -154,13 +154,13 @@ Why exec form (`cmd.exe` with `args`) and not a shell command: on Windows Claude
 
 ### `POST /status`
 
-A plain HTTP endpoint next to `/mcp`, for the hooks and for any script. Send the token and the terminal id (header `X-Terminals-Term: <id>`, or `?term=<id>`; it is the terminal's `TERMINALS_TERM_ID`), plus either a hook event JSON body (up to 64 KiB) or `?state=working|done|needs-you|idle`:
+A plain HTTP endpoint next to `/mcp`, for the hooks and for any script. Send the token and the terminal id (header `X-Terminals-Term: <id>`, or `?term=<id>`; it is the terminal's `TERMINALS_TERM_ID`), plus either a hook event JSON body (up to 4 MiB; larger gets 413) or `?state=working|done|needs-you|idle`:
 
 ```
 curl.exe -s -X POST "$env:TERMINALS_STATUS_URL?state=done" -H "Authorization: Bearer $env:TERMINALS_MCP_TOKEN" -H "X-Terminals-Term: $env:TERMINALS_TERM_ID"
 ```
 
-It always answers with an empty body: 204 on success or for an ignored event, 400 for a missing terminal id, a bad body or a bad `state`, 404 for an unknown terminal, 405 for anything but POST, and 401 / 403 as for `/mcp`.
+Apart from 401 / 403 it always answers with an empty body: 204 on success or for an ignored event, 400 for a missing terminal id, a bad body or a bad `state`, 404 for an unknown terminal, 405 for anything but POST, 413 for a body over the cap, and 401 / 403 as for `/mcp`. Those two (401 / 403) carry a small JSON-RPC error body, like `/mcp`, not an empty one.
 
 ## MCP server
 

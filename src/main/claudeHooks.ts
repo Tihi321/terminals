@@ -4,7 +4,7 @@ import { app } from 'electron'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { claudeHooksConfig, hookScript, hooksInstalled, HOOK_SCRIPT_NAME, mergeClaudeHooks, type ClaudeSettings } from '../shared/claudeHooks'
+import { claudeHooksConfig, hookScript, hooksInstalled, hooksPresent, HOOK_SCRIPT_NAME, mergeClaudeHooks, type ClaudeSettings } from '../shared/claudeHooks'
 import type { Result } from '../shared/types'
 
 export function settingsPath(): string {
@@ -36,7 +36,8 @@ function readSettings(): Result<{ settings: ClaudeSettings }> {
   const file = settingsPath()
   let text: string
   try {
-    text = readFileSync(file, 'utf8')
+    // A UTF-8 BOM would make JSON.parse fail; it is dropped here and not written back.
+    text = readFileSync(file, 'utf8').replace(/^﻿/, '')
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, settings: {} }
     return { ok: false, error: `Could not read ${file}: ${e instanceof Error ? e.message : String(e)}` }
@@ -51,10 +52,11 @@ function readSettings(): Result<{ settings: ClaudeSettings }> {
   }
 }
 
-export function getHooks(): Result<{ installed: boolean; path: string; scriptPath: string; config: object }> {
+export function getHooks(): Result<{ installed: boolean; outdated: boolean; path: string; scriptPath: string; config: object }> {
   const r = readSettings()
   if (!r.ok) return r
-  return { ok: true, installed: hooksInstalled(r.settings), path: settingsPath(), scriptPath: scriptPath(), config: claudeHooksConfig(scriptPath()) }
+  const installed = hooksInstalled(r.settings, scriptPath())
+  return { ok: true, installed, outdated: !installed && hooksPresent(r.settings), path: settingsPath(), scriptPath: scriptPath(), config: claudeHooksConfig(scriptPath()) }
 }
 
 function change(mode: 'install' | 'remove'): Result<{ installed: boolean; path: string; backup: string | null }> {
@@ -67,10 +69,11 @@ function change(mode: 'install' | 'remove'): Result<{ installed: boolean; path: 
     let backup: string | null = null
     if (existsSync(file)) {
       backup = file + '.terminals-backup'
-      copyFileSync(file, backup)
+      // Keep the first backup: it is the user's original, which Install then Remove must not overwrite.
+      if (!existsSync(backup)) copyFileSync(file, backup)
     } else mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, JSON.stringify(next, null, 2) + '\n')
-    return { ok: true, installed: hooksInstalled(next), path: file, backup }
+    return { ok: true, installed: hooksInstalled(next, scriptPath()), path: file, backup }
   } catch (e) {
     return { ok: false, error: `Could not write ${file}: ${e instanceof Error ? e.message : String(e)}` }
   }

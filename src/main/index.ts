@@ -21,6 +21,7 @@ import type { GitDiffRequest, LoginItemState } from '../shared/types'
 import { startMcpServer, type McpInfo } from './mcp'
 import { locationById, ToolError } from './mcpTools'
 import { TerminalHost } from './terminalHost'
+import { isTerminalReply } from './termText'
 import * as claudeHooks from './claudeHooks'
 
 // Must run before app is ready: lets tests/dev runs use an isolated data directory.
@@ -690,7 +691,7 @@ function registerIpc(): void {
   ipcMain.on('pty:write', (e, id: string, data: string) => {
     if (!ownsPty(e.sender.id, id)) return
     ptys.get(id)?.write(String(data))
-    host.input(id)
+    if (!isTerminalReply(String(data))) host.input(id)
   })
   ipcMain.on('pty:resize', (e, id: string, cols: number, rows: number) => {
     if (!ownsPty(e.sender.id, id)) return

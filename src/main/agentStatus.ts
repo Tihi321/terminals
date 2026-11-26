@@ -31,6 +31,8 @@ export const QUIET_MS = 3000
 const TAIL_CAP = 4096
 // OSC 9;9 (ConPTY cwd) or OSC 7 (file cwd): the shell printed a prompt, so the agent program has exited.
 const PROMPT_OSC_RE = /\u001b\](?:9;9;|7;)/
+// Stock shells without cwd OSC: the ANSI-stripped tail ends with the default prompt (pwsh/powershell `PS C:\x> `, cmd `C:\x>`).
+const SHELL_PROMPT_RES = [/(^|\n)PS [^\n]*> ?$/, /(^|\n)[A-Za-z]:\\[^\n]*> ?$/]
 
 export class AgentStatusTracker {
   private agent: string | null = null
@@ -65,6 +67,7 @@ export class AgentStatusTracker {
   output(chunk: string, now: number): boolean {
     if (this.reported || !this.heuristics()) return false
     return this.mutate(now, () => {
+      const promptShown = (): boolean => SHELL_PROMPT_RES.some((re) => re.test(this.tail))
       if (this.agent !== null && PROMPT_OSC_RE.test(chunk)) {
         this.clear()
         return
@@ -74,9 +77,18 @@ export class AgentStatusTracker {
       if (this.agent === null) {
         const rule = AGENT_RULES.find((r) => r.detect.test(this.tail))
         if (!rule) return
+        // Marker text in plain output (e.g. cat README.md) with the prompt back in the same chunk: not an agent.
+        if (promptShown()) {
+          this.clear()
+          return
+        }
         this.agent = rule.agent
         this.status = 'idle'
         this.source = 'heuristic'
+      }
+      if (promptShown()) {
+        this.clear()
+        return
       }
       if (now - this.lastInputAt < ECHO_MS || now - this.lastResizeAt < RESIZE_MS) return
       const rule = AGENT_RULES.find((r) => r.agent === this.agent)
@@ -102,6 +114,11 @@ export class AgentStatusTracker {
   }
 
   tick(now: number): boolean {
+    if (!this.heuristics()) {
+      // Heuristics turned off: drop what they set; reported statuses stay.
+      if (this.agent === null || this.reported) return false
+      return this.mutate(now, () => this.clear())
+    }
     if (this.agent === null || this.source !== 'heuristic' || this.status !== 'working') return false
     if (now - this.lastOutputAt < QUIET_MS) return false
     return this.mutate(now, () => {

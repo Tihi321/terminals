@@ -18,7 +18,7 @@ import { AgentStatusTracker, QUIET_MS } from './agentStatus'
 import { statusFromHookEvent } from '../shared/agentStatus'
 import { hookScript, mergeClaudeHooks } from '../shared/claudeHooks'
 import { cleanTermTitle } from '../shared/termTitle'
-import { buildRunInput, findMarkers, toLines } from './termText'
+import { buildRunInput, findMarkers, isTerminalReply, toLines } from './termText'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
 import { applyOrder, moveId, shiftId } from '../shared/order'
 import { activateIn, moveTab, reconcileActive, shiftTab } from '../shared/tabs'
@@ -303,6 +303,10 @@ function checkAgentStatus(): CheckResult {
   const t = new AgentStatusTracker()
   const st = (): string | null => t.get()?.status ?? null
   let now = 1_000_000
+  // Marker text and the stock pwsh prompt in one chunk (e.g. Get-Content README.md) is not an agent.
+  t.output('\r\nesc to interrupt\r\nPS C:\\a> ', now)
+  if (t.get() !== null) return fail('marker text followed by a pwsh prompt must not give a status')
+  now += 1000
   t.output('PS C:\\a> dir\r\n', now)
   if (t.get() !== null) return fail('plain output must not give a status')
   now += 2000
@@ -317,6 +321,8 @@ function checkAgentStatus(): CheckResult {
   t.output('\r\n Do you want to proceed?\r\n', now)
   if (st() !== 'needs-you') return fail('permission prompt -> needs-you, got ' + st())
   if (!t.input(now + 1) || st() !== 'idle') return fail('input must clear needs-you, got ' + st())
+  t.output('\r\nPS C:\\a> ', now + 500)
+  if (t.get() !== null) return fail('a stock pwsh prompt must clear a heuristic status, got ' + st())
   now += 1000
   t.report({ kind: 'set', status: 'done' }, now)
   t.output('esc to interrupt', now + 1000)
@@ -329,9 +335,13 @@ function checkAgentStatus(): CheckResult {
     ev({ hook_event_name: 'PermissionRequest' }) !== set('needs-you') ||
     ev({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }) !== set('needs-you') ||
     ev({ hook_event_name: 'Notification', notification_type: 'idle_prompt' }) !== JSON.stringify({ kind: 'ignore' }) ||
-    ev({ hook_event_name: 'UserPromptSubmit' }) !== set('working')
+    ev({ hook_event_name: 'UserPromptSubmit' }) !== set('working') ||
+    ev({ hook_event_name: 'PreToolUse' }) !== set('working') ||
+    ev({ hook_event_name: 'PostToolUse' }) !== set('working')
   )
     return fail('statusFromHookEvent mapping')
+  if (!isTerminalReply('\u001b[I') || !isTerminalReply('\u001b[12;3R') || isTerminalReply('a\u001b[I') || isTerminalReply('\r'))
+    return fail('isTerminalReply')
   const script = 'C:\\data\\status-hook.cmd'
   const mine = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] }, model: 'opus' }
   const once = mergeClaudeHooks(mine, 'install', script)
