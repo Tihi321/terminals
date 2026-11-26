@@ -1077,8 +1077,8 @@ export function Sidebar(p: Props): JSX.Element {
             ]
             const work = entries.filter((e) => e.working)
             const idle = entries.filter((e) => !e.working)
-            // Forced open while the selection is in it, so the selected row stays visible.
-            const idleShown = !p.idleCollapsed || idle.some((e) => e.sel)
+            // The toggle always wins, even when the selection is inside: a forced-open section could never be collapsed.
+            const idleShown = !p.idleCollapsed
             return (
               <div
                 className="standalone"
