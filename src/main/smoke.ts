@@ -322,8 +322,9 @@ function checkAgentStatus(): CheckResult {
   if (st() !== 'needs-you') return fail('permission prompt -> needs-you, got ' + st())
   if (!t.input(now + 1) || st() !== 'idle') return fail('input must clear needs-you, got ' + st())
   t.output('\r\nPS C:\\a> ', now + 500)
-  if (t.get() !== null) return fail('a stock pwsh prompt must clear a heuristic status, got ' + st())
-  now += 1000
+  if (t.get() === null || t.tick(now + 1000)) return fail('a prompt must not clear before it has been the tail for 1 s')
+  if (!t.tick(now + 1500) || t.get() !== null) return fail('a stock pwsh prompt left as the tail for 1 s must clear, got ' + st())
+  now += 2000
   t.report({ kind: 'set', status: 'done' }, now)
   t.output('esc to interrupt', now + 1000)
   if (st() !== 'done' || t.get()?.source !== 'report') return fail('a report must beat the heuristic, got ' + st())
@@ -340,7 +341,8 @@ function checkAgentStatus(): CheckResult {
     ev({ hook_event_name: 'PostToolUse' }) !== set('working')
   )
     return fail('statusFromHookEvent mapping')
-  if (!isTerminalReply('\u001b[I') || !isTerminalReply('\u001b[12;3R') || isTerminalReply('a\u001b[I') || isTerminalReply('\r'))
+  if (!isTerminalReply('\u001b[I') || !isTerminalReply('\u001b[12;3R') || isTerminalReply('a\u001b[I') || isTerminalReply('\r') ||
+    isTerminalReply('\u001b[1;2R') || !isTerminalReply('\u001b[?2004;2$y'))
     return fail('isTerminalReply')
   const script = 'C:\\data\\status-hook.cmd'
   const mine = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] }, model: 'opus' }

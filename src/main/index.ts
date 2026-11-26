@@ -747,7 +747,7 @@ if (SMOKE) {
     try {
       // Refresh the hook script after an update or a data-dir change; settings.json itself is never touched here.
       const h = claudeHooks.getHooks()
-      if (h.ok && h.installed) claudeHooks.ensureHookScript()
+      if (h.ok && (h.installed || h.outdated)) claudeHooks.ensureHookScript()
     } catch (e) {
       console.error('Could not refresh the status hook script', e)
     }

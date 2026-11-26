@@ -141,8 +141,10 @@ function reply(res: ServerResponse, status: number): void {
   res.end()
 }
 
-function readBody(req: IncomingMessage): Promise<string | null> {
-  // Resolves 'too-large' (after discarding the rest) when over the cap; null on a read error.
+const TOO_LARGE: unique symbol = Symbol('too-large')
+
+function readBody(req: IncomingMessage): Promise<string | typeof TOO_LARGE | null> {
+  // Resolves TOO_LARGE (after discarding the rest) when over the cap; null on a read error.
   return new Promise((resolvePromise) => {
     const chunks: Buffer[] = []
     let size = 0
@@ -152,7 +154,7 @@ function readBody(req: IncomingMessage): Promise<string | null> {
         chunks.length = 0
         req.removeAllListeners('data')
         req.resume()
-        resolvePromise('too-large')
+        resolvePromise(TOO_LARGE)
         return
       }
       chunks.push(c)
@@ -173,7 +175,7 @@ async function handleStatus(req: IncomingMessage, res: ServerResponse, terminals
   const raw = req.headers[TERM_HEADER]
   const id = ((Array.isArray(raw) ? raw[0] : raw) || url.searchParams.get('term') || '').trim()
   const text = await readBody(req)
-  if (text === 'too-large') {
+  if (text === TOO_LARGE) {
     res.writeHead(413, { Connection: 'close' })
     res.end()
     return

@@ -117,21 +117,21 @@ Settings > Agent status > "Claude Code hooks" has three buttons:
 - **Remove** takes out only the hooks that point at `status-hook.cmd`, with the same backup rule. The script stays on disk, harmless.
 - **Copy JSON** puts the same config on the clipboard, with the absolute script path, to paste by hand. It does not write the script, so click Install once first.
 
-Nothing is written to `~/.claude/settings.json` without a click. While the hooks are installed, the app rewrites `status-hook.cmd` at start, which keeps the script itself current. The hook entries in `settings.json` hold the absolute script path and the event list, so after an update that adds events (PreToolUse was added later) or a changed `--data-dir`, Settings shows "Installed (outdated) - Reinstall"; click Reinstall. Hooks are user-level only; project `.claude/settings.json` is never edited.
+Nothing is written to `~/.claude/settings.json` without a click. While any of the hooks are present (installed or outdated), the app rewrites `status-hook.cmd` at start, which keeps the script itself current. The hook entries in `settings.json` hold the absolute script path and the event list, so after an update that adds events (PreToolUse was added later) or a changed `--data-dir`, Settings shows "Installed (outdated) – Reinstall"; click Reinstall. Hooks are user-level only; project `.claude/settings.json` is never edited.
 
 The config (the script path is in your data directory; PreToolUse, PostToolUse and PermissionRequest also carry `"matcher": "*"`):
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
-    "PreToolUse": [{  "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
-    "PostToolUse": [{  "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
-    "PermissionRequest": [{  "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
-    "Notification": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\Users\you\AppData\Roaming\terminals\status-hook.cmd"], "timeout": 5 }] }]
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }],
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "cmd.exe", "args": ["/d", "/c", "C:\\Users\\you\\AppData\\Roaming\\terminals\\status-hook.cmd"], "timeout": 5 }] }]
   }
 }
 ```

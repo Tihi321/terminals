@@ -28,6 +28,8 @@ export const ECHO_MS = 300
 export const RESIZE_MS = 700
 /** A heuristic-working tab with no output for this long counts as done. */
 export const QUIET_MS = 3000
+/** A shell-prompt-looking tail must persist this long before a heuristic status is cleared. */
+export const PROMPT_CONFIRM_MS = 1000
 const TAIL_CAP = 4096
 // OSC 9;9 (ConPTY cwd) or OSC 7 (file cwd): the shell printed a prompt, so the agent program has exited.
 const PROMPT_OSC_RE = /\u001b\](?:9;9;|7;)/
@@ -44,6 +46,7 @@ export class AgentStatusTracker {
   private lastOutputAt = 0
   private lastInputAt = -1e12
   private lastResizeAt = -1e12
+  private promptSeenAt: number | null = null
 
   constructor(private readonly heuristics: () => boolean = () => true) {}
 
@@ -86,10 +89,12 @@ export class AgentStatusTracker {
         this.status = 'idle'
         this.source = 'heuristic'
       }
+      // A prompt-looking tail only counts once it stays the tail for PROMPT_CONFIRM_MS (tick): a working TUI keeps redrawing.
       if (promptShown()) {
-        this.clear()
+        this.promptSeenAt ??= now
         return
       }
+      this.promptSeenAt = null
       if (now - this.lastInputAt < ECHO_MS || now - this.lastResizeAt < RESIZE_MS) return
       const rule = AGENT_RULES.find((r) => r.agent === this.agent)
       if (rule?.needsYou.some((re) => re.test(this.tail))) this.status = 'needs-you'
@@ -104,6 +109,7 @@ export class AgentStatusTracker {
   input(now: number): boolean {
     this.lastInputAt = now
     this.tail = ''
+    this.promptSeenAt = null
     return this.mutate(now, () => {
       if (this.status === 'needs-you') this.status = 'idle'
     })
@@ -118,6 +124,10 @@ export class AgentStatusTracker {
       // Heuristics turned off: drop what they set; reported statuses stay.
       if (this.agent === null || this.reported) return false
       return this.mutate(now, () => this.clear())
+    }
+    if (this.agent !== null && !this.reported && this.promptSeenAt !== null && now - this.promptSeenAt >= PROMPT_CONFIRM_MS) {
+      if (SHELL_PROMPT_RES.some((re) => re.test(this.tail))) return this.mutate(now, () => this.clear())
+      this.promptSeenAt = null
     }
     if (this.agent === null || this.source !== 'heuristic' || this.status !== 'working') return false
     if (now - this.lastOutputAt < QUIET_MS) return false
@@ -154,5 +164,6 @@ export class AgentStatusTracker {
     this.source = 'heuristic'
     this.reported = false
     this.tail = ''
+    this.promptSeenAt = null
   }
 }

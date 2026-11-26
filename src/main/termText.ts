@@ -123,8 +123,23 @@ export function findMarkers(
   return { begin, end: e ? { index: e.index, code: Number(e[1]), abnormal: e[2] === 'x' } : null }
 }
 
-// Replies the terminal emulator itself writes to the pty: focus in/out, cursor position, DA1/DA2, OSC 4/10/11 colors.
-const TERMINAL_REPLY_RE = /^(?:\u001b\[[IO]|\u001b\[\d+;\d+R|\u001b\[[?>][\d;]*c|\u001b\](?:1[01]|4);[^\u0007\u001b]*(?:\u0007|\u001b\\))+$/
+// Replies the terminal emulator itself writes to the pty: focus in/out, cursor position (CPR; `ESC[1;2..8R` is modified F3,
+// so it is input), DECXCPR, DA1/DA2, DSR, DECRQM, CSI t window reports, OSC 4/10/11 colors, DCS (XTVERSION, DECRQSS).
+const TERMINAL_REPLY_RE = new RegExp(
+  '^(?:' +
+    [
+      '\\u001b\\[[IO]',
+      '\\u001b\\[(?!1;[2-8]R)\\d+;\\d+R',
+      '\\u001b\\[\\?\\d+;\\d+(?:;\\d+)?R',
+      '\\u001b\\[[?>][\\d;]*c',
+      '\\u001b\\[[03]n',
+      '\\u001b\\[\\??\\d+;\\d+\\$y',
+      '\\u001b\\[\\d+;\\d+;\\d+t',
+      '\\u001b\\](?:1[01]|4);[^\\u0007\\u001b]*(?:\\u0007|\\u001b\\\\)',
+      '\\u001bP[^\\u001b]*\\u001b\\\\'
+    ].join('|') +
+    ')+$'
+)
 
 /** True when `data` is only terminal-generated replies, not something the user typed. */
 export function isTerminalReply(data: string): boolean {
