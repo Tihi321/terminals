@@ -31,11 +31,36 @@ export interface StatusRollup {
   needsYou: number
   done: number
   working: number
-  /** "<tab title>: <label>" per non-idle tab. */
-  items: string[]
+  /** One entry per non-idle tab; `since` is when its status last changed. */
+  items: { title: string; status: AgentStatus; since?: number }[]
 }
 
-export function rollupOf(entries: { status: AgentStatus; title: string }[]): StatusRollup | undefined {
+/** "just now", "2m ago", "3h ago", "1d ago". */
+export function formatAgo(since: number, now: number): string {
+  const d = Math.max(0, now - since)
+  if (d < 60_000) return 'just now'
+  return `${shortAgo(since, now)} ago`
+}
+
+/** Same buckets without " ago" ("now", "2m", "3h", "1d"), for the switcher badge. */
+export function shortAgo(since: number, now: number): string {
+  const d = Math.max(0, now - since)
+  if (d < 60_000) return 'now'
+  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m`
+  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h`
+  return `${Math.floor(d / 86_400_000)}d`
+}
+
+/** "2 need you, 1 done, 3 working" (nonzero parts only; '' when all zero). */
+export function rollupSummary(r: { needsYou: number; done: number; working: number }, sep = ', '): string {
+  const parts: string[] = []
+  if (r.needsYou > 0) parts.push(`${r.needsYou} ${r.needsYou === 1 ? 'needs' : 'need'} you`)
+  if (r.done > 0) parts.push(`${r.done} done`)
+  if (r.working > 0) parts.push(`${r.working} working`)
+  return parts.join(sep)
+}
+
+export function rollupOf(entries: { status: AgentStatus; title: string; since?: number }[]): StatusRollup | undefined {
   let out: StatusRollup | undefined
   for (const e of entries) {
     if (e.status === 'idle') continue
@@ -44,7 +69,7 @@ export function rollupOf(entries: { status: AgentStatus; title: string }[]): Sta
     else if (e.status === 'done') out.done++
     else out.working++
     if (out.top === null || STATUS_PRIORITY[e.status] > STATUS_PRIORITY[out.top]) out.top = e.status
-    out.items.push(`${e.title}: ${STATUS_LABEL[e.status]}`)
+    out.items.push({ title: e.title, status: e.status, since: e.since })
   }
   return out
 }

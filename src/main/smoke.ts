@@ -15,8 +15,9 @@ import { contextLocation, findLocation, locationsPayload, planCommand, planPromp
 import { hostAllowed, startMcpServer, tokenMatches } from './mcp'
 import { TerminalHost } from './terminalHost'
 import { AgentStatusTracker, QUIET_MS } from './agentStatus'
-import { statusFromHookEvent } from '../shared/agentStatus'
-import { hookScript, mergeClaudeHooks } from '../shared/claudeHooks'
+import { statusFromHookEvent, formatAgo, rollupSummary } from '../shared/agentStatus'
+import { classifyHookTest, hookScript, mergeClaudeHooks } from '../shared/claudeHooks'
+import { runHookTest } from './hookTest'
 import { cleanTermTitle } from '../shared/termTitle'
 import { buildRunInput, findMarkers, isTerminalReply, toLines } from './termText'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
@@ -288,19 +289,20 @@ function checkTabs(): CheckResult {
 /** Check: switcher query parsing, fuzzy ranking, status filtering (chip and prefix) and the worst-first rollup. */
 function checkSwitcher(): CheckResult {
   const fail = (m: string): CheckResult => ({ ok: false, msg: 'switcher: ' + m })
-  const tab = (order: number, folder: string, title: string, status: SwitcherItem['status']): SwitcherItem => ({
-    key: 'tab:' + order, kind: 'tab', locId: folder, tabId: String(order), folder, title, status, order
+  const tab = (order: number, folder: string, title: string, status: SwitcherItem['status'], lastUsed?: number): SwitcherItem => ({
+    key: 'tab:' + order, kind: 'tab', locId: folder, tabId: String(order), folder, title, status, order, lastUsed
   })
   const loc = (order: number, folder: string, status: SwitcherItem['status']): SwitcherItem => ({
     key: 'loc:' + folder, kind: 'loc', locId: folder, folder, title: '', status, order
   })
   const items = [
     tab(0, 'api', 'Claude', 'needs-you'),
-    tab(1, 'web', 'Agent 1', 'working'),
+    tab(1, 'web', 'Agent 1', 'working', 1000),
     tab(2, 'api', 'pwsh', 'idle'),
     tab(3, 'api', 'cool log', 'done'),
     loc(4, 'docs', undefined),
-    loc(5, 'web', 'working')
+    loc(5, 'web', 'working'),
+    tab(6, 'api', 'build', 'working', 2000)
   ]
   const names = (l: SwitcherItem[]): string => l.map((i) => (i.kind === 'tab' ? `${i.folder}/${i.title}` : i.folder)).join('|')
   const p = parseSwitcherQuery('n: foo')
@@ -313,8 +315,8 @@ function checkSwitcher(): CheckResult {
   const all = rankSwitcher(items, '', null)
   if (all[0].title !== 'Claude' || all[all.length - 1].folder !== 'docs') return fail('empty query order ' + names(all))
   const w = rankSwitcher(items, '', 'working')
-  if (names(w) !== 'web/Agent 1|web') return fail('working chip ' + names(w))
-  if (names(rankSwitcher(items, 'w:', 'done')) !== 'web/Agent 1|web') return fail('prefix should win over the chip')
+  if (names(w) !== 'api/build|web/Agent 1|web') return fail('working chip (most recently used first) ' + names(w))
+  if (names(rankSwitcher(items, 'w:', 'done')) !== 'api/build|web/Agent 1|web') return fail('prefix should win over the chip')
   if (worstStatus(['working', 'done', 'idle']) !== 'done' || worstStatus([]) !== undefined) return fail('worstStatus')
   if (rankSwitcher(items, 'xyz', null).length !== 0) return fail('xyz should match nothing')
   if (tabJumpIndex('Digit3', '3') !== 3 || tabJumpIndex('Digit3', '"') !== 3 || tabJumpIndex('Digit6', '-') !== null || tabJumpIndex('KeyA', 'a') !== null)
@@ -326,7 +328,7 @@ function checkSwitcher(): CheckResult {
       { id: 'm', kind: 'manual', parentId: 'p', children: [] }
     ]
   })
-  if (ru('f1').join() !== 'f1,wt:a' || ru('p').join() !== 'p,child:p:c,wt:c,m,f2') return fail('rollupIdsFor ' + ru('f1').join() + ' / ' + ru('p').join())
+  if (ru('f1').join() !== 'f1' || ru('p').join() !== 'p,child:p:c,wt:c,m,f2') return fail('rollupIdsFor ' + ru('f1').join() + ' / ' + ru('p').join())
   return { ok: true, msg: 'switcher: query prefix, fuzzy order, status chip/prefix filter and worst-first rollup behave' }
 }
 
@@ -395,6 +397,9 @@ function checkAgentStatus(): CheckResult {
   if (!isTerminalReply('\u001b[I') || !isTerminalReply('\u001b[12;3R') || isTerminalReply('a\u001b[I') || isTerminalReply('\r') ||
     isTerminalReply('\u001b[1;2R') || !isTerminalReply('\u001b[?2004;2$y'))
     return fail('isTerminalReply')
+  if (formatAgo(0, 30_000) !== 'just now' || formatAgo(0, 125_000) !== '2m ago' || formatAgo(0, 2 * 3_600_000) !== '2h ago')
+    return fail('formatAgo buckets')
+  if (rollupSummary({ needsYou: 2, done: 1, working: 0 }) !== '2 need you, 1 done') return fail('rollupSummary')
   const script = 'C:\\data\\status-hook.cmd'
   const mine = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] }, model: 'opus' }
   const once = mergeClaudeHooks(mine, 'install', script)
@@ -1204,9 +1209,20 @@ async function checkMcpHttp(dir: string, track: (p: IPty) => void): Promise<Chec
       child.stdin.end('{"hook_event_name":"UserPromptSubmit"}')
     })
     if (hook.code !== 0 || hook.stdout !== '' || statusOf() !== 'working') return fail(`status-hook.cmd: exit ${hook.code}, stdout ${JSON.stringify(hook.stdout)}, status ${statusOf()}`)
+    // Settings > Test: the real script with a hooktest: id must succeed without touching the live tab, and a wrong token must say 401.
+    const hooksOn = { installed: true, outdated: false }
+    const okTest = await runHookTest({ scriptPath: script, statusUrl: info.statusUrl, token: info.token, hooks: hooksOn })
+    if (!okTest.ok || statusOf() !== 'working') return fail(`hook test: ${JSON.stringify(okTest)}, real tab status ${statusOf()} (must stay working)`)
+    const badTest = await runHookTest({ scriptPath: script, statusUrl: info.statusUrl, token: 'wrong', hooks: hooksOn })
+    if (badTest.ok || badTest.kind !== 'unauthorized') return fail('hook test with a wrong token: ' + JSON.stringify(badTest))
+    const unknownId = await post({ Authorization: `Bearer ${info.token}`, 'X-Terminals-Term': 'hooktest:nobody' }, '{"hook_event_name":"Stop"}')
+    if (unknownId.status !== 404) return fail(`/status for an unregistered hooktest id: HTTP ${unknownId.status}, want 404`)
+    const noCurl = classifyHookTest({ installed: true, outdated: false, scriptExists: true, scriptCurrent: true, serverUp: true, curlFound: false })
+    const noInst = classifyHookTest({ installed: false, outdated: false, scriptExists: true, scriptCurrent: true, serverUp: true })
+    if (noCurl.ok || noCurl.kind !== 'curl-missing' || noInst.ok || noInst.kind !== 'not-installed') return fail('classifyHookTest kinds ' + JSON.stringify([noCurl, noInst]))
     const closed = await call('close_terminal', { id: o.id })
     if (closed.isError || host.list().length) return fail('close_terminal ' + closed.text)
-    return { ok: true, msg: 'mcp http: toggle off refuses run_command but list_terminals works; toggle on opens under Home, runs hi / exit 0, closes; POST /status (token required, 204 empty), report_status and the real status-hook.cmd set the tab status' }
+    return { ok: true, msg: 'mcp http: hook Test OK leaves the live tab untouched and a wrong token reports unauthorized; toggle off refuses run_command but list_terminals works; toggle on opens under Home, runs hi / exit 0, closes; POST /status (token required, 204 empty), report_status and the real status-hook.cmd set the tab status' }
   } catch (e) {
     return fail(String(e))
   } finally {

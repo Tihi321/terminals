@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { Folder, Search, SquareTerminal } from 'lucide-react'
-import { STATUS_LABEL } from '../../shared/agentStatus'
+import { STATUS_LABEL, rollupSummary, shortAgo, formatAgo } from '../../shared/agentStatus'
+import { useMinute } from './useMinute'
 import type { AgentStatus } from '../../shared/agentStatus'
 import { rankSwitcher } from '../../shared/switcher'
 import type { StatusFilter, SwitcherItem } from '../../shared/switcher'
@@ -26,17 +27,27 @@ const EMPTY: Record<AgentStatus, string> = {
   idle: 'No tabs are idle.'
 }
 
-function Badge({ status }: { status: AgentStatus }): JSX.Element {
+function Badge({ it, status, now }: { it: SwitcherItem; status: AgentStatus; now: number }): JSX.Element {
+  let text = STATUS_LABEL[status]
+  let title = STATUS_LABEL[status]
+  if (it.kind === 'tab' && it.since !== undefined) {
+    text = `${STATUS_LABEL[status]} · ${shortAgo(it.since, now)}`
+    title = `${STATUS_LABEL[status]}, ${formatAgo(it.since, now)}`
+  } else if (it.kind === 'loc' && it.counts) {
+    text = rollupSummary(it.counts, ' · ')
+    title = rollupSummary(it.counts)
+  }
   return (
-    <span className={`switcher-status ${status}`} title={STATUS_LABEL[status]}>
+    <span className={`switcher-status ${status}`} title={title}>
       <span className={`agent-ind ${status}`}>{status === 'needs-you' ? '!' : null}</span>
-      {STATUS_LABEL[status]}
+      {text}
     </span>
   )
 }
 
 /** Ctrl+Shift+K (and Ctrl+K outside a terminal): jump to any open tab or folder. Structure follows SnippetPicker. */
 export function QuickSwitcher({ items, onPick, onClose }: Props): JSX.Element {
+  const now = useMinute()
   const [q, setQ] = useState('')
   const [chip, setChip] = useState<StatusFilter>(null)
   const [idx, setIdx] = useState(0)
@@ -122,7 +133,7 @@ export function QuickSwitcher({ items, onPick, onClose }: Props): JSX.Element {
                 </div>
                 {it.kind === 'loc' && it.title && <div className="cmd-sub">{it.title}</div>}
               </div>
-              {it.status && <Badge status={it.status} />}
+              {it.status && <Badge it={it} status={it.status} now={now} />}
             </div>
           ))}
         </div>

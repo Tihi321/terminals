@@ -1099,6 +1099,19 @@ export function App(): JSX.Element {
     return f
   }, [tabs])
 
+  // Quick-switcher MRU: when each tab was last shown or focused (runtime only, never saved). The current tab is marked at read time.
+  const usedAt = useRef<Record<string, number>>({})
+  const prevActive = useRef<Set<string>>(new Set())
+  const curPaneId = paneState?.panes[paneState.focused]?.id
+  useEffect(() => {
+    const now = Date.now()
+    const cur = new Set(Object.values(activeRef.current))
+    for (const id of cur) if (!prevActive.current.has(id)) usedAt.current[id] = now
+    const focusedTab = curPaneId ? activeRef.current[curPaneId] : undefined
+    if (focusedTab) usedAt.current[focusedTab] = now
+    prevActive.current = cur
+  }, [activeKey, curPaneId])
+
   // Agent status per shell tab (non-idle only), its source for the tooltip, and the per-location roll-up for the sidebar.
   const tabStatus = useMemo(() => {
     const m: Record<string, AgentStatus> = {}
@@ -1113,11 +1126,17 @@ export function App(): JSX.Element {
     for (const id of Object.keys(tabStatus)) m[id] = statuses[id].source
     return m
   }, [tabStatus, statuses])
+  /** When each `done` tab became done (for the age shown in tooltips and the switcher). */
+  const tabStatusSince = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const id of Object.keys(tabStatus)) if (tabStatus[id] === 'done') m[id] = statuses[id].since
+    return m
+  }, [tabStatus, statuses])
   const agentByLoc = useMemo(() => {
-    const byLoc: Record<string, { status: AgentStatus; title: string }[]> = {}
+    const byLoc: Record<string, { status: AgentStatus; title: string; since?: number }[]> = {}
     for (const t of tabs) {
       const s = tabStatus[t.id]
-      if (s) (byLoc[t.locId] ??= []).push({ status: s, title: t.title })
+      if (s) (byLoc[t.locId] ??= []).push({ status: s, title: t.title, since: tabStatusSince[t.id] })
     }
     const out: Record<string, StatusRollup> = {}
     for (const [locId, list] of Object.entries(byLoc)) {
@@ -1125,28 +1144,42 @@ export function App(): JSX.Element {
       if (r) out[locId] = r
     }
     return out
-  }, [tabs, tabStatus])
+  }, [tabs, tabStatus, tabStatusSince])
 
   // Quick switcher rows: every tab (tab order), then every folder with a path. A live shell shows its explicit status (an agent shell
-  // defaults to idle so "i:" finds it); command, exited, diff and file tabs show none. A folder row rolls up like the sidebar: the worst
-  // status over its own tabs, its worktrees' tabs and, for a group, its whole subtree.
+  // defaults to idle so "i:" finds it); command, exited, diff and file tabs show none. A folder, child or worktree row is its own tabs only;
+  // a group is itself plus every member and their worktrees through its whole subtree (rollupIdsFor), like the sidebar.
   const switcherItems = useMemo(() => {
     const out: SwitcherItem[] = []
     const byLoc: Record<string, (AgentStatus | undefined)[]> = {}
+    const focusedActiveTabId = curPaneId ? activeRef.current[curPaneId] : undefined
     for (const t of tabs) {
       const own = t.kind === 'shell' && !t.exited && !t.pending ? statuses[t.id]?.status : undefined
       const status: AgentStatus | undefined = own ?? (t.kind === 'shell' && t.agent && !t.exited && !t.pending ? 'idle' : undefined)
       ;(byLoc[t.locId] ??= []).push(status)
-      out.push({ key: `tab:${t.id}`, kind: 'tab', locId: t.locId, tabId: t.id, folder: locs.get(t.locId)?.name ?? '?', title: t.title, status, order: out.length })
+      out.push({
+        key: `tab:${t.id}`, kind: 'tab', locId: t.locId, tabId: t.id, folder: locs.get(t.locId)?.name ?? '?', title: t.title, status, order: out.length,
+        lastUsed: t.id === focusedActiveTabId ? -1 : usedAt.current[t.id],
+        since: status === 'done' ? statuses[t.id]?.since : undefined
+      })
     }
     const idsFor = state ? rollupIdsFor(state) : (id: string): string[] => [id]
     for (const l of locs.values()) {
       if (!l.path || l.missing) continue
-      const status = worstStatus(idsFor(l.id).flatMap((id) => byLoc[id] ?? []))
-      out.push({ key: `loc:${l.id}`, kind: 'loc', locId: l.id, folder: l.name, title: l.path, status, order: out.length })
+      const sts = idsFor(l.id).flatMap((id) => byLoc[id] ?? [])
+      const status = worstStatus(sts)
+      const counts = {
+        needsYou: sts.filter((x) => x === 'needs-you').length,
+        done: sts.filter((x) => x === 'done').length,
+        working: sts.filter((x) => x === 'working').length
+      }
+      out.push({
+        key: `loc:${l.id}`, kind: 'loc', locId: l.id, folder: l.name, title: l.path, status, order: out.length,
+        counts: counts.needsYou + counts.done + counts.working > 0 ? counts : undefined
+      })
     }
     return out
-  }, [tabs, locs, statuses, state])
+  }, [tabs, locs, statuses, state, switcherOpen, curPaneId])
 
   const closeTabsOf = useCallback(
     (ids: string[]) => {
@@ -1437,6 +1470,7 @@ export function App(): JSX.Element {
                         onRename={renameTab}
                         status={tabStatus}
                         statusSource={tabStatusSource}
+                        statusSince={tabStatusSince}
                         onRunAgain={runCommand}
                         onNew={() => newTab(loc.id, undefined, p.id)}
                         onNewAdmin={() => newAdminTab(loc.id, p.id)}

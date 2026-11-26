@@ -132,7 +132,8 @@ const api: TerminalsApi = {
   termSeen: (id) => ipcRenderer.send('term:seen', id),
   getClaudeHooks: () => inv('hooks:get'),
   installClaudeHooks: () => inv('hooks:install'),
-  removeClaudeHooks: () => inv('hooks:remove')
+  removeClaudeHooks: () => inv('hooks:remove'),
+  testClaudeHooks: () => inv('hooks:test')
 }
 
 contextBridge.exposeInMainWorld('api', api)

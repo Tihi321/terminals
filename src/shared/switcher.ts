@@ -20,6 +20,12 @@ export interface SwitcherItem {
   title: string
   /** Tab: its explicit status (a live shell with one; an agent shell defaults to 'idle'); command, exited, diff and file tabs have none. Loc: worstStatus of its tabs. */
   status?: AgentStatus
+  /** Tab only: epoch ms of its last activation; -1 for the tab the user is in (sorts last); absent = never. */
+  lastUsed?: number
+  /** Tab with status 'done' only: epoch ms it became done. */
+  since?: number
+  /** Loc only: tab counts over the same ids the status uses; absent when all zero. */
+  counts?: { needsYou: number; done: number; working: number }
   /** Stable input order (tabs in tab order, then locs in sidebar order). */
   order: number
 }
@@ -81,8 +87,9 @@ export interface RollupState {
   groups: (TreeGroup & { children: RollupWt[] })[]
 }
 
-/** The sidebar's roll-up, as a lookup: for a location id, the ids whose tabs it stands for. A repo row is itself plus its worktrees;
- *  a group is itself plus every member (with worktrees) of its whole subtree (members: folders for a manual group, children otherwise). */
+/** The sidebar's roll-up, as a lookup: for a location id, the ids whose tabs it stands for. A folder, child or worktree row is its own
+ *  tabs only; a group is itself plus every member and their worktrees through its whole subtree (members: folders for a manual group,
+ *  children otherwise). */
 export function rollupIdsFor(state: RollupState): (id: string) => string[] {
   const wts = new Map<string, string[]>()
   for (const f of state.folders) wts.set(f.id, f.worktrees.map((w) => w.id))
@@ -90,7 +97,7 @@ export function rollupIdsFor(state: RollupState): (id: string) => string[] {
   const withWt = (id: string): string[] => [id, ...(wts.get(id) ?? [])]
   return (id) => {
     const sub = subtreeGroupIds(state.groups, id)
-    if (sub.length === 0) return withWt(id)
+    if (sub.length === 0) return [id]
     const out: string[] = []
     for (const gid of sub) {
       const g = state.groups.find((x) => x.id === gid)
@@ -109,7 +116,9 @@ function statusRank(s: AgentStatus | undefined): number {
 
 /** Filter + rank. Status: the query prefix wins over `chip`. A non-null status keeps tab and loc items whose `status` equals it
  *  (for loc items that is the rollup). Text: split on whitespace; every token must match; item score = sum over tokens of the best of
- *  title (+1), folder, and "folder title". Sort: score desc, then tab before loc, then status (needs-you first, none last), then `order`. */
+ *  title (+1), folder, and "folder title". Sort: score desc, then tab before loc, then status (needs-you first, none last), then `order`.
+ *  With no text tokens (empty query or only a status filter) the order is tab before loc, status, most recently used first
+ *  (`lastUsed` desc, absent = 0, the current tab = -1), then `order`. */
 export function rankSwitcher(items: SwitcherItem[], query: string, chip: StatusFilter): SwitcherItem[] {
   const parsed = parseSwitcherQuery(query)
   const status = parsed.status ?? chip
@@ -133,11 +142,13 @@ export function rankSwitcher(items: SwitcherItem[], query: string, chip: StatusF
     }
     if (ok) scored.push({ item, score })
   }
+  const mru = tokens.length === 0
   scored.sort(
     (a, b) =>
       b.score - a.score ||
       (a.item.kind === b.item.kind ? 0 : a.item.kind === 'tab' ? -1 : 1) ||
       statusRank(a.item.status) - statusRank(b.item.status) ||
+      (mru ? (b.item.lastUsed ?? 0) - (a.item.lastUsed ?? 0) : 0) ||
       a.item.order - b.item.order
   )
   return scored.map((s) => s.item)

@@ -57,6 +57,7 @@ export function WorktreeRows(p: {
           locId={w.id}
           missing={w.missing}
           dim={w.missing}
+          locked={w.locked && !w.missing}
           count={p.counts[w.id] ?? 0}
           finished={p.finished[w.id]}
           agent={p.agent[w.id]}

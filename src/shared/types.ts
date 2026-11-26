@@ -1,4 +1,5 @@
 import type { TermStatus } from './agentStatus'
+import type { HookTestResult } from './claudeHooks'
 
 /** Current on-disk schema version. Files without a `version` field are version 1. */
 export const SCHEMA_VERSION = 4
@@ -516,4 +517,6 @@ export interface TerminalsApi {
   getClaudeHooks(): Promise<Result<{ installed: boolean; outdated: boolean; path: string; scriptPath: string; config: object }>>
   installClaudeHooks(): Promise<Result<{ installed: boolean; path: string; backup: string | null }>>
   removeClaudeHooks(): Promise<Result<{ installed: boolean; path: string; backup: string | null }>>
+  /** Runs the installed hook script against the app's /status with a throwaway test id; never changes a tab or any file. */
+  testClaudeHooks(): Promise<HookTestResult>
 }

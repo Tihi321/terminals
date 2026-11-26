@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { HOOK_TEST_PREFIX } from '../shared/claudeHooks'
 import { parseReportedStatus, statusFromHookEvent, type HookOutcome } from '../shared/agentStatus'
 import { TOOLS, ToolError, type ToolContext } from './mcpTools'
 import type { TerminalControl } from './terminalHost'
@@ -23,6 +24,20 @@ const TERM_HEADER = 'x-terminals-term'
 export const STATUS_PATH = '/status'
 const STATUS_BODY_CAP = 4 * 1024 * 1024
 const TOKEN_FILE = 'mcp-token'
+
+type HookTestHit = 'ok' | 'unauthorized' | 'bad-payload'
+/** Settings > Agent status > Test: registered `hooktest:` ids waiting for their request. */
+const hookTests = new Map<string, (hit: HookTestHit) => void>()
+
+/** Registers a test id; `hit` resolves on its first request. Call `dispose` when done. */
+export function expectHookTest(id: string): { hit: Promise<HookTestHit>; dispose(): void } {
+  let resolveHit: (h: HookTestHit) => void = () => {}
+  const hit = new Promise<HookTestHit>((r) => {
+    resolveHit = r
+  })
+  hookTests.set(id, resolveHit)
+  return { hit, dispose: () => void hookTests.delete(id) }
+}
 
 export interface McpInfo {
   url: string
@@ -113,9 +128,14 @@ async function handle(
   if (!hostAllowed(req.headers.host, info.port)) return sendError(res, 403, 'Forbidden: bad Host header')
   // Browsers always send Origin on cross-origin requests; CLI MCP clients do not.
   if (req.headers.origin !== undefined) return sendError(res, 403, 'Forbidden: browser requests are not accepted')
-  if (!tokenMatches(req.headers.authorization, info.token))
-    return sendError(res, 401, 'Unauthorized', { 'WWW-Authenticate': 'Bearer' })
   const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
+  if (!tokenMatches(req.headers.authorization, info.token)) {
+    if (pathname === STATUS_PATH) {
+      const rawId = req.headers[TERM_HEADER]
+      hookTests.get(((Array.isArray(rawId) ? rawId[0] : rawId) || '').trim())?.('unauthorized')
+    }
+    return sendError(res, 401, 'Unauthorized', { 'WWW-Authenticate': 'Bearer' })
+  }
   if (pathname === STATUS_PATH) return handleStatus(req, res, terminals)
   if (pathname !== MCP_PATH) return sendError(res, 404, 'Not found')
   // Stateless JSON-only server: no standalone SSE stream (GET) and no sessions to end (DELETE).
@@ -198,6 +218,13 @@ async function handleStatus(req: IncomingMessage, res: ServerResponse, terminals
   } else {
     if (body === null || typeof body !== 'object') return reply(res, 400)
     outcome = statusFromHookEvent(body)
+  }
+  if (id.startsWith(HOOK_TEST_PREFIX)) {
+    // The Settings Test button: record the hit, never touch a real terminal.
+    const cb = hookTests.get(id)
+    if (!cb) return reply(res, 404)
+    cb(outcome.kind === 'set' && outcome.status === 'done' ? 'ok' : 'bad-payload')
+    return reply(res, 204)
   }
   if (!terminals) return reply(res, 404)
   if (outcome.kind !== 'ignore') {

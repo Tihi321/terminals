@@ -112,3 +112,46 @@ export function hooksInstalled(settings: ClaudeSettings, scriptPath: string): bo
     isOurHook(h) && Array.isArray((h as { args?: unknown }).args) && (h as { args: unknown[] }).args.some((a) => typeof a === 'string' && a.toLowerCase() === want)
   return HOOK_EVENTS.every((e) => eventGroups(settings, e).some((g) => groupHooks(g).some(current)))
 }
+
+/** Term-id prefix the Settings "Test" button uses; the /status handler never forwards these to a real terminal. */
+export const HOOK_TEST_PREFIX = 'hooktest:'
+
+export type HookTestKind =
+  | 'not-installed'
+  | 'outdated'
+  | 'script-missing'
+  | 'script-outdated'
+  | 'server-off'
+  | 'curl-missing'
+  | 'unauthorized'
+  | 'no-request'
+  | 'bad-payload'
+
+export type HookTestResult = { ok: true; ms: number } | { ok: false; kind: HookTestKind; message: string }
+
+export interface HookTestFacts {
+  installed: boolean
+  outdated: boolean
+  scriptExists: boolean
+  scriptCurrent: boolean
+  serverUp: boolean
+  hit?: 'ok' | 'unauthorized' | 'bad-payload'
+  curlFound?: boolean
+  ms?: number
+}
+
+/** Turns what the Test button observed into one result. First match wins. */
+export function classifyHookTest(f: HookTestFacts): HookTestResult {
+  const fail = (kind: HookTestKind, message: string): HookTestResult => ({ ok: false, kind, message })
+  if (!f.installed && !f.outdated) return fail('not-installed', 'Hooks are not installed: click Install.')
+  if (!f.scriptExists) return fail('script-missing', 'status-hook.cmd is missing from the data folder: click Reinstall.')
+  if (!f.scriptCurrent) return fail('script-outdated', 'status-hook.cmd is out of date: click Reinstall.')
+  if (!f.serverUp) return fail('server-off', "The app's local server is not running (see the MCP section), so hooks cannot reach it.")
+  if (f.hit === 'unauthorized') return fail('unauthorized', 'The app answered 401: the token the script sent was not accepted.')
+  if (f.hit === 'bad-payload') return fail('bad-payload', 'The app received the request but did not understand the hook payload.')
+  if (f.hit === undefined && f.curlFound === false) return fail('curl-missing', 'curl.exe was not found on PATH; it ships with Windows 10 and later.')
+  if (f.hit === undefined)
+    return fail('no-request', 'curl ran but no request reached the app (a proxy setting such as HTTP_PROXY without NO_PROXY=127.0.0.1?).')
+  if (f.outdated) return fail('outdated', 'The script reached the app, but the hook entries in settings.json are outdated: click Reinstall.')
+  return { ok: true, ms: f.ms ?? 0 }
+}

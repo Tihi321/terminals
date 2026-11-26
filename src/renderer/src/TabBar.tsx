@@ -7,7 +7,8 @@ import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import type { DiffSpec } from './gitUtil'
 import type { Loc } from './locations'
-import { STATUS_LABEL } from '../../shared/agentStatus'
+import { STATUS_LABEL, formatAgo } from '../../shared/agentStatus'
+import { useMinute } from './useMinute'
 import type { AgentStatus, StatusSource } from '../../shared/agentStatus'
 
 export interface Tab {
@@ -71,6 +72,8 @@ interface Props {
   status: Record<string, AgentStatus>
   /** Where each tab's status came from, for the tooltip. */
   statusSource: Record<string, StatusSource>
+  /** When each `done` tab became done (epoch ms), for the age in its tooltip. */
+  statusSince: Record<string, number>
   onRunAgain: (cmd: Command) => void
   onNew: () => void
   /** Start the default shell elevated (UAC prompt). */
@@ -90,6 +93,7 @@ interface Props {
 
 /** One pane's tab strip: the tabs of a single location plus the new-terminal button. */
 export function TabBar(p: Props): JSX.Element {
+  const now = useMinute()
   const ref = useRef<HTMLDivElement>(null)
 
   const [marker, setMarker] = useState<{ x: number; beforeId: string | null } | null>(null)
@@ -190,7 +194,8 @@ export function TabBar(p: Props): JSX.Element {
         const status = t.kind === 'command' ? t.run?.status : t.exited ? 'exited' : undefined
         const finished = t.kind === 'command' && t.run?.status !== 'running'
         const agentSt = t.kind === 'shell' ? p.status[t.id] : undefined
-        const agentTip = agentSt ? `\nAgent: ${STATUS_LABEL[agentSt]}${p.statusSource[t.id] ? ` (${p.statusSource[t.id]})` : ''}` : ''
+        const doneAgo = agentSt === 'done' && p.statusSince[t.id] !== undefined ? formatAgo(p.statusSince[t.id], now) : ''
+        const agentTip = agentSt ? `\nAgent: ${STATUS_LABEL[agentSt]}${p.statusSource[t.id] ? ` (${p.statusSource[t.id]})` : ''}${doneAgo ? `, ${doneAgo}` : ''}` : ''
         const renamable = t.kind === 'shell' || t.kind === 'command'
         const isRenaming = renaming?.id === t.id
         return (
@@ -244,7 +249,7 @@ export function TabBar(p: Props): JSX.Element {
               </span>
             )}
             {agentSt && (
-              <span className={`agent-ind ${agentSt}`} title={STATUS_LABEL[agentSt]}>
+              <span className={`agent-ind ${agentSt}`} title={doneAgo ? `${STATUS_LABEL[agentSt]}, ${doneAgo}` : STATUS_LABEL[agentSt]}>
                 {agentSt === 'needs-you' ? '!' : null}
               </span>
             )}

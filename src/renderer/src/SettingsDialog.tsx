@@ -255,6 +255,20 @@ function ClaudeHooksRow(): JSX.Element {
     }
   }
 
+  const test = async (): Promise<void> => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await window.api.testClaudeHooks()
+      if (r.ok) setMsg({ text: `Hook test OK: the script reached the app in ${r.ms} ms.`, error: false })
+      else setMsg({ text: r.message, error: true })
+    } catch (e) {
+      setMsg({ text: String(e), error: true })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const copy = async (): Promise<void> => {
     if (!state) return
     try {
@@ -275,6 +289,9 @@ function ClaudeHooksRow(): JSX.Element {
         </button>
         <button className="btn" disabled={busy || !(state?.installed || state?.outdated)} onClick={() => void run('remove')}>
           Remove
+        </button>
+        <button className="btn" disabled={busy || !(state?.installed || state?.outdated)} onClick={() => void test()}>
+          Test
         </button>
         <button className="btn" disabled={!state} onClick={() => void copy()}>
           Copy JSON

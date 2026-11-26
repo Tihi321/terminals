@@ -10,6 +10,7 @@ import {
   Activity,
   Check,
   Eye,
+  Lock,
   EyeOff,
   Folder as FolderIcon,
   FolderGit2,
@@ -45,7 +46,8 @@ import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { LOC_DRAG_TYPE, locDrag } from './TabBar'
 import { childGroups, nestError, nestTarget, removalSet, subtreeGroupIds } from '../../shared/groupTree'
-import { rollupStatus } from '../../shared/agentStatus'
+import { rollupStatus, rollupSummary, formatAgo, STATUS_LABEL } from '../../shared/agentStatus'
+import { useMinute } from './useMinute'
 import type { StatusRollup } from '../../shared/agentStatus'
 
 /** Tabs that have finished (command done, shell exited) but are still open, per location or rolled up. */
@@ -68,9 +70,18 @@ function finishedTitle(f: Finished): string {
 Middle-click to close finished tabs`
 }
 
-function agentTitle(a: StatusRollup): string {
-  const shown = a.items.slice(0, 6).join('\n')
-  return `Agent status\n${shown}${a.items.length > 6 ? '\n…' : ''}`
+/** Row status indicator: a dot, or the orange pill (with the count from 2 up) for needs-you. Subscribes to the minute ticker for done ages. */
+function AgentInd({ a }: { a: StatusRollup }): JSX.Element {
+  const now = useMinute()
+  const lines = a.items
+    .slice(0, 6)
+    .map((i) => `${i.title}: ${STATUS_LABEL[i.status]}${i.status === 'done' && i.since !== undefined ? `, ${formatAgo(i.since, now)}` : ''}`)
+  const title = `Agent status: ${rollupSummary(a)}\n${lines.join('\n')}${a.items.length > 6 ? '\n…' : ''}`
+  return (
+    <span className={`agent-ind ${a.top}`} title={title}>
+      {a.top === 'needs-you' ? (a.needsYou >= 2 ? `${a.needsYou}!` : '!') : null}
+    </span>
+  )
 }
 
 interface Props {
@@ -153,6 +164,8 @@ export interface RowProps {
   missing?: boolean
   dim?: boolean
   pinned?: boolean
+  /** A locked git worktree: shows a lock icon. */
+  locked?: boolean
   count: number
   finished?: Finished
   agent?: StatusRollup
@@ -255,6 +268,11 @@ export function Row(r: RowProps): JSX.Element {
           >
             {r.name}
             {r.pinned && <Pin size={11} strokeWidth={2.25} className="row-pin" />}
+            {r.locked && (
+              <span title="Locked worktree: git refuses to remove it until you run git worktree unlock">
+                <Lock size={11} strokeWidth={2.25} className="row-lock" aria-label="Locked" />
+              </span>
+            )}
           </div>
         )}
         {r.subtitle && !r.editing && (
@@ -265,11 +283,7 @@ export function Row(r: RowProps): JSX.Element {
           </div>
         )}
       </div>
-      {r.agent && r.agent.top && (
-        <span className={`agent-ind ${r.agent.top}`} title={agentTitle(r.agent)}>
-          {r.agent.top === 'needs-you' ? '!' : null}
-        </span>
-      )}
+      {r.agent && r.agent.top && <AgentInd a={r.agent} />}
       {r.finished && r.finished.total > 0 && (
         <span
           className={`fin-dot ${r.finished.failed > 0 ? 'failed' : r.finished.ok > 0 ? 'success' : 'neutral'}`}

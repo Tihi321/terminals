@@ -1,0 +1,1 @@
+- 2026-11-26 implementer: smoke runs log "MCP port 47821 unavailable (EADDRINUSE)" when a dev/stale app holds the port; smoke falls back to a free port, harmless (src/main/smoke.ts) - suggested: none, or note it in README

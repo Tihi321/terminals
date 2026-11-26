@@ -20,7 +20,7 @@ yarn typecheck   # tsc for main/preload/shared and renderer
 yarn smoke       # headless PTY checks inside Electron; prints a PASS line per check, exits 0 (1 on failure)
 ```
 
-`yarn smoke` runs two pty checks: an interactive shell echoing a marker, and a 2-step command (`Write-Output ('a'+'1')` then `exit 3`) whose output must contain `a1` and whose exit code must be 3. It also checks the quick switcher (query parsing, ranking, status roll-up), tab ordering and the worktree helpers, the MCP tool logic, the terminal text helpers (ANSI stripping, run markers), `run_command` against a real PowerShell (output, exit code, persistent state, busy, timeout), and the MCP HTTP endpoint with the "Allow MCP to run commands" toggle off and on. The agent-status checks cover the status state machine (with a fake clock), the hook-event mapping, installing and removing the hooks in a settings object, tab title cleaning, `POST /status` and `report_status` over HTTP, and the real `status-hook.cmd` run through `cmd.exe`.
+`yarn smoke` runs two pty checks: an interactive shell echoing a marker, and a 2-step command (`Write-Output ('a'+'1')` then `exit 3`) whose output must contain `a1` and whose exit code must be 3. It also checks the quick switcher (query parsing, ranking, status roll-up), tab ordering and the worktree helpers, the MCP tool logic, the terminal text helpers (ANSI stripping, run markers), `run_command` against a real PowerShell (output, exit code, persistent state, busy, timeout), and the MCP HTTP endpoint with the "Allow MCP to run commands" toggle off and on. The agent-status checks cover the status state machine (with a fake clock), the hook-event mapping, installing and removing the hooks in a settings object, tab title cleaning, `POST /status` and `report_status` over HTTP, and the real `status-hook.cmd` run through `cmd.exe`. They also cover the relative-time formatter, the most-recently-used switcher order, and the hook Test (the OK path leaves the tab untouched, a wrong token gives 401).
 
 ## Build an .exe
 
@@ -68,6 +68,7 @@ electron . --data-dir=C:\temp\terminals-test --remote-debugging-port=9333
 - If git removes a worktree but cannot delete its folder (usually a file is still in use), the folder is left in place and the dialog shows a message with its path. The app never deletes worktree folders itself; delete it yourself once nothing uses it.
 - A worktree folder whose `.git` file is missing or does not point back at git's entry for it is not listed (security). Run `git worktree repair` (for a moved folder) or `git worktree prune` (for a gone one) to fix it.
 - Parent-group scans hide a `<name>.worktrees` folder when a sibling `<name>` folder exists, so the default container does not appear as a child.
+- Locked worktrees show a lock icon.
 - Not covered: worktrees under Home or a parent-group root row, worktrees of a worktree, lock/unlock/prune UI.
 
 ## Files panel (Ctrl+Shift+E)
@@ -98,7 +99,7 @@ A command is a name, a mode (`parallel` or `sequential`) and a list of targets, 
 
 ## Quick switcher (Ctrl+Shift+K)
 
-Lists every open tab of every folder (shell, command, diff and file tabs) with its folder, title and agent status, followed by every folder you can jump to (Home, saved folders, group roots, discovered children and git worktrees). A folder row shows the worst status of its tabs (needs you, then done, working, idle). Type to fuzzy-filter; Enter switches to the highlighted row and focuses its terminal. Filter by status with the chips (Tab / Shift+Tab cycle All, Needs you, Done, Working) or a query prefix: `n:` needs you, `d:` done, `w:` working, `i:` idle. Ctrl+K opens it too when focus is not in a terminal; in a terminal, Ctrl+K goes to the shell.
+Lists every open tab of every folder (shell, command, diff and file tabs) with its folder, title and agent status, followed by every folder you can jump to (Home, saved folders, group roots, discovered children and git worktrees). With nothing typed, tabs are ordered needs-you, done, working, idle, then most recently used; the tab you are in comes last of its group (the usage order lives only in memory and is not saved). Done tabs show their age (`Done · 2m`); folder rows show counts (`2 need you · 1 done`). A folder, child or worktree row counts its own tabs; a group row counts its whole subtree including worktrees. Type to fuzzy-filter (typed text ranks by match as before); Enter switches to the highlighted row and focuses its terminal. Filter by status with the chips (Tab / Shift+Tab cycle All, Needs you, Done, Working) or a query prefix: `n:` needs you, `d:` done, `w:` working, `i:` idle. Ctrl+K opens it too when focus is not in a terminal; in a terminal, Ctrl+K goes to the shell.
 
 ## Find in terminal (Ctrl+Shift+F)
 
@@ -115,8 +116,8 @@ Tabs that run an agent show a live status, so you can see from the tab bar and t
 | Needs you | Blocked on a permission prompt or an input | orange `!` pill | orange `!` pill |
 | Idle | Nothing to report | nothing | nothing |
 
-- The tab tooltip names the state and where it came from (a report or the heuristic).
-- A folder, child or group row shows the highest status of its tabs (needs-you, then done, then working). The tooltip lists the tabs.
+- The tab tooltip names the state and where it came from (a report or the heuristic). A done tab's tooltip says how long ago it finished (`Done, 2m ago`, updated every minute).
+- A row's indicator shows the highest status of its tabs (needs-you, then done, then working). When two or more tabs need you, the orange pill shows the count (`2!`); done and working stay dots. The tooltip starts with a summary line (`Agent status: 2 need you, 1 done, 3 working`) followed by one line per tab, with the age for done tabs. A folder, child or worktree row shows its own tabs; a group row rolls up its whole subtree including worktrees.
 - With the sidebar grouped by Activity, a **Needs you (N)** section sits above **Working**. Entries with a needs-you tab are listed there and not again under Working or Idle. The Working section itself is unchanged: an open shell still counts as working.
 - The collapsed sidebar strip colours each dot with that status, and lists locations with a needs-you or done tab even when no shell is working.
 - **Done becomes idle when you view the tab**: it is the active tab of a pane while the window has focus. A tab that finishes in the background stays blue until you look at it. Status is kept in the main process, so a tab that finishes while the window is hidden in the tray is still done when you open it again.
@@ -137,11 +138,12 @@ Add an entry (`agent`, `detect`, `needsYou`) to teach it another agent. Turn the
 
 ### Claude Code hooks
 
-Settings > Agent status > "Claude Code hooks" has three buttons:
+Settings > Agent status > "Claude Code hooks" has four buttons:
 
 - **Install** writes the hooks to `~/.claude/settings.json` (`%CLAUDE_CONFIG_DIR%\settings.json` when that variable is set) and writes the script `status-hook.cmd` into the data directory (`%APPDATA%\terminals`). The settings file is copied to `settings.json.terminals-backup` first, only when that backup does not exist yet, so it keeps your original through Install and Remove (delete it to take a fresh one). A UTF-8 BOM at the start of the settings file is dropped when it is rewritten. Installing twice changes nothing, and your other settings and hooks are left alone. An invalid settings file is reported and never overwritten.
 - **Remove** takes out only the hooks that point at `status-hook.cmd`, with the same backup rule. The script stays on disk, harmless.
 - **Copy JSON** puts the same config on the clipboard, with the absolute script path, to paste by hand. It does not write the script, so click Install once first.
+- **Test** runs the installed `status-hook.cmd` with a fake Stop event against the app's `/status` endpoint using a test id, so no tab ever changes, and reports OK with the time taken or names the failure: not installed, outdated entries, script missing or out of date, server not running, curl missing, 401, or no request arrived.
 
 Nothing is written to `~/.claude/settings.json` without a click. While any of the hooks are present (installed or outdated), the app rewrites `status-hook.cmd` at start, which keeps the script itself current. The hook entries in `settings.json` hold the absolute script path and the event list, so after an update that adds events (PreToolUse was added later) or a changed `--data-dir`, Settings shows "Installed (outdated) – Reinstall"; click Reinstall. Hooks are user-level only; project `.claude/settings.json` is never edited.
 

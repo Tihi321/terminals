@@ -25,6 +25,8 @@ import { locationById, ToolError } from './mcpTools'
 import { TerminalHost } from './terminalHost'
 import { isTerminalReply } from './termText'
 import * as claudeHooks from './claudeHooks'
+import { runHookTest } from './hookTest'
+import type { HookTestResult } from '../shared/claudeHooks'
 
 // Must run before app is ready: lets tests/dev runs use an isolated data directory.
 const dataDirArg = process.argv.find((a) => a.startsWith('--data-dir='))?.slice('--data-dir='.length)
@@ -781,6 +783,11 @@ function registerIpc(): void {
   ipcMain.handle('hooks:get', () => claudeHooks.getHooks())
   ipcMain.handle('hooks:install', () => claudeHooks.installHooks())
   ipcMain.handle('hooks:remove', () => claudeHooks.removeHooks())
+  ipcMain.handle('hooks:test', async (): Promise<HookTestResult> => {
+    const h = claudeHooks.getHooks()
+    if (!h.ok) return { ok: false, kind: 'not-installed', message: h.error }
+    return runHookTest({ scriptPath: claudeHooks.scriptPath(), statusUrl: mcp?.statusUrl ?? null, token: mcp?.token ?? '', hooks: h })
+  })
   ipcMain.on('agent:openTab:reply', (e, reqId: string, result: Result) => {
     if (!win || win.isDestroyed() || e.sender !== win.webContents) return
     const done = typeof reqId === 'string' ? pendingTabs.get(reqId) : undefined
