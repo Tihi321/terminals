@@ -1133,9 +1133,15 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
   try {
     const t = await host.open({ locId: 'home', cwd: dir })
     if (!t.id || !t.alive || !t.agent) return fail('open ' + JSON.stringify(t))
-    // The user's own history file may still hold run lines leaked by older builds, so count against a baseline taken before the first run.
-    const histCmd = '@([Microsoft.PowerShell.PSConsoleReadLine]::GetHistoryItems() | ? CommandLine -like "*FromBase64String*").Count'
-    const hist0 = (await host.run(t.id, histCmd, 20000)).output
+    // Read the history state with raw input, not run_command, so the run wrapper's fallback handler install cannot mask a missing spawn-time one.
+    const rawRead = async (body: string): Promise<string> => {
+      host.send(t.id, `Write-Output ('HI'+'ST=' + (${body}))\r`)
+      const w = await host.waitFor(t.id, compileWaitPatterns({ pattern: 'HIST=\\S+', regex: true }), 10000, true)
+      return /HIST=(\S+)/.exec(w.line ?? '')?.[1] ?? ''
+    }
+    const handlerAtSpawn = await rawRead('[int]($global:__terminalsHist -eq 1) + [int]($null -ne (Get-PSReadLineOption).AddToHistoryHandler) * 10')
+    if (handlerAtSpawn !== '11') return fail('the spawn-time history handler must be installed before the first run, got ' + JSON.stringify(handlerAtSpawn))
+    const sessionRunLines = `@([Microsoft.PowerShell.PSConsoleReadLine]::GetHistoryItems() | Where-Object { -not $_.FromHistoryFile -and $_.CommandLine.StartsWith('${RUN_LINE_PREFIX.replace(/'/g, "''")}') }).Count`
     const r1 = await host.run(t.id, "Write-Output ('a'+'1'); cmd /c exit 3", 20000)
     if (r1.output !== 'a1' || r1.exitCode !== 3 || r1.success !== false || r1.timedOut || r1.exited) return fail('output/exit code ' + JSON.stringify(r1))
     await host.run(t.id, '$x = 41 + 1', 20000)
@@ -1150,8 +1156,8 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
     }
     if (!busy.includes('busy')) return fail('second run while busy must be rejected, got ' + JSON.stringify(busy))
     await slow
-    const hist1 = (await host.run(t.id, histCmd, 20000)).output
-    if (!/^[0-9]+$/.test(hist0) || hist1 !== hist0) return fail(`the run line must stay out of PSReadLine history (count ${hist0} before the runs, ${hist1} after)`)
+    const hist1 = await rawRead(sessionRunLines)
+    if (hist1 !== '0') return fail(`run lines of this session must stay out of PSReadLine history, found ${JSON.stringify(hist1)} after several runs`)
     await host.run(t.id, "Write-Host ('abc' + [char]13 + 'X')", 20000)
     const scr = await host.screen(t.id)
     if (scr.lines.length !== 30 || !scr.lines.includes('Xbc')) return fail('screen must return 30 rendered rows with Xbc ' + JSON.stringify(scr.lines.slice(0, 12)))

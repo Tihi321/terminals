@@ -251,6 +251,7 @@ export class TerminalHost implements TerminalControl {
   }
 
   add(id: string, pty: IPty, meta: TermMeta): void {
+    this.remove(id)
     this.recs.set(id, {
       id,
       pty,
