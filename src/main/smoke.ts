@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve as resolvePath } from 'node:path'
+import { join, relative as relativePath, resolve as resolvePath } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
 import { childId, migrate, moveGroupData, moveItemData, nestItemData, removeGroupData, setGroupFolderData, type Persisted } from './store'
@@ -11,7 +11,7 @@ import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
 import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_FONT, patchSettings, sanitizeSettings } from '../shared/settings'
 import { THEME_IDS, THEMES, UI_VARS, resolveThemeId } from '../shared/themes'
-import { contextLocation, findLocation, planCommand, planPrompt, resolveOpenTarget, RUN_DISABLED_ERROR, ToolError, visibleCommands } from './mcpTools'
+import { contextLocation, findLocation, locationsPayload, planCommand, planPrompt, resolveOpenTarget, RUN_DISABLED_ERROR, ToolError, visibleCommands } from './mcpTools'
 import { hostAllowed, startMcpServer, tokenMatches } from './mcp'
 import { TerminalHost } from './terminalHost'
 import { AgentStatusTracker, QUIET_MS } from './agentStatus'
@@ -554,6 +554,23 @@ async function checkWorktree(): Promise<CheckResult> {
     const onBase = await gitBaseChanges(repo, 'main')
     if (!onBase.ok || !onBase.changes.onBase) return fail('main should be onBase ' + JSON.stringify(onBase))
 
+    // A relative gitdir resolves against the admin folder (not the cwd); a planted gitdir to a folder that does not point back is rejected.
+    const wtAdmin = join(repo, '.git', 'worktrees')
+    const adminName = readdirSync(wtAdmin)[0]
+    const gitdirFile = join(wtAdmin, adminName, 'gitdir')
+    const origGitdir = readFileSync(gitdirFile, 'utf8')
+    writeFileSync(gitdirFile, relativePath(join(wtAdmin, adminName), join(wt, '.git')) + '\n')
+    const rel = readWorktrees(repo)
+    if (rel.length !== 1 || key(rel[0].path) !== key(wt) || rel[0].missing) return fail('relative gitdir ' + JSON.stringify(rel))
+    writeFileSync(gitdirFile, origGitdir)
+    const evil = join(root, 'evil')
+    mkdirSync(join(wtAdmin, 'evil'))
+    mkdirSync(evil)
+    writeFileSync(join(wtAdmin, 'evil', 'gitdir'), join(evil, '.git') + '\n')
+    const planted = readWorktrees(repo)
+    rmSync(join(wtAdmin, 'evil'), { recursive: true, force: true })
+    if (planted.length !== 1 || key(planted[0].path) !== key(wt)) return fail('planted gitdir accepted ' + JSON.stringify(planted))
+
     const dirty = await removeWorktree(repo, wt, { force: false, deleteBranch: true })
     if (dirty.ok || !existsSync(wt)) return fail('remove without force must refuse uncommitted changes ' + JSON.stringify(dirty))
     const gone = await removeWorktree(repo, wt, { force: true, deleteBranch: true })
@@ -959,6 +976,14 @@ function checkMcpLogic(dir: string): CheckResult {
     const pu = planPrompt(state, { id: 's1', body: 'new' }, 'f2')
     if (pu.created || pu.prompt.scope !== 'global' || pu.prompt.name !== 'hi') return fail('prompt update keeps scope/name')
 
+    const withWt: AppState = {
+      ...state,
+      folders: state.folders.map((f) =>
+        f.id === 'f2' ? { ...f, worktrees: [{ id: 'wt:x', path: p('beta.worktrees', 'x'), name: 'x', branch: 'feat/x', locked: false, missing: false }] } : f
+      )
+    }
+    const lw = locationsPayload(withWt).worktrees.find((w) => w.id === 'wt:x')
+    if (!lw || lw.kind !== 'worktree' || lw.repoId !== 'f2' || lw.branch !== 'feat/x') return fail('list_locations lacks the worktree ' + JSON.stringify(lw))
     if (resolveOpenTarget(state, undefined).loc.id !== 'home') return fail('open_terminal default is Home')
     if (!err(() => resolveOpenTarget(state, p('nope')))?.includes('does not exist')) return fail('open_terminal non-existent path')
     if (!hostAllowed('127.0.0.1:5000', 5000) || !hostAllowed('localhost:5000', 5000)) return fail('host allowed')

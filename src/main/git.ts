@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 export interface GitInfo {
@@ -46,11 +46,36 @@ export interface WorktreeEntry {
   path: string
   branch: string | null
   locked: boolean
-  /** Directory no longer exists (prunable). */
+  /** Directory no longer exists (prunable); never treated as an allowed root. */
   missing: boolean
 }
 
-/** Linked worktrees of a main working tree, read from `<repo>/.git/worktrees/*`. Never throws. Sorted by path. */
+/** Same directory whatever the spelling (8.3 names, junctions, case). */
+export function samePath(a: string, b: string): boolean {
+  const k = (p: string): string => {
+    try {
+      return realpathSync.native(p).replace(/[\\/]+$/, '').toLowerCase()
+    } catch {
+      return resolve(p).replace(/[\\/]+$/, '').toLowerCase()
+    }
+  }
+  return k(a) === k(b)
+}
+
+/** True when `<wt>/.git` is a file whose `gitdir:` points back at the admin folder. */
+function pointsBack(wt: string, admin: string): boolean {
+  try {
+    const f = join(wt, '.git')
+    if (!statSync(f).isFile()) return false
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(f, 'utf8'))
+    return !!m && samePath(resolve(wt, m[1].trim()), admin)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Linked worktrees of a main working tree, read from `<repo>/.git/worktrees/*`. Never throws. Sorted by path. */
 export function readWorktrees(repoDir: string): WorktreeEntry[] {
   try {
     if (!isMainWorktree(repoDir)) return []
@@ -63,14 +88,17 @@ export function readWorktrees(repoDir: string): WorktreeEntry[] {
         if (!statSync(dir).isDirectory()) continue
         const gitdir = readFileSync(join(dir, 'gitdir'), 'utf8').split(/\r?\n/)[0].trim()
         if (!gitdir) continue
-        const path = dirname(resolve(gitdir))
+        const path = dirname(resolve(dir, gitdir))
+        const missing = !existsSync(path)
+        // An existing folder must point back at this admin entry, else a planted gitdir could make any folder a worktree.
+        if (!missing && !pointsBack(path, dir)) continue
         let branch: string | null = null
         try {
           branch = parseHead(readFileSync(join(dir, 'HEAD'), 'utf8'))
         } catch {
           branch = null
         }
-        out.push({ path, branch, locked: existsSync(join(dir, 'locked')), missing: !existsSync(path) })
+        out.push({ path, branch, locked: existsSync(join(dir, 'locked')), missing })
       } catch {
         /* skip unreadable entry */
       }

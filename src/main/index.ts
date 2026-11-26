@@ -17,7 +17,7 @@ import { runSmoke } from './smoke'
 import { copyIntoDir, createFolderIn } from './fsCopy'
 import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } from './fsops'
 import * as gitcli from './gitcli'
-import { isMainWorktree, readGit } from './git'
+import { isMainWorktree, readGit, readWorktrees, samePath } from './git'
 import * as worktree from './worktree'
 import type { GitDiffRequest, LoginItemState } from '../shared/types'
 import { startMcpServer, type McpInfo } from './mcp'
@@ -576,7 +576,9 @@ function registerIpc(): void {
     const rb = await worktree.resolveBase(rr.root, store.getRepoBase(rr.root))
     if (!rb.ok) return rb
     const r = await gitcli.gitBaseChanges(f, rb.base)
-    return r.ok ? { ok: true as const, changes: { ...r.changes, baseIsSet: rb.baseIsSet } } : r
+    if (!r.ok) return r
+    const fb = rb.baseIsSet ? await worktree.resolveBase(rr.root, undefined) : rb
+    return { ok: true as const, changes: { ...r.changes, baseIsSet: rb.baseIsSet, fallback: fb.ok ? fb.base : '' } }
   })
   ipcMain.handle('git:setBase', async (_e, f: string, base: string | null) => {
     if (!allowed(f)) return store.getState()
@@ -595,13 +597,15 @@ function registerIpc(): void {
     const baseRef = typeof base === 'string' && base.trim() ? base.trim() : null
     const r = await worktree.addWorktree(repo, String(branch ?? ''), baseRef, store.getSettings().worktreeLayout)
     if (!r.ok) return r
+    // Use the path as git recorded it, so the id matches the sidebar row (junction / subst / 8.3 spellings).
+    const wtPath = readWorktrees(repo).find((w) => samePath(w.path, r.path))?.path ?? r.path
     // Remember what the branch was cut from (only when this call created it).
     if (r.created) {
       const cur = readGit(repo).branch
       const from = baseRef ?? (cur && !cur.startsWith('detached @') ? cur : null)
-      if (from) store.setRepoBase(r.path, from)
+      if (from) store.setRepoBase(wtPath, from)
     }
-    return { ok: true as const, id: store.worktreeId(r.path), path: r.path, state: store.getState() }
+    return { ok: true as const, id: store.worktreeId(wtPath), path: wtPath, state: store.getState() }
   })
   ipcMain.handle('worktree:status', (_e, path: string) =>
     allowed(path) && store.findWorktree(path) ? worktree.worktreeStatus(path) : { ok: false as const, error: 'Not a known worktree' }
@@ -612,7 +616,12 @@ function registerIpc(): void {
     const r = await worktree.removeWorktree(found.repo, path, { force: !!opts?.force, deleteBranch: !!opts?.deleteBranch })
     if (!r.ok) return r
     store.forgetWorktree(path, found.repoLocId)
-    return { ok: true as const, state: store.getState(), ...(r.branchError ? { branchError: r.branchError } : {}) }
+    return {
+      ok: true as const,
+      state: store.getState(),
+      ...(r.branchError ? { branchError: r.branchError } : {}),
+      ...(r.warning ? { warning: r.warning } : {})
+    }
   })
 
   ipcMain.handle('clipboard:read', () => clipboard.readText())

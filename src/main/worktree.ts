@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import type { GitResult, Result, WorktreeStatus } from '../shared/types'
 import { worktreeTargetPath } from '../shared/worktreePath'
@@ -50,7 +50,15 @@ export async function addWorktree(
   }
   const args = exists ? ['worktree', 'add', path, b] : ['worktree', 'add', '-b', b, path, from]
   const r = await run(dir, args, { timeoutMs: ADD_TIMEOUT })
-  if (r.code !== 0) return { ok: false, error: failText(r) }
+  if (r.code !== 0) {
+    // Drop the container folder made above when nothing ended up in it.
+    try {
+      if (!existsSync(path) && readdirSync(dirname(path)).length === 0) rmdirSync(dirname(path))
+    } catch {
+      /* leave it */
+    }
+    return { ok: false, error: failText(r) }
+  }
   return { ok: true, path, created: !exists }
 }
 
@@ -88,13 +96,14 @@ export async function removeWorktree(
   repo: string,
   path: string,
   opts: { force: boolean; deleteBranch: boolean }
-): Promise<Result<{ branchError?: string }>> {
+): Promise<Result<{ branchError?: string; warning?: string }>> {
   const repoDir = resolve(repo)
   const dir = resolve(path)
   const entry = readWorktrees(repoDir).find((w) => key(w.path) === key(dir))
   if (!entry) return { ok: false, error: 'Not a worktree of this repository' }
   if (entry.locked) return { ok: false, error: 'Worktree is locked: unlock it with git worktree unlock first' }
   const branch = entry.branch && !entry.branch.startsWith('detached @') ? entry.branch : null
+  let warning: string | undefined
   if (entry.missing) {
     const pr = await run(repoDir, ['worktree', 'prune'])
     if (pr.code !== 0) return { ok: false, error: failText(pr) }
@@ -111,13 +120,22 @@ export async function removeWorktree(
       await sleep(500)
       r = await run(repoDir, args, { timeoutMs: ADD_TIMEOUT })
     }
-    if (r.code !== 0) return { ok: false, error: failText(r) }
+    if (r.code !== 0) {
+      // git may have dropped its metadata and then failed to delete the folder: finish the job ourselves.
+      if (readWorktrees(repoDir).some((w) => key(w.path) === key(dir))) return { ok: false, error: failText(r) }
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 })
+      } catch {
+        /* reported below */
+      }
+      if (existsSync(dir)) warning = `folder could not be fully deleted: ${dir}`
+    }
   }
   if (opts.deleteBranch && branch) {
     const br = await run(repoDir, ['branch', '-d', branch])
-    if (br.code !== 0) return { ok: true, branchError: failText(br) }
+    if (br.code !== 0) return { ok: true, branchError: failText(br), ...(warning ? { warning } : {}) }
   }
-  return { ok: true }
+  return { ok: true, ...(warning ? { warning } : {}) }
 }
 
 /**

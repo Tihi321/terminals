@@ -266,10 +266,27 @@ function worktreeViews(dir: string, savedKeys: Set<string>, roots: string[]): Wo
   for (const w of readWorktrees(dir)) {
     // A worktree that is also a saved folder already has its own row.
     if (savedKeys.has(norm(w.path))) continue
-    roots.push(w.path)
+    if (!w.missing) roots.push(w.path)
     out.push({ id: worktreeId(w.path), path: w.path, name: basename(w.path) || w.path, branch: w.branch, locked: w.locked, missing: w.missing })
   }
   return out
+}
+
+/** `p` is a linked worktree of another repo in the same scan (its `.git` file points into that sibling's `.git/worktrees`). */
+function isSiblingWorktree(p: string, dir: string, names: Dirent[]): boolean {
+  try {
+    const dotGit = join(p, '.git')
+    if (!statSync(dotGit).isFile()) return false
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))
+    if (!m) return false
+    const target = resolve(p, m[1].trim())
+    return names.some((n) => {
+      const sib = join(dir, n.name)
+      return sib !== p && norm(target).startsWith(norm(join(sib, '.git', 'worktrees')) + sep.toLowerCase())
+    })
+  } catch {
+    return false
+  }
 }
 
 function scanChildren(dir: string, hidden: Set<string>, savedKeys: Set<string>, roots: string[]): ChildView[] {
@@ -300,6 +317,7 @@ function scanChildren(dir: string, hidden: Set<string>, savedKeys: Set<string>, 
         /* no sibling: keep it */
       }
     }
+    if (isSiblingWorktree(p, dir, names)) continue
     const g = readGit(p)
     const main = g.isGit && isMainWorktree(p)
     out.push({
@@ -495,10 +513,13 @@ function fixSelection(d: Persisted): void {
 }
 
 export function removeFolder(id: string): AppState {
-  data.folders = data.folders.filter((f) => f.id !== id)
-  data.pinned = data.pinned.filter((x) => x !== id)
-  data.commands = data.commands.filter((c) => c.ownerId !== id)
-  data.snippets = data.snippets.filter((s) => s.scope !== id)
+  // Its linked worktrees go with it: drop what they own too.
+  const f = data.folders.find((x) => x.id === id)
+  const gone = new Set([id, ...(f ? readWorktrees(f.path).map((w) => worktreeId(w.path)) : [])])
+  data.folders = data.folders.filter((x) => x.id !== id)
+  data.pinned = data.pinned.filter((x) => !gone.has(x))
+  data.commands = data.commands.filter((c) => !gone.has(c.ownerId))
+  data.snippets = data.snippets.filter((s) => !gone.has(s.scope))
   fixSelection(data)
   save()
   return getState()

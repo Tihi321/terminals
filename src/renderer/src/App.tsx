@@ -1160,7 +1160,7 @@ export function App(): JSX.Element {
             onAddGroup={async (name, parentId) => setState(await window.api.addGroup(name, parentId))}
             onMoveGroup={async (id, parentId) => setState(await window.api.moveGroup(id, parentId))}
             onRemoveFolder={async (id) => {
-              closeTabsOf([id])
+              closeTabsOf([id, ...(state.folders.find((f) => f.id === id)?.worktrees.map((w) => w.id) ?? [])])
               setState(await window.api.removeFolder(id))
             }}
             onRemoveGroup={async (id) => {
@@ -1168,7 +1168,8 @@ export function App(): JSX.Element {
               closeTabsOf([
                 ...groupIds,
                 ...folderIds,
-                ...groupIds.flatMap((gid) => state.groups.find((x) => x.id === gid)?.children.map((c) => c.id) ?? [])
+                ...folderIds.flatMap((fid) => state.folders.find((x) => x.id === fid)?.worktrees.map((w) => w.id) ?? []),
+                ...groupIds.flatMap((gid) => state.groups.find((x) => x.id === gid)?.children.flatMap((c) => [c.id, ...c.worktrees.map((w) => w.id)]) ?? [])
               ])
               setState(await window.api.removeGroup(id))
             }}
@@ -1602,11 +1603,14 @@ export function App(): JSX.Element {
             closeTabsOf([wt.id])
             await new Promise((r) => setTimeout(r, 300))
             const r = await window.api.worktreeRemove(wt.path, opts)
-            if (!r.ok) return r.error
+            if (!r.ok) return { error: r.error }
             setState(r.state)
-            setRemoveWt(null)
-            if (r.branchError) alert(`Worktree removed, but the branch was kept: ${r.branchError}`)
-            return null
+            const notes = [r.branchError && `Branch kept: ${r.branchError}`, r.warning && `Warning: ${r.warning}`].filter(Boolean)
+            if (notes.length === 0) {
+              setRemoveWt(null)
+              return null
+            }
+            return { notice: `Worktree removed. ${notes.join(' ')}` }
           }}
         />
       )}

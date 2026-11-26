@@ -356,6 +356,8 @@ export interface GitBaseChanges {
   base: string
   /** True when `base` came from repoBases (set by the user), false when it is the fallback. */
   baseIsSet: boolean
+  /** The base that would apply with none stored (shown as "Default (...)" in the picker). */
+  fallback: string
   /** Current branch short name (null = detached). */
   branch: string | null
   /** True when HEAD is detached or `branch` equals `base` (local name, or `base` minus `origin/`): the Branch view is hidden. When true, mergeBase/files are empty and no diff is computed. */
@@ -487,7 +489,7 @@ export interface TerminalsApi {
   /** Uncommitted change count, branch and lock state of a known worktree. */
   worktreeStatus(path: string): Promise<GitResult<{ status: WorktreeStatus }>>
   /** Removes a worktree. Refuses locked ones, and ones with changes unless `force`. deleteBranch = `git branch -d` (failure comes back as branchError). */
-  worktreeRemove(path: string, opts: { force: boolean; deleteBranch: boolean }): Promise<Result<{ state: AppState; branchError?: string }>>
+  worktreeRemove(path: string, opts: { force: boolean; deleteBranch: boolean }): Promise<Result<{ state: AppState; branchError?: string; warning?: string }>>
 
   clipboardRead(): Promise<string>
   clipboardReadForPaste(): Promise<PasteContent>

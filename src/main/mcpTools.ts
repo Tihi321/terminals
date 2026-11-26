@@ -82,6 +82,40 @@ export function buildLocations(state: AppState): McpLoc[] {
   return out
 }
 
+/** What list_locations returns. Worktrees are listed under their repo row (`repoId`). */
+export function locationsPayload(state: AppState) {
+  const wt = (repoId: string, w: { id: string; name: string; path: string; branch: string | null; missing: boolean }) => ({
+    kind: 'worktree' as const,
+    id: w.id,
+    name: w.name,
+    path: w.path,
+    branch: w.branch,
+    repoId,
+    missing: w.missing
+  })
+  return {
+    groups: state.groups.map((g) =>
+      g.kind === 'manual'
+        ? { id: g.id, kind: g.kind, name: g.name, parentId: g.parentId, folderIds: state.folders.filter((f) => f.groupId === g.id).map((f) => f.id) }
+        : {
+            id: g.id,
+            kind: g.kind,
+            name: g.name,
+            parentId: g.parentId,
+            path: g.path,
+            missing: g.missing,
+            children: g.children.map((c) => ({ id: c.id, name: c.name, path: c.path, hidden: c.hidden }))
+          }
+    ),
+    folders: state.folders.map((f) => ({ id: f.id, name: f.name, path: f.path, groupId: f.groupId, missing: f.missing })),
+    worktrees: [
+      ...state.folders.flatMap((f) => f.worktrees.map((w) => wt(f.id, w))),
+      ...state.groups.flatMap((g) => g.children.flatMap((c) => c.worktrees.map((w) => wt(c.id, w))))
+    ],
+    home: { id: state.home.id, name: state.home.name, path: state.home.path, missing: state.home.missing }
+  }
+}
+
 export function locationById(state: AppState, id: string): McpLoc | null {
   return buildLocations(state).find((l) => l.id === id) ?? null
 }
@@ -452,29 +486,10 @@ export const TOOLS: ToolDef[] = [
   defineTool({
     name: 'list_locations',
     description:
-      'All groups (manual and parent folder groups with their discovered subfolders) and saved folders, with ids, names, paths and group membership. Groups nest through `parentId` (null = top level); only manual groups can contain groups.',
+      'All groups (manual and parent folder groups with their discovered subfolders), saved folders and their git worktrees (with branch and `repoId`), with ids, names, paths and group membership. Groups nest through `parentId` (null = top level); only manual groups can contain groups.',
     shape: {},
     mutates: false,
-    run: () => {
-      const s = store.getState()
-      return {
-        groups: s.groups.map((g) =>
-          g.kind === 'manual'
-            ? { id: g.id, kind: g.kind, name: g.name, parentId: g.parentId, folderIds: s.folders.filter((f) => f.groupId === g.id).map((f) => f.id) }
-            : {
-                id: g.id,
-                kind: g.kind,
-                name: g.name,
-                parentId: g.parentId,
-                path: g.path,
-                missing: g.missing,
-                children: g.children.map((c) => ({ id: c.id, name: c.name, path: c.path, hidden: c.hidden }))
-              }
-        ),
-        folders: s.folders.map((f) => ({ id: f.id, name: f.name, path: f.path, groupId: f.groupId, missing: f.missing })),
-        home: { id: s.home.id, name: s.home.name, path: s.home.path, missing: s.home.missing }
-      }
-    }
+    run: () => locationsPayload(store.getState())
   }),
   defineTool({
     name: 'list_commands',

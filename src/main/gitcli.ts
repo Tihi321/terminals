@@ -19,7 +19,7 @@ const MAX_OUT = 12 * 1024 * 1024
 const TIMEOUT = 20000
 /** fetch/pull/push can be slow on a bad connection; credential helpers may also show a dialog. */
 const NET_TIMEOUT = 120000
-const HASH_RE =/^[0-9a-f]{4,40}$/i
+const HASH_RE = /^[0-9a-f]{4,40}$/i
 const FULL_HASH_RE = /^[0-9a-f]{40}$/i
 /** Untracked files above this size are not read for line counts. */
 const COUNT_LIMIT = 1024 * 1024
@@ -373,9 +373,9 @@ export async function gitDiff(folder: string, req: GitDiffRequest): Promise<GitR
 
 /**
  * Files changed on HEAD's branch vs merge-base(HEAD, base), including uncommitted and untracked changes.
- * Returns `onBase: true` (no diff computed) when HEAD is detached or already on `base`. `baseIsSet` is filled in by the caller.
+ * Returns `onBase: true` (no diff computed) when HEAD is detached or already on `base`. `baseIsSet` and `fallback` are filled in by the caller.
  */
-export async function gitBaseChanges(folder: string, base: string): Promise<GitResult<{ changes: Omit<GitBaseChanges, 'baseIsSet'> }>> {
+export async function gitBaseChanges(folder: string, base: string): Promise<GitResult<{ changes: Omit<GitBaseChanges, 'baseIsSet' | 'fallback'> }>> {
   if (typeof base !== 'string' || !base || base.startsWith('-') || base.includes('\0')) return { ok: false, error: 'Invalid base branch' }
   const rr = await repoRoot(folder)
   if (!rr.ok) return rr

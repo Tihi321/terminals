@@ -177,7 +177,6 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
 
   const baseInflight = useRef(false)
   const lastBase = useRef('')
-  const fallbackBase = useRef<string | null>(null)
 
   const loadBase = useCallback(async (manual = false): Promise<void> => {
     const folder = rootRef.current
@@ -191,7 +190,6 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
       if (key === lastBase.current) return
       lastBase.current = key
       if (r.ok) {
-        if (!r.changes.baseIsSet) fallbackBase.current = r.changes.base
         setBaseInfo(r.changes)
         setBaseError(null)
       } else {
@@ -207,7 +205,6 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
   // Folder changed: forget the previous folder's branch comparison.
   useEffect(() => {
     lastBase.current = ''
-    fallbackBase.current = null
     baseInflight.current = false
     setBaseInfo(null)
     setBaseError(null)
@@ -244,7 +241,7 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
 
   // The user landed on the base branch while viewing the Branch tab: it no longer applies.
   useEffect(() => {
-    if (sub === 'branch' && baseInfo?.onBase) setSub('changes')
+    if (sub === 'branch' && baseInfo?.onBase && !(baseInfo.baseIsSet && baseInfo.branch)) setSub('changes')
   }, [sub, baseInfo])
 
   const changeBase = async (value: string): Promise<void> => {
@@ -501,25 +498,58 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
   }
 
   const hasUnstaged = groups.tracked.length + groups.untracked.length > 0
-  const showBranchTab = (baseInfo !== null && !baseInfo.onBase) || (sub === 'branch' && baseError !== null)
+  // Also shown when no base could be found (so one can be picked) and when the stored base is the current branch (so it can be changed).
+  const noBase = baseError !== null && /No base branch found/.test(baseError) && curBranch !== null && curBranch !== 'main' && curBranch !== 'master'
+  const showBranchTab =
+    (baseInfo !== null && (!baseInfo.onBase || (baseInfo.baseIsSet && baseInfo.branch !== null))) || (sub === 'branch' && baseError !== null) || noBase
+
+  /** Base picker: the current branch is not offered (a branch cannot be its own base). */
+  const baseSelect = (stored: string | null, fallback: string | null, current: string | null): JSX.Element => {
+    const choices = branchList.filter((b) => b.name !== current)
+    const known = choices.some((b) => b.name === stored)
+    return (
+      <select className="git-base-select" value={stored ?? ''} title="Base branch" onChange={(e) => void changeBase(e.target.value)}>
+        <option value="">{fallback ? `Default (${fallback})` : 'Default'}</option>
+        {stored && !known && <option value={stored}>{stored}</option>}
+        {choices
+          .filter((b) => !b.remote)
+          .map((b) => (
+            <option key={b.name} value={b.name}>
+              {b.name}
+            </option>
+          ))}
+        {choices
+          .filter((b) => b.remote)
+          .map((b) => (
+            <option key={b.name} value={b.name}>
+              {b.name}
+            </option>
+          ))}
+      </select>
+    )
+  }
 
   const renderBranch = (): JSX.Element => {
     if (baseError) {
       return (
-        <div className="git-scroll">
-          <div className="panel-error">{baseError}</div>
-        </div>
+        <>
+          <div className="git-header">
+            <span className="git-header-title">
+              <GitCompare size={14} />
+              <span>vs</span>
+              {baseSelect(null, null, curBranch)}
+            </span>
+          </div>
+          <div className="git-scroll">
+            <div className="panel-error">{baseError}</div>
+          </div>
+        </>
       )
     }
     if (!baseInfo) return <div className="panel-hint">Loading…</div>
     const bi = baseInfo
     const a = bi.files.reduce((n, f) => n + num(f.added), 0)
     const d = bi.files.reduce((n, f) => n + num(f.deleted), 0)
-    const locals = branchList.filter((b) => !b.remote)
-    const remotes = branchList.filter((b) => b.remote)
-    const known = branchList.some((b) => b.name === bi.base)
-    const selValue = bi.baseIsSet ? bi.base : ''
-    const defaultLabel = `Default (${fallbackBase.current ?? bi.base})`
     const specOf = (f: GitBaseFile): GitDiffRequest =>
       f.status === 'U' ? { mode: 'untracked', path: f.path } : { mode: 'base', path: f.path, base: bi.mergeBase }
     const row = (f: GitBaseFile): JSX.Element => {
@@ -567,25 +597,7 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
           <span className="git-header-title">
             <GitCompare size={14} />
             <span>vs</span>
-            <select
-              className="git-base-select"
-              value={selValue}
-              title="Base branch"
-              onChange={(e) => void changeBase(e.target.value)}
-            >
-              <option value="">{defaultLabel}</option>
-              {bi.baseIsSet && !known && <option value={bi.base}>{bi.base}</option>}
-              {locals.map((b) => (
-                <option key={b.name} value={b.name}>
-                  {b.name}
-                </option>
-              ))}
-              {remotes.map((b) => (
-                <option key={b.name} value={b.name}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+            {baseSelect(bi.baseIsSet ? bi.base : null, bi.fallback, bi.branch)}
             {bi.files.length > 0 && (
               <span className="git-stat">
                 <span className="plus">+{a}</span>
@@ -602,7 +614,14 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
           </button>
         </div>
         <div className="git-scroll">
-          {bi.files.length === 0 ? (
+          {bi.onBase ? (
+            <div className="panel-empty">
+              <div>
+                <div className="empty-title">On the base branch</div>
+                <div className="empty-note">The stored base is the current branch. Pick another base or Default.</div>
+              </div>
+            </div>
+          ) : bi.files.length === 0 ? (
             <div className="panel-empty">
               <span className="empty-glyph">
                 <Check size={20} strokeWidth={1.75} />

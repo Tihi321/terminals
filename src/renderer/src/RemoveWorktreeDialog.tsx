@@ -11,8 +11,8 @@ export function RemoveWorktreeDialog({
 }: {
   wt: WorktreeView
   onCancel: () => void
-  /** Resolves to an error text, or null when the worktree is gone. */
-  onConfirm: (opts: { force: boolean; deleteBranch: boolean }) => Promise<string | null>
+  /** Resolves to an error, a notice (worktree gone, but something needs saying: the dialog stays open), or null (gone; parent closes). */
+  onConfirm: (opts: { force: boolean; deleteBranch: boolean }) => Promise<{ error: string } | { notice: string } | null>
 }): JSX.Element {
   const [status, setStatus] = useState<WorktreeStatus | null>(null)
   const [loading, setLoading] = useState(!wt.missing)
@@ -21,6 +21,7 @@ export function RemoveWorktreeDialog({
   const [deleteBranch, setDeleteBranch] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
     if (wt.missing) return
@@ -53,16 +54,19 @@ export function RemoveWorktreeDialog({
   // A detached head shows as "detached @ abc1234": there is no branch to delete.
   const hasBranch = !!branch && !branch.startsWith('detached')
   const needsDiscard = changes > 0
-  const canRemove = !busy && !loading && !locked && (!needsDiscard || discard)
+  const canRemove = !busy && !loading && !locked && !notice && (!needsDiscard || discard)
 
   const confirm = async (): Promise<void> => {
     if (!canRemove) return
     setBusy(true)
     setError(null)
-    const err = await onConfirm({ force: needsDiscard && discard, deleteBranch: hasBranch && deleteBranch })
-    // On success the parent unmounts this dialog.
-    if (err) {
-      setError(err)
+    const res = await onConfirm({ force: needsDiscard && discard, deleteBranch: hasBranch && deleteBranch })
+    // On plain success the parent unmounts this dialog.
+    if (res && 'error' in res) {
+      setError(res.error)
+      setBusy(false)
+    } else if (res) {
+      setNotice(res.notice)
       setBusy(false)
     }
   }
@@ -128,15 +132,22 @@ export function RemoveWorktreeDialog({
               {error}
             </div>
           )}
+          {notice && (
+            <div className="wt-warn" role="status">
+              {notice}
+            </div>
+          )}
         </div>
         <div className="modal-foot">
           <span className="hint" />
           <button className="btn" disabled={busy} onClick={onCancel}>
-            Cancel
+            {notice ? 'Close' : 'Cancel'}
           </button>
-          <button className="btn danger" disabled={!canRemove} onClick={() => void confirm()}>
-            {busy ? 'Removing…' : 'Remove'}
-          </button>
+          {!notice && (
+            <button className="btn danger" disabled={!canRemove} onClick={() => void confirm()}>
+              {busy ? 'Removing…' : 'Remove'}
+            </button>
+          )}
         </div>
       </div>
     </div>
