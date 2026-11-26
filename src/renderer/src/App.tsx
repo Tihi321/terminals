@@ -1093,6 +1093,28 @@ export function App(): JSX.Element {
         />
         </>
         )}
+        {ui.sidebarCollapsed && (
+          <nav className="active-rail" aria-label="Active folders">
+            {Object.keys(working)
+              .filter((id) => working[id] > 0 && locs.has(id))
+              .map((id) => {
+                const l = locs.get(id)
+                if (!l) return null
+                const fin = finished[id]
+                return (
+                  <button
+                    key={id}
+                    className={`rail-item ${id === selectedId ? 'selected' : ''}`}
+                    title={l.path ? `${l.name}\n${l.path}` : l.name}
+                    onClick={() => void select(id)}
+                  >
+                    {(l.name.trim()[0] ?? '?').toUpperCase()}
+                    <span className={`rail-dot ${fin && fin.failed > 0 ? 'failed' : ''}`} />
+                  </button>
+                )
+              })}
+          </nav>
+        )}
         <main className="main">
           <div
             className={`panes ${multi ? 'multi' : ''}`}
