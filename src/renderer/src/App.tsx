@@ -20,7 +20,7 @@ import type { DiffSpec } from './gitUtil'
 import { SnippetPicker } from './SnippetPicker'
 import { QuickSwitcher } from './QuickSwitcher'
 import { FindBar } from './FindBar'
-import { worstStatus } from '../../shared/switcher'
+import { rollupIdsFor, tabJumpIndex, worstStatus } from '../../shared/switcher'
 import type { SwitcherItem } from '../../shared/switcher'
 import { TabBar, TAB_DRAG_TYPE, LOC_DRAG_TYPE, locDrag, tabDrag } from './TabBar'
 import type { Tab } from './TabBar'
@@ -914,8 +914,21 @@ export function App(): JSX.Element {
   }
 
   // Latest-handler indirection so the registry hooks and the window listener never go stale.
-  const act = useRef({ newSelected: () => {}, closeActive: () => {}, jumpTab: (_n: number) => {}, find: () => {}, moveActive: (_dir: -1 | 1) => {}, moveItem: (_dir: -1 | 1) => {}, nestItem: (_dir: -1 | 1) => {} })
+  const act = useRef({ newSelected: () => {}, closeActive: () => {}, jumpTab: (_n: number) => {}, find: () => {}, toggleSwitcher: () => {}, moveActive: (_dir: -1 | 1) => {}, moveItem: (_dir: -1 | 1) => {}, nestItem: (_dir: -1 | 1) => {} })
+  // True while a modal that owns the keyboard is open (the quick switcher itself is not one).
+  const modalOpenRef = useRef(false)
+  modalOpenRef.current = settingsOpen || pickerOpen || !!newWt || !!removeWt
+  const switcherOpenRef = useRef(false)
+  switcherOpenRef.current = switcherOpen
+  /** Close the switcher without picking: focus goes back to the focused pane's terminal. */
+  const closeSwitcher = (): void => {
+    setSwitcherOpen(false)
+    const paneId = focusedPaneId()
+    const id = paneId ? activeRef.current[paneId] : undefined
+    requestAnimationFrame(() => (id ? getTerm(id)?.term.focus() : undefined))
+  }
   act.current = {
+    toggleSwitcher: () => (switcherOpenRef.current ? closeSwitcher() : setSwitcherOpen(true)),
     newSelected: () => selectedId && newTab(selectedId, undefined, focusedPaneId()),
     jumpTab: (n) => {
       const paneId = focusedPaneId()
@@ -959,9 +972,15 @@ export function App(): JSX.Element {
       onZoom: (d) => void zoom(d),
       onTogglePanel: (t) => void togglePanel(t),
       onSnippetPicker: () => setPickerOpen(true),
-      onSwitcher: () => setSwitcherOpen((o) => !o),
-      onJumpTab: (n) => act.current.jumpTab(n),
-      onFind: () => act.current.find(),
+      onSwitcher: () => {
+        if (!modalOpenRef.current) act.current.toggleSwitcher()
+      },
+      onJumpTab: (n) => {
+        if (!modalOpenRef.current) act.current.jumpTab(n)
+      },
+      onFind: () => {
+        if (!modalOpenRef.current) act.current.find()
+      },
       onOpenSettings: () => setSettingsOpen((o) => !o),
       onToggleSidebar: () => void toggleSidebar()
     })
@@ -991,6 +1010,8 @@ export function App(): JSX.Element {
       }
       if (!e.ctrlKey || e.altKey) return
       const k = e.key.toLowerCase()
+      // While Settings, a worktree dialog or the snippet picker is open, the switcher / tab jump / find shortcuts do nothing.
+      if (modalOpenRef.current && (k === 'k' || k === 'f' || tabJumpIndex(e.code, e.key) !== null)) return
       if (e.shiftKey && k === 't') {
         e.preventDefault()
         act.current.newSelected()
@@ -1008,7 +1029,7 @@ export function App(): JSX.Element {
         setPickerOpen(true)
       } else if (e.shiftKey && k === 'k') {
         e.preventDefault()
-        setSwitcherOpen((o) => !o)
+        act.current.toggleSwitcher()
       } else if (e.shiftKey && k === 'f') {
         e.preventDefault()
         act.current.find()
@@ -1018,12 +1039,12 @@ export function App(): JSX.Element {
         if (el?.closest('.xterm')) return
         if (el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') && !el.closest('.switcher')) return
         e.preventDefault()
-        setSwitcherOpen((o) => !o)
-      } else if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+        act.current.toggleSwitcher()
+      } else if (!e.shiftKey && tabJumpIndex(e.code, e.key) !== null) {
         const el = e.target as HTMLElement | null
         if (el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return
         e.preventDefault()
-        act.current.jumpTab(Number(e.code.slice(5)))
+        act.current.jumpTab(tabJumpIndex(e.code, e.key) as number)
       } else if (!e.shiftKey && k === ',') {
         e.preventDefault()
         setSettingsOpen((o) => !o)
@@ -1106,22 +1127,26 @@ export function App(): JSX.Element {
     return out
   }, [tabs, tabStatus])
 
-  // Quick switcher rows: every tab (tab order), then every folder with a path. Shell and command tabs without an agent entry count as
-  // idle so "i:" works; diff and file tabs carry no status. A folder's status is the worst of its tabs (none when it has no such tab).
+  // Quick switcher rows: every tab (tab order), then every folder with a path. A live shell shows its explicit status (an agent shell
+  // defaults to idle so "i:" finds it); command, exited, diff and file tabs show none. A folder row rolls up like the sidebar: the worst
+  // status over its own tabs, its worktrees' tabs and, for a group, its whole subtree.
   const switcherItems = useMemo(() => {
     const out: SwitcherItem[] = []
     const byLoc: Record<string, (AgentStatus | undefined)[]> = {}
     for (const t of tabs) {
-      const status: AgentStatus | undefined = t.kind === 'shell' || t.kind === 'command' ? tabStatus[t.id] ?? 'idle' : undefined
+      const own = t.kind === 'shell' && !t.exited && !t.pending ? statuses[t.id]?.status : undefined
+      const status: AgentStatus | undefined = own ?? (t.kind === 'shell' && t.agent && !t.exited && !t.pending ? 'idle' : undefined)
       ;(byLoc[t.locId] ??= []).push(status)
       out.push({ key: `tab:${t.id}`, kind: 'tab', locId: t.locId, tabId: t.id, folder: locs.get(t.locId)?.name ?? '?', title: t.title, status, order: out.length })
     }
+    const idsFor = state ? rollupIdsFor(state) : (id: string): string[] => [id]
     for (const l of locs.values()) {
       if (!l.path || l.missing) continue
-      out.push({ key: `loc:${l.id}`, kind: 'loc', locId: l.id, folder: l.name, title: l.path, status: worstStatus(byLoc[l.id] ?? []), order: out.length })
+      const status = worstStatus(idsFor(l.id).flatMap((id) => byLoc[id] ?? []))
+      out.push({ key: `loc:${l.id}`, kind: 'loc', locId: l.id, folder: l.name, title: l.path, status, order: out.length })
     }
     return out
-  }, [tabs, locs, tabStatus])
+  }, [tabs, locs, statuses, state])
 
   const closeTabsOf = useCallback(
     (ids: string[]) => {
@@ -1686,7 +1711,7 @@ export function App(): JSX.Element {
           }}
         />
       )}
-      {switcherOpen && state && <QuickSwitcher items={switcherItems} onClose={() => setSwitcherOpen(false)} onPick={(i) => void jumpTo(i)} />}
+      {switcherOpen && state && <QuickSwitcher items={switcherItems} onClose={closeSwitcher} onPick={(i) => void jumpTo(i)} />}
       {newWt && (
         <NewWorktreeDialog
           repoPath={newWt.repoPath}

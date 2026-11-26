@@ -1,5 +1,7 @@
 import { AGENT_STATUSES, STATUS_PRIORITY } from './agentStatus'
 import type { AgentStatus } from './agentStatus'
+import { subtreeGroupIds } from './groupTree'
+import type { TreeGroup } from './groupTree'
 
 /** Pure ranking and query parsing for the quick switcher (Ctrl+Shift+K). No DOM; shared by the renderer and the smoke checks. */
 
@@ -16,7 +18,7 @@ export interface SwitcherItem {
   folder: string
   /** Tab title; for kind 'loc', the location path or ''. */
   title: string
-  /** Tab: its status (shell and command tabs without an agent entry are 'idle'; diff and file tabs have none). Loc: worstStatus of its tabs. */
+  /** Tab: its explicit status (a live shell with one; an agent shell defaults to 'idle'); command, exited, diff and file tabs have none. Loc: worstStatus of its tabs. */
   status?: AgentStatus
   /** Stable input order (tabs in tab order, then locs in sidebar order). */
   order: number
@@ -60,6 +62,44 @@ export function worstStatus(statuses: (AgentStatus | undefined)[]): AgentStatus 
   let top: AgentStatus | undefined
   for (const s of statuses) if (s && (top === undefined || STATUS_PRIORITY[s] > STATUS_PRIORITY[top])) top = s
   return top
+}
+
+/** Tab number 1-9 for a Ctrl+digit press, or null. Layout independent (code) so AZERTY digits work, except that the zoom keys win:
+ *  on AZERTY the Digit6 key types '-', and Ctrl+- must still zoom out. */
+export function tabJumpIndex(code: string, key: string): number | null {
+  if (!/^Digit[1-9]$/.test(code)) return null
+  if (key === '-' || key === '+' || key === '=' || key === '0') return null
+  return Number(code.slice(5))
+}
+
+interface RollupWt {
+  id: string
+  worktrees: { id: string }[]
+}
+export interface RollupState {
+  folders: (RollupWt & { groupId: string | null })[]
+  groups: (TreeGroup & { children: RollupWt[] })[]
+}
+
+/** The sidebar's roll-up, as a lookup: for a location id, the ids whose tabs it stands for. A repo row is itself plus its worktrees;
+ *  a group is itself plus every member (with worktrees) of its whole subtree (members: folders for a manual group, children otherwise). */
+export function rollupIdsFor(state: RollupState): (id: string) => string[] {
+  const wts = new Map<string, string[]>()
+  for (const f of state.folders) wts.set(f.id, f.worktrees.map((w) => w.id))
+  for (const g of state.groups) for (const c of g.children) wts.set(c.id, c.worktrees.map((w) => w.id))
+  const withWt = (id: string): string[] => [id, ...(wts.get(id) ?? [])]
+  return (id) => {
+    const sub = subtreeGroupIds(state.groups, id)
+    if (sub.length === 0) return withWt(id)
+    const out: string[] = []
+    for (const gid of sub) {
+      const g = state.groups.find((x) => x.id === gid)
+      if (!g) continue
+      out.push(gid)
+      for (const c of g.kind === 'manual' ? state.folders.filter((f) => f.groupId === gid) : g.children) out.push(...withWt(c.id))
+    }
+    return out
+  }
 }
 
 /** Rank used for sorting: lower is worse-first; items without a status come last. */

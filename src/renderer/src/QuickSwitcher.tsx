@@ -19,6 +19,13 @@ const CHIPS: { id: StatusFilter; label: string }[] = [
   { id: 'working', label: 'Working' }
 ]
 
+const EMPTY: Record<AgentStatus, string> = {
+  'needs-you': 'No tabs need you right now.',
+  done: 'No tabs are done.',
+  working: 'No tabs are working.',
+  idle: 'No tabs are idle.'
+}
+
 function Badge({ status }: { status: AgentStatus }): JSX.Element {
   return (
     <span className={`switcher-status ${status}`} title={STATUS_LABEL[status]}>
@@ -121,7 +128,7 @@ export function QuickSwitcher({ items, onPick, onClose }: Props): JSX.Element {
         </div>
         {ranked.length === 0 && (
           <div className="picker-empty">
-            {chip && !q.trim() ? `Nothing is ${CHIPS.find((c) => c.id === chip)?.label.toLowerCase()} right now.` : 'No open tabs or folders match.'}
+            {chip && !q.trim() ? EMPTY[chip] : 'No open tabs or folders match.'}
           </div>
         )}
         <div className="picker-foot">

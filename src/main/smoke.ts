@@ -22,7 +22,7 @@ import { buildRunInput, findMarkers, isTerminalReply, toLines } from './termText
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
 import { applyOrder, moveId, shiftId } from '../shared/order'
 import { activateIn, moveTab, nthTabOfLoc, reconcileActive, shiftTab } from '../shared/tabs'
-import { fuzzyScore, parseSwitcherQuery, rankSwitcher, worstStatus, type SwitcherItem } from '../shared/switcher'
+import { fuzzyScore, parseSwitcherQuery, rankSwitcher, rollupIdsFor, tabJumpIndex, worstStatus, type SwitcherItem } from '../shared/switcher'
 import { planRestore, restorePaths, sanitizeTabs, toPersistedTabs, type RestoreCtx } from '../shared/session'
 import { checkElevatedRequest, elevatedCommand, gsudoCandidates, parseSudoMode, resolveElevator } from './elevation'
 import { elevationFailed } from '../shared/elevation'
@@ -317,6 +317,16 @@ function checkSwitcher(): CheckResult {
   if (names(rankSwitcher(items, 'w:', 'done')) !== 'web/Agent 1|web') return fail('prefix should win over the chip')
   if (worstStatus(['working', 'done', 'idle']) !== 'done' || worstStatus([]) !== undefined) return fail('worstStatus')
   if (rankSwitcher(items, 'xyz', null).length !== 0) return fail('xyz should match nothing')
+  if (tabJumpIndex('Digit3', '3') !== 3 || tabJumpIndex('Digit3', '"') !== 3 || tabJumpIndex('Digit6', '-') !== null || tabJumpIndex('KeyA', 'a') !== null)
+    return fail('tabJumpIndex: AZERTY digits jump, the zoom key wins')
+  const ru = rollupIdsFor({
+    folders: [{ id: 'f1', groupId: null, worktrees: [{ id: 'wt:a' }] }, { id: 'f2', groupId: 'm', worktrees: [] }],
+    groups: [
+      { id: 'p', kind: 'parent', parentId: null, children: [{ id: 'child:p:c', worktrees: [{ id: 'wt:c' }] }] },
+      { id: 'm', kind: 'manual', parentId: 'p', children: [] }
+    ]
+  })
+  if (ru('f1').join() !== 'f1,wt:a' || ru('p').join() !== 'p,child:p:c,wt:c,m,f2') return fail('rollupIdsFor ' + ru('f1').join() + ' / ' + ru('p').join())
   return { ok: true, msg: 'switcher: query prefix, fuzzy order, status chip/prefix filter and worst-first rollup behave' }
 }
 

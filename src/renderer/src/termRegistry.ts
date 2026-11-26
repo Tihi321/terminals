@@ -8,6 +8,7 @@ import { getTheme } from '../../shared/themes'
 import type { TerminalPalette } from '../../shared/themes'
 import type { CursorStyle } from '../../shared/types'
 import { elevationFailed } from '../../shared/elevation'
+import { tabJumpIndex } from '../../shared/switcher'
 
 /**
  * Non-React registry of live xterm instances. They live for the whole lifetime of a
@@ -340,9 +341,11 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
       return false
     }
     // Layout independent (ev.code): AZERTY needs Shift for digits in ev.key. Ctrl only; the numpad is not bound.
-    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && /^Digit[1-9]$/.test(ev.code)) {
+    // Zoom keys win: on AZERTY the Digit6 key types '-'.
+    const jump = !ev.shiftKey && ev.ctrlKey && !ev.altKey ? tabJumpIndex(ev.code, ev.key) : null
+    if (jump !== null) {
       ev.preventDefault()
-      hooks.onJumpTab(Number(ev.code.slice(5)))
+      hooks.onJumpTab(jump)
       return false
     }
     if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.key === ',') {

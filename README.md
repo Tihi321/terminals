@@ -20,7 +20,7 @@ yarn typecheck   # tsc for main/preload/shared and renderer
 yarn smoke       # headless PTY checks inside Electron; prints a PASS line per check, exits 0 (1 on failure)
 ```
 
-`yarn smoke` runs two pty checks: an interactive shell echoing a marker, and a 2-step command (`Write-Output ('a'+'1')` then `exit 3`) whose output must contain `a1` and whose exit code must be 3. It also checks the MCP tool logic, the terminal text helpers (ANSI stripping, run markers), `run_command` against a real PowerShell (output, exit code, persistent state, busy, timeout), and the MCP HTTP endpoint with the "Allow MCP to run commands" toggle off and on. The agent-status checks cover the status state machine (with a fake clock), the hook-event mapping, installing and removing the hooks in a settings object, tab title cleaning, `POST /status` and `report_status` over HTTP, and the real `status-hook.cmd` run through `cmd.exe`.
+`yarn smoke` runs two pty checks: an interactive shell echoing a marker, and a 2-step command (`Write-Output ('a'+'1')` then `exit 3`) whose output must contain `a1` and whose exit code must be 3. It also checks the quick switcher (query parsing, ranking, status roll-up), tab ordering and the worktree helpers, the MCP tool logic, the terminal text helpers (ANSI stripping, run markers), `run_command` against a real PowerShell (output, exit code, persistent state, busy, timeout), and the MCP HTTP endpoint with the "Allow MCP to run commands" toggle off and on. The agent-status checks cover the status state machine (with a fake clock), the hook-event mapping, installing and removing the hooks in a settings object, tab title cleaning, `POST /status` and `report_status` over HTTP, and the real `status-hook.cmd` run through `cmd.exe`.
 
 ## Build an .exe
 
@@ -243,7 +243,7 @@ Every terminal the app starts (shells and command runs) gets:
 | --- | --- |
 | `TERMINALS_MCP_URL` | URL of this instance's MCP server |
 | `TERMINALS_MCP_TOKEN` | Bearer token |
-| `TERMINALS_LOC_ID` | Id of the folder, parent-group subfolder or group the terminal belongs to |
+| `TERMINALS_LOC_ID` | Id of the folder, parent-group subfolder, group or worktree (`wt:<path>`) the terminal belongs to |
 | `TERMINALS_LOC_PATH` | That location's directory (empty for a manual group) |
 | `TERMINALS_TERM_ID` | This terminal's id (the tab), used to report its status |
 | `TERMINALS_STATUS_URL` | `http://127.0.0.1:<port>/status`, the hooks endpoint |
@@ -329,7 +329,7 @@ The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mc
 | Double-click a folder/group name | Rename |
 | Drag a folder | Reorder, or move into/out of a manual group |
 
-Ctrl+1..9 and the Ctrl+Shift shortcuts are taken by the app and are not sent to the shell. Plain Ctrl+K and Ctrl+F are sent to the shell while a terminal has focus, so kill-line and forward-char keep working. The switcher is Ctrl+Shift+K and find is Ctrl+Shift+F, as in Windows Terminal.
+Ctrl+1..9 and the app's Ctrl+Shift shortcuts are taken by the app and are not sent to the shell. Plain Ctrl+K and Ctrl+F are sent to the shell while a terminal has focus, so kill-line and forward-char keep working. Find is Ctrl+Shift+F, as in Windows Terminal; the switcher is Ctrl+Shift+K. Ctrl+1..9 follows the physical digit keys, so AZERTY works, except that Ctrl+- (the Digit6 key there) still zooms out. While Settings, a worktree dialog or the prompt picker is open, the switcher, tab jump and find shortcuts do nothing.
 
 ## Session restore
 
