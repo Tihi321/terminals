@@ -18,6 +18,10 @@ import { FileViewer } from './FileViewer'
 import { diffTitle } from './gitUtil'
 import type { DiffSpec } from './gitUtil'
 import { SnippetPicker } from './SnippetPicker'
+import { QuickSwitcher } from './QuickSwitcher'
+import { FindBar } from './FindBar'
+import { worstStatus } from '../../shared/switcher'
+import type { SwitcherItem } from '../../shared/switcher'
 import { TabBar, TAB_DRAG_TYPE, LOC_DRAG_TYPE, locDrag, tabDrag } from './TabBar'
 import type { Tab } from './TabBar'
 import {
@@ -37,7 +41,7 @@ import {
   toPersisted
 } from '../../shared/panes'
 import type { PaneState, Side } from '../../shared/panes'
-import { activateIn, moveTab, neighbourTab, paneOfTab, reconcileActive, shiftTab, takenBy } from '../../shared/tabs'
+import { activateIn, moveTab, neighbourTab, nthTabOfLoc, paneOfTab, reconcileActive, shiftTab, takenBy } from '../../shared/tabs'
 import type { ActiveMap } from '../../shared/tabs'
 import { planRestore, restorePaths, toPersistedTabs } from '../../shared/session'
 import { Keys } from './Keys'
@@ -153,6 +157,10 @@ export function App(): JSX.Element {
   /** Live agent status per tab id, pushed by main (runtime only). */
   const [statuses, setStatuses] = useState<Record<string, TermStatus>>({})
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  /** Tab id whose find bar is open (the bar shows only while that tab is visible), and a counter that refocuses its input. */
+  const [findFor, setFindFor] = useState<string | null>(null)
+  const [findToken, setFindToken] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [newWt, setNewWt] = useState<{ repoPath: string } | null>(null)
   const [removeWt, setRemoveWt] = useState<{ wt: WorktreeView; repoLocId: string } | null>(null)
@@ -502,6 +510,7 @@ export function App(): JSX.Element {
     (id: string, code: number) => {
       const tab = tabsRef.current.find((t) => t.id === id)
       if (!tab) return
+      setFindFor((f) => (f === id ? null : f))
       if (tab.kind === 'shell') {
         commitTabs((all) => all.map((t) => (t.id === id ? { ...t, exited: true } : t)))
         return
@@ -542,6 +551,7 @@ export function App(): JSX.Element {
     (id: string) => {
       const tab = tabsRef.current.find((t) => t.id === id)
       if (!tab) return
+      setFindFor((f) => (f === id ? null : f))
       if (tab.run?.status === 'running') stopRun(tab.run.commandId)
       if ((tab.kind === 'shell' || tab.kind === 'command') && !tab.pending) {
         window.api.ptyKill(id)
@@ -745,6 +755,11 @@ export function App(): JSX.Element {
     scheduleSave()
   }, [tabs, paneState, activeKey, scheduleSave])
 
+  // The find bar belongs to a visible tab: switching away drops it.
+  useEffect(() => {
+    setFindFor((f) => (f && !Object.values(activeRef.current).includes(f) ? null : f))
+  }, [activeKey])
+
   // Agent status from main: initial snapshot, then pushed changes (null = the tab has no agent any more).
   useEffect(() => {
     let alive = true
@@ -858,10 +873,57 @@ export function App(): JSX.Element {
     [newTab, showTab]
   )
 
+  /** Quick switcher pick: a tab row shows that tab (focusing the pane that shows it or the folder), a folder row selects the folder. */
+  const jumpTo = useCallback(
+    async (item: SwitcherItem) => {
+      setSwitcherOpen(false)
+      const tabId = item.kind === 'tab' ? item.tabId : undefined
+      if (!tabId) {
+        void select(item.locId)
+        return
+      }
+      lastByLoc.current[item.locId] = tabId
+      const cur = panesRef.current
+      const shown = cur ? cur.panes.findIndex((p) => p.id === paneOfTab(activeRef.current, tabId)) : -1
+      const at = cur
+        ? shown >= 0
+          ? shown
+          : cur.panes[cur.focused]?.locId === item.locId
+          ? cur.focused
+          : cur.panes.findIndex((p) => p.locId === item.locId)
+        : -1
+      if (cur && at >= 0) {
+        if (at !== cur.focused) commitPanes({ ...cur, focused: at })
+        showTab(tabId, cur.panes[at].id)
+      } else {
+        await select(item.locId) // the selection effect repoints the focused pane; reconcileActive picks the tab from lastByLoc
+      }
+      requestAnimationFrame(() => getTerm(tabId)?.term.focus())
+    },
+    [select, commitPanes, showTab]
+  )
+
+  /** Ctrl+Shift+F: open the find bar for the focused pane's terminal, or refocus it when already open. */
+  const openFind = (): void => {
+    const paneId = focusedPaneId()
+    const id = paneId ? activeRef.current[paneId] : undefined
+    const tab = id ? tabsRef.current.find((t) => t.id === id) : undefined
+    if (!id || !tab || (tab.kind !== 'shell' && tab.kind !== 'command') || tab.pending || !getTerm(id)) return
+    if (findFor === id) setFindToken((n) => n + 1)
+    else setFindFor(id)
+  }
+
   // Latest-handler indirection so the registry hooks and the window listener never go stale.
-  const act = useRef({ newSelected: () => {}, closeActive: () => {}, moveActive: (_dir: -1 | 1) => {}, moveItem: (_dir: -1 | 1) => {}, nestItem: (_dir: -1 | 1) => {} })
+  const act = useRef({ newSelected: () => {}, closeActive: () => {}, jumpTab: (_n: number) => {}, find: () => {}, moveActive: (_dir: -1 | 1) => {}, moveItem: (_dir: -1 | 1) => {}, nestItem: (_dir: -1 | 1) => {} })
   act.current = {
     newSelected: () => selectedId && newTab(selectedId, undefined, focusedPaneId()),
+    jumpTab: (n) => {
+      const paneId = focusedPaneId()
+      const locId = panesRef.current?.panes.find((p) => p.id === paneId)?.locId
+      const id = locId ? nthTabOfLoc(tabsRef.current, locId, n) : undefined
+      if (id) showTab(id, paneId)
+    },
+    find: openFind,
     closeActive: () => {
       const paneId = focusedPaneId()
       const id = paneId ? activeRef.current[paneId] : undefined
@@ -897,6 +959,9 @@ export function App(): JSX.Element {
       onZoom: (d) => void zoom(d),
       onTogglePanel: (t) => void togglePanel(t),
       onSnippetPicker: () => setPickerOpen(true),
+      onSwitcher: () => setSwitcherOpen((o) => !o),
+      onJumpTab: (n) => act.current.jumpTab(n),
+      onFind: () => act.current.find(),
       onOpenSettings: () => setSettingsOpen((o) => !o),
       onToggleSidebar: () => void toggleSidebar()
     })
@@ -941,6 +1006,24 @@ export function App(): JSX.Element {
       } else if (e.shiftKey && k === 'p') {
         e.preventDefault()
         setPickerOpen(true)
+      } else if (e.shiftKey && k === 'k') {
+        e.preventDefault()
+        setSwitcherOpen((o) => !o)
+      } else if (e.shiftKey && k === 'f') {
+        e.preventDefault()
+        act.current.find()
+      } else if (!e.shiftKey && k === 'k') {
+        // Plain Ctrl+K belongs to the shell: only outside a terminal, and not while typing in some other field.
+        const el = e.target as HTMLElement | null
+        if (el?.closest('.xterm')) return
+        if (el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') && !el.closest('.switcher')) return
+        e.preventDefault()
+        setSwitcherOpen((o) => !o)
+      } else if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+        const el = e.target as HTMLElement | null
+        if (el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return
+        e.preventDefault()
+        act.current.jumpTab(Number(e.code.slice(5)))
       } else if (!e.shiftKey && k === ',') {
         e.preventDefault()
         setSettingsOpen((o) => !o)
@@ -1022,6 +1105,23 @@ export function App(): JSX.Element {
     }
     return out
   }, [tabs, tabStatus])
+
+  // Quick switcher rows: every tab (tab order), then every folder with a path. Shell and command tabs without an agent entry count as
+  // idle so "i:" works; diff and file tabs carry no status. A folder's status is the worst of its tabs (none when it has no such tab).
+  const switcherItems = useMemo(() => {
+    const out: SwitcherItem[] = []
+    const byLoc: Record<string, (AgentStatus | undefined)[]> = {}
+    for (const t of tabs) {
+      const status: AgentStatus | undefined = t.kind === 'shell' || t.kind === 'command' ? tabStatus[t.id] ?? 'idle' : undefined
+      ;(byLoc[t.locId] ??= []).push(status)
+      out.push({ key: `tab:${t.id}`, kind: 'tab', locId: t.locId, tabId: t.id, folder: locs.get(t.locId)?.name ?? '?', title: t.title, status, order: out.length })
+    }
+    for (const l of locs.values()) {
+      if (!l.path || l.missing) continue
+      out.push({ key: `loc:${l.id}`, kind: 'loc', locId: l.id, folder: l.name, title: l.path, status: worstStatus(byLoc[l.id] ?? []), order: out.length })
+    }
+    return out
+  }, [tabs, locs, tabStatus])
 
   const closeTabsOf = useCallback(
     (ids: string[]) => {
@@ -1465,6 +1565,11 @@ export function App(): JSX.Element {
                       focused={visible && pi === ps.focused}
                       style={style}
                     />
+                    {findFor === t.id && visible && (
+                      <div className="find-layer" style={style}>
+                        <FindBar termId={t.id} focusToken={findToken} onClose={() => setFindFor(null)} />
+                      </div>
+                    )}
                     {t.elevated && t.exited && visible && (
                       <div className="admin-retry" style={style}>
                         <StartAdminButton className="btn small" onStart={() => startAdmin(t.id)} onInstall={() => runCommand(INSTALL_GSUDO_COMMAND, t.locId)} />
@@ -1581,6 +1686,7 @@ export function App(): JSX.Element {
           }}
         />
       )}
+      {switcherOpen && state && <QuickSwitcher items={switcherItems} onClose={() => setSwitcherOpen(false)} onPick={(i) => void jumpTo(i)} />}
       {newWt && (
         <NewWorktreeDialog
           repoPath={newWt.repoPath}

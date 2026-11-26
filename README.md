@@ -96,6 +96,14 @@ A command is a name, a mode (`parallel` or `sequential`) and a list of targets, 
 - Run: every target opens a tab titled `▶ <name>` (`▶ <name> · <folder>` for several targets) in the currently selected folder's tab bar. Steps run in order and the first failing step stops that target (native exit codes propagate). The tab stays open with the output and a `✓ done` or `✗ failed (exit N)` line, and shows a status dot. Parallel starts all targets at once; sequential starts the next target only after the previous one succeeded and stops at the first failure. Stop kills the run's terminals. Run again (command row or the tab's button) replaces the previous run's tabs.
 - Under PowerShell the steps are passed as an `-EncodedCommand`, so no quoting is needed, and your PowerShell profile is loaded, so steps see the same PATH as a normal tab. Under other shells they are joined with `&&`.
 
+## Quick switcher (Ctrl+Shift+K)
+
+Lists every open tab of every folder (shell, command, diff and file tabs) with its folder, title and agent status, followed by every folder you can jump to (Home, saved folders, group roots, discovered children and git worktrees). A folder row shows the worst status of its tabs (needs you, then done, working, idle). Type to fuzzy-filter; Enter switches to the highlighted row and focuses its terminal. Filter by status with the chips (Tab / Shift+Tab cycle All, Needs you, Done, Working) or a query prefix: `n:` needs you, `d:` done, `w:` working, `i:` idle. Ctrl+K opens it too when focus is not in a terminal; in a terminal, Ctrl+K goes to the shell.
+
+## Find in terminal (Ctrl+Shift+F)
+
+Searches the active terminal's scrollback (the length set by the Scrollback value in Settings). Enter / Shift+Enter (or F3 / Shift+F3) go to the next / previous match, Alt+C or the `Aa` button toggles match case, the bar shows "3 of 12", and Esc closes it and returns to the terminal. The bar belongs to one tab and is closed when you switch away from it.
+
 ## Agent status
 
 Tabs that run an agent show a live status, so you can see from the tab bar and the sidebar which agent works, which one waits for you and which one is done. Plain shells show nothing.
@@ -298,11 +306,21 @@ The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mc
 | Ctrl+Shift+W | Close the active terminal |
 | Ctrl+Shift+E | Toggle the Files panel |
 | Ctrl+Shift+R | Toggle the Commands panel |
+| Ctrl+Shift+G | Toggle the Git panel |
+| Ctrl+Shift+B | Toggle the sidebar |
+| Ctrl+Shift+P | Insert a saved prompt |
+| Ctrl+, | Settings |
+| Ctrl+Shift+K | Quick switcher: jump to any open tab or folder; filter by status with the chips (Tab) or `n:` / `d:` / `w:` / `i:` |
+| Ctrl+K | Quick switcher too, when focus is not in a terminal (in a terminal, Ctrl+K goes to the shell) |
+| Ctrl+1 ... Ctrl+8 | Go to tab 1 to 8 of the focused pane's folder |
+| Ctrl+9 | Go to the last tab of the focused pane's folder |
+| Ctrl+Shift+F | Find in the terminal's scrollback (Enter / Shift+Enter next / previous, Alt+C match case, Esc close) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Terminal font zoom in / out / reset (15); persisted |
 | Ctrl+C | Copy if there is a selection, otherwise sent to the shell |
 | Ctrl+V | Paste from clipboard |
 | Ctrl+Shift+C | Copy selection |
 | Alt+Shift+Left / Alt+Shift+Right | Move the active tab one place left / right in its folder |
+| Alt+Shift+Up / Down | Move the selected sidebar item |
 | Middle-click a tab | Close it |
 | Double-click a tab | Rename it (Enter saves, Esc cancels; file and diff tabs still pin on double-click) |
 | Right-click a tab | Menu: Rename tab, Use terminal title (after a rename), Close |
@@ -310,6 +328,8 @@ The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mc
 | Drag a tab onto the left/right half of a pane | Split: opens the tab in a new pane (up to 4), also for a tab of the same folder |
 | Double-click a folder/group name | Rename |
 | Drag a folder | Reorder, or move into/out of a manual group |
+
+Ctrl+1..9 and the Ctrl+Shift shortcuts are taken by the app and are not sent to the shell. Plain Ctrl+K and Ctrl+F are sent to the shell while a terminal has focus, so kill-line and forward-char keep working. The switcher is Ctrl+Shift+K and find is Ctrl+Shift+F, as in Windows Terminal.
 
 ## Session restore
 

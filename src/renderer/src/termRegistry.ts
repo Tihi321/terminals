@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { SearchAddon } from '@xterm/addon-search'
 import { DEFAULT_SETTINGS, fontStack } from '../../shared/settings'
 import { getTheme } from '../../shared/themes'
 import type { TerminalPalette } from '../../shared/themes'
@@ -16,6 +17,7 @@ export interface TermEntry {
   id: string
   term: Terminal
   fit: FitAddon
+  search: SearchAddon
   /** True once the xterm has been attached to a container and the pty requested. */
   started: boolean
   /** Command tabs print a done/failed line on exit instead of the generic exit message. */
@@ -50,6 +52,12 @@ export interface TermHooks {
   onZoom: (dir: -1 | 0 | 1) => void
   onTogglePanel: (tab: 'files' | 'commands' | 'git') => void
   onSnippetPicker: () => void
+  /** Ctrl+Shift+K: toggle the quick switcher. Plain Ctrl+K stays with the shell. */
+  onSwitcher: () => void
+  /** Ctrl+1..9: go to tab n of the focused pane's folder (9 = last). */
+  onJumpTab: (n: number) => void
+  /** Ctrl+Shift+F: open the find bar for the focused terminal. */
+  onFind: () => void
   onToggleSidebar: () => void
   onOpenSettings: () => void
   /** Alt+Shift+Left/Right: move the focused pane's active tab one place. */
@@ -68,6 +76,9 @@ let hooks: TermHooks = {
   onZoom: () => {},
   onTogglePanel: () => {},
   onSnippetPicker: () => {},
+  onSwitcher: () => {},
+  onJumpTab: () => {},
+  onFind: () => {},
   onToggleSidebar: () => {},
   onOpenSettings: () => {},
   onMoveTab: () => {},
@@ -277,6 +288,8 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
   const fit = new FitAddon()
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri)))
+  const search = new SearchAddon()
+  term.loadAddon(search)
 
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true
@@ -314,6 +327,22 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     if (ev.ctrlKey && ev.shiftKey && !ev.altKey && k === 'p') {
       ev.preventDefault()
       hooks.onSnippetPicker()
+      return false
+    }
+    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && k === 'k') {
+      ev.preventDefault()
+      hooks.onSwitcher()
+      return false
+    }
+    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && k === 'f') {
+      ev.preventDefault()
+      hooks.onFind()
+      return false
+    }
+    // Layout independent (ev.code): AZERTY needs Shift for digits in ev.key. Ctrl only; the numpad is not bound.
+    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && /^Digit[1-9]$/.test(ev.code)) {
+      ev.preventDefault()
+      hooks.onJumpTab(Number(ev.code.slice(5)))
       return false
     }
     if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.key === ',') {
@@ -376,6 +405,7 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     id,
     term,
     fit,
+    search,
     started: false,
     command: !!opts.command,
     stopped: false,
@@ -396,6 +426,43 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
   }
   entries.set(id, entry)
   return entry
+}
+
+export interface FindOptions {
+  caseSensitive: boolean
+  dir: 1 | -1
+  incremental?: boolean
+}
+
+/** Highlights and selects the next (dir 1) or previous (dir -1) match in the scrollback. */
+export function findInTerm(id: string, query: string, opts: FindOptions): void {
+  const e = entries.get(id)
+  if (!e || !query) return
+  // The addon only fires onDidChangeResults when decorations are set. Colours must be #rrggbb.
+  const decorations = {
+    matchBackground: current.theme.selectionBackground,
+    activeMatchBackground: current.theme.yellow,
+    matchOverviewRuler: current.theme.selectionBackground,
+    activeMatchColorOverviewRuler: current.theme.yellow
+  }
+  const o = { caseSensitive: opts.caseSensitive, incremental: opts.incremental, decorations }
+  if (opts.dir === 1) e.search.findNext(query, o)
+  else e.search.findPrevious(query, o)
+}
+
+export function clearFind(id: string): void {
+  const e = entries.get(id)
+  if (!e) return
+  e.search.clearDecorations()
+  e.term.clearSelection()
+}
+
+/** Subscribes to match-count changes; returns the unsubscribe function. */
+export function onFindResults(id: string, cb: (r: { resultIndex: number; resultCount: number }) => void): () => void {
+  const e = entries.get(id)
+  if (!e) return () => {}
+  const d = e.search.onDidChangeResults(cb)
+  return () => d.dispose()
 }
 
 export function getTerm(id: string): TermEntry | undefined {

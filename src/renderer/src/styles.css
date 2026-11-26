@@ -2601,3 +2601,122 @@ kbd,
   padding-top: 0;
   padding-bottom: 0;
 }
+
+/* ---------- Quick switcher and find bar ---------- */
+.switcher {
+  width: min(620px, 92vw);
+}
+.switcher-chips {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+.switcher-chip {
+  height: 22px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+}
+.switcher-chip:hover {
+  border-color: var(--line-hover);
+}
+.switcher-chip.on {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.switcher-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.switcher-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-3);
+}
+.switcher-text {
+  flex: 1;
+  min-width: 0;
+}
+.switcher-text .cmd-name,
+.switcher-text .cmd-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.switcher-folder {
+  color: var(--text-2);
+}
+.switcher-sep {
+  margin: 0 6px;
+  color: var(--text-3);
+}
+.switcher-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.switcher-status.needs-you {
+  color: var(--warning, #f59e0b);
+}
+.switcher-status.idle {
+  color: var(--text-3);
+}
+
+.find-layer {
+  position: absolute;
+  top: 46px;
+  right: auto;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 18px 0 0;
+  pointer-events: none;
+}
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  pointer-events: auto;
+  z-index: 2;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.find-input {
+  width: 180px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+.find-count {
+  min-width: 56px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  text-align: center;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.find-count.none {
+  color: var(--danger);
+}
+.find-case {
+  width: auto;
+  padding: 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.find-case.on {
+  color: var(--text);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}

@@ -1,0 +1,7 @@
+{"ts":"2026-11-26T17:39:08Z","actor":"director-scribe","type":"plan.created","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"planner returned the plan"}
+{"ts":"2026-11-26T17:39:09Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"approved by director on the user's 'just do it all'"}
+{"ts":"2026-11-26T19:33:13Z","actor":"implement","type":"implement.started","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"Implementing T0-T4 on feat/herdr-agent-workflow"}
+{"ts":"2026-11-26T19:33:13Z","actor":"implement","type":"slice.started","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"One implementer for all tasks","data":{"tasks":["T0","T1","T2","T3","T4"]}}
+{"ts":"2026-11-26T19:39:10Z","actor":"implement","type":"slice.done","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"T0-T4 implemented; typecheck and smoke pass per child","data":{"tasks":["T0","T1","T2","T3","T4"]}}
+{"ts":"2026-11-26T19:40:28Z","actor":"implement","type":"verify.passed","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"yarn typecheck and yarn smoke pass; manual criteria 4-10 untested"}
+{"ts":"2026-11-26T19:40:28Z","actor":"implement","type":"changelog.written","request":"REQ-0012","ticket":"REQ-0012-switcher-and-search","detail":"changelog.md written; status stays in-progress for checker"}

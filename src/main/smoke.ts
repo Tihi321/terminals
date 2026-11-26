@@ -21,7 +21,8 @@ import { cleanTermTitle } from '../shared/termTitle'
 import { buildRunInput, findMarkers, isTerminalReply, toLines } from './termText'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
 import { applyOrder, moveId, shiftId } from '../shared/order'
-import { activateIn, moveTab, reconcileActive, shiftTab } from '../shared/tabs'
+import { activateIn, moveTab, nthTabOfLoc, reconcileActive, shiftTab } from '../shared/tabs'
+import { fuzzyScore, parseSwitcherQuery, rankSwitcher, worstStatus, type SwitcherItem } from '../shared/switcher'
 import { planRestore, restorePaths, sanitizeTabs, toPersistedTabs, type RestoreCtx } from '../shared/session'
 import { checkElevatedRequest, elevatedCommand, gsudoCandidates, parseSudoMode, resolveElevator } from './elevation'
 import { elevationFailed } from '../shared/elevation'
@@ -262,6 +263,9 @@ function checkTabs(): CheckResult {
   if (shiftTab(tabs, 'a1', -1) !== tabs || shiftTab(tabs, 'a3', 1) !== tabs) return fail('shiftTab at an edge')
   if (ids(shiftTab(tabs, 'a2', 1)) !== 'a1,b1,a3,b2,a2') return fail('shiftTab ' + ids(shiftTab(tabs, 'a2', 1)))
 
+  if (nthTabOfLoc(tabs, 'A', 9) !== 'a3' || nthTabOfLoc(tabs, 'B', 9) !== 'b2' || nthTabOfLoc(tabs, 'A', 2) !== 'a2') return fail('nthTabOfLoc 9 means the last tab of that folder only')
+  if (nthTabOfLoc(tabs, 'A', 4) !== undefined || nthTabOfLoc(tabs, 'nope', 1) !== undefined) return fail('nthTabOfLoc out of range should be undefined')
+
   const panes = [
     { id: 'p0', locId: 'A' },
     { id: 'p1', locId: 'A' },
@@ -279,6 +283,41 @@ function checkTabs(): CheckResult {
   const moved = activateIn(panes, tabs, valid, 'p0', 'a2')
   if (moved.p0 !== 'a2' || moved.p1 !== 'a3') return fail('activateIn should give the old pane its neighbour ' + JSON.stringify(moved))
   return { ok: true, msg: 'tabs: moveTab/shiftTab keep other folders in place; reconcileActive and activateIn keep a tab in one pane' }
+}
+
+/** Check: switcher query parsing, fuzzy ranking, status filtering (chip and prefix) and the worst-first rollup. */
+function checkSwitcher(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'switcher: ' + m })
+  const tab = (order: number, folder: string, title: string, status: SwitcherItem['status']): SwitcherItem => ({
+    key: 'tab:' + order, kind: 'tab', locId: folder, tabId: String(order), folder, title, status, order
+  })
+  const loc = (order: number, folder: string, status: SwitcherItem['status']): SwitcherItem => ({
+    key: 'loc:' + folder, kind: 'loc', locId: folder, folder, title: '', status, order
+  })
+  const items = [
+    tab(0, 'api', 'Claude', 'needs-you'),
+    tab(1, 'web', 'Agent 1', 'working'),
+    tab(2, 'api', 'pwsh', 'idle'),
+    tab(3, 'api', 'cool log', 'done'),
+    loc(4, 'docs', undefined),
+    loc(5, 'web', 'working')
+  ]
+  const names = (l: SwitcherItem[]): string => l.map((i) => (i.kind === 'tab' ? `${i.folder}/${i.title}` : i.folder)).join('|')
+  const p = parseSwitcherQuery('n: foo')
+  if (p.status !== 'needs-you' || p.text !== 'foo') return fail('prefix parse ' + JSON.stringify(p))
+  if (parseSwitcherQuery('foo').status !== null) return fail('no prefix should give status null')
+  if (parseSwitcherQuery('d:\\src').status !== null) return fail('a drive path is not a prefix')
+  if ((fuzzyScore('ac', 'api cool') ?? 0) <= (fuzzyScore('ac', 'abcd') ?? 0)) return fail('word start should beat a scattered match')
+  const q = rankSwitcher(items, 'api cl', null)
+  if (q[0]?.title !== 'Claude' || q[1]?.title !== 'cool log' || q.some((i) => i.title === 'pwsh')) return fail('api cl -> ' + names(q))
+  const all = rankSwitcher(items, '', null)
+  if (all[0].title !== 'Claude' || all[all.length - 1].folder !== 'docs') return fail('empty query order ' + names(all))
+  const w = rankSwitcher(items, '', 'working')
+  if (names(w) !== 'web/Agent 1|web') return fail('working chip ' + names(w))
+  if (names(rankSwitcher(items, 'w:', 'done')) !== 'web/Agent 1|web') return fail('prefix should win over the chip')
+  if (worstStatus(['working', 'done', 'idle']) !== 'done' || worstStatus([]) !== undefined) return fail('worstStatus')
+  if (rankSwitcher(items, 'xyz', null).length !== 0) return fail('xyz should match nothing')
+  return { ok: true, msg: 'switcher: query prefix, fuzzy order, status chip/prefix filter and worst-first rollup behave' }
 }
 
 /** Check: reordering saved items moves one id, keeps ids, and leaves items outside the visible list in place. */
@@ -1182,6 +1221,7 @@ export async function runSmoke(): Promise<void> {
     checkSettings(),
     checkPanes(),
     checkTabs(),
+    checkSwitcher(),
     checkOrder(),
     checkSession(),
     checkAgentStatus(),

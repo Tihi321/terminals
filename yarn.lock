@@ -1035,6 +1035,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@xterm/addon-search@npm:^0.16.0":
+  version: 0.16.0
+  resolution: "@xterm/addon-search@npm:0.16.0"
+  checksum: 10c0/bcd4c27852df1a9cfffb112174a510b0a410fc72f7f2ca431ae2ed3414c575cb1022795d491c7111382195b2d7f299b1f43d69674905c84cf31bafec7e48be9f
+  languageName: node
+  linkType: hard
+
 "@xterm/addon-unicode11@npm:^0.9.0":
   version: 0.9.0
   resolution: "@xterm/addon-unicode11@npm:0.9.0"
@@ -3932,6 +3939,7 @@ __metadata:
     "@types/react-dom": "npm:^19.3.0"
     "@vitejs/plugin-react": "npm:^6.3.0"
     "@xterm/addon-fit": "npm:^0.11.0"
+    "@xterm/addon-search": "npm:^0.16.0"
     "@xterm/addon-unicode11": "npm:^0.9.0"
     "@xterm/addon-web-links": "npm:^0.12.0"
     "@xterm/xterm": "npm:^6.0.0"

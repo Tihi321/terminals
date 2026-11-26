@@ -70,6 +70,13 @@ export function neighbourTab(tabs: TabRef[], id: string, taken: Set<string>): st
   return undefined
 }
 
+/** Id of tab n (1-based) among `locId`'s tabs in array order; n >= 9 means the last one; undefined when out of range. */
+export function nthTabOfLoc(tabs: TabRef[], locId: string, n: number): string | undefined {
+  const list = tabs.filter((t) => t.locId === locId)
+  if (n < 1 || list.length === 0) return undefined
+  return n >= 9 ? list[list.length - 1].id : list[n - 1]?.id
+}
+
 /** Tab ids active in any pane except `exceptPaneId`. */
 export function takenBy(active: ActiveMap, exceptPaneId?: string): Set<string> {
   const out = new Set<string>()

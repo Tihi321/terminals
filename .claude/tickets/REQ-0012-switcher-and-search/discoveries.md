@@ -1,0 +1,2 @@
+- 2026-11-26 implementer: `fnm exec --using default yarn|npx|corepack` fails with "program not found" while node works; yarn is on PATH directly (global environment note in ~/.claude/CLAUDE.md) - suggested: update the environment note
+- 2026-11-26 implementer: termTitle.ts has LF line endings while its siblings are CRLF (src/shared/termTitle.ts) - suggested: normalise line endings
