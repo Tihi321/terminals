@@ -101,6 +101,10 @@ A command is a name, a mode (`parallel` or `sequential`) and a list of targets, 
 
 Lists every open tab of every folder (shell, command, diff and file tabs) with its folder, title and agent status, followed by every folder you can jump to (Home, saved folders, group roots, discovered children and git worktrees). With nothing typed, tabs are ordered needs-you, done, working, idle, then most recently used; the tab you are in comes last of its group (the usage order lives only in memory and is not saved). Done tabs show their age (`Done · 2m`); folder rows show counts (`2 need you · 1 done`). A folder, child or worktree row counts its own tabs; a group row counts its whole subtree including worktrees. Type to fuzzy-filter (typed text ranks by match as before); Enter switches to the highlighted row and focuses its terminal. Filter by status with the chips (Tab / Shift+Tab cycle All, Needs you, Done, Working) or a query prefix: `n:` needs you, `d:` done, `w:` working, `i:` idle. Ctrl+K opens it too when focus is not in a terminal; in a terminal, Ctrl+K goes to the shell.
 
+## Emoji widths
+
+Terminals use `@xterm/addon-unicode-graphemes` (Unicode 15 widths, with Unicode 11 as a fallback), so combined emoji such as ZWJ families, skin tones, flags and VS16 hearts take the right number of cells and TUIs like Claude Code do not garble.
+
 ## Find in terminal (Ctrl+Shift+F)
 
 Searches the active terminal's scrollback (the length set by the Scrollback value in Settings). Enter / Shift+Enter (or F3 / Shift+F3) go to the next / previous match, Alt+C or the `Aa` button toggles match case, the bar shows "3 of 12", and Esc closes it and returns to the terminal. The bar belongs to one tab and is closed when you switch away from it.

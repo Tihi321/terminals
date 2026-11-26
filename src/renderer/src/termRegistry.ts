@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import { SearchAddon } from '@xterm/addon-search'
 import { DEFAULT_SETTINGS, fontStack } from '../../shared/settings'
 import { getTheme } from '../../shared/themes'
@@ -286,6 +287,12 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
   // Match modern TUIs (Claude Code etc.): wide emoji are 2 columns, not Unicode 6's 1.
   term.loadAddon(new Unicode11Addon())
   term.unicode.activeVersion = '11'
+  try {
+    // Grapheme-aware widths (ZWJ sequences, skin tones, flags, VS16); activates itself as '15-graphemes'.
+    term.loadAddon(new UnicodeGraphemesAddon())
+  } catch {
+    term.unicode.activeVersion = '11'
+  }
   const fit = new FitAddon()
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri)))
