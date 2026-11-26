@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { parseReportedStatus, statusFromHookEvent, type HookOutcome } from '../shared/agentStatus'
 import { TOOLS, ToolError, type ToolContext } from './mcpTools'
 import type { TerminalControl } from './terminalHost'
 
@@ -17,18 +18,24 @@ export const DEFAULT_MCP_PORT = 47821
 export const MCP_PATH = '/mcp'
 /** Sent by the MCP client from the terminal's TERMINALS_LOC_ID; Node lower-cases header names. */
 const LOCATION_HEADER = 'x-terminals-location'
+/** Sent from the terminal's TERMINALS_TERM_ID (the pty/tab id). */
+const TERM_HEADER = 'x-terminals-term'
+export const STATUS_PATH = '/status'
+const STATUS_BODY_CAP = 64 * 1024
 const TOKEN_FILE = 'mcp-token'
 
 export interface McpInfo {
   url: string
   token: string
   port: number
+  /** POST endpoint for agent status reports (Claude Code hooks): exported to terminals as TERMINALS_STATUS_URL. */
+  statusUrl: string
   /** Stops listening (used by smoke). */
   close?: () => Promise<void>
 }
 
 const INSTRUCTIONS =
-  "Manages the Terminals app: saved folders, groups, saved commands and prompts, and (when the user has turned on \"Allow MCP to run commands\") its terminals. open_terminal opens a visible PowerShell tab (default: the Home location) in the background and returns its id; the app window is never shown or focused unless open_terminal is called with reveal: true. run_command runs a command in that live shell and returns its output and exit code; send_input types raw text; read_terminal returns recent output; wait_for_output waits for a line of output to match; close_terminal closes it. Only terminals opened through MCP can be typed into or closed. \"This folder\" is the terminal's location from get_context."
+  "Manages the Terminals app: saved folders, groups, saved commands and prompts, and (when the user has turned on \"Allow MCP to run commands\") its terminals. open_terminal opens a visible PowerShell tab (default: the Home location) in the background and returns its id; the app window is never shown or focused unless open_terminal is called with reveal: true. report_status sets the agent status (working, done, needs-you, idle) shown on this terminal's tab. run_command runs a command in that live shell and returns its output and exit code; send_input types raw text; read_terminal returns recent output; wait_for_output waits for a line of output to match; close_terminal closes it. Only terminals opened through MCP can be typed into or closed. \"This folder\" is the terminal's location from get_context."
 
 
 /** Reads the token from the data dir, creating it on first use. */
@@ -108,13 +115,17 @@ async function handle(
   if (req.headers.origin !== undefined) return sendError(res, 403, 'Forbidden: browser requests are not accepted')
   if (!tokenMatches(req.headers.authorization, info.token))
     return sendError(res, 401, 'Unauthorized', { 'WWW-Authenticate': 'Bearer' })
-  if (new URL(req.url ?? '/', 'http://127.0.0.1').pathname !== MCP_PATH) return sendError(res, 404, 'Not found')
+  const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
+  if (pathname === STATUS_PATH) return handleStatus(req, res, terminals)
+  if (pathname !== MCP_PATH) return sendError(res, 404, 'Not found')
   // Stateless JSON-only server: no standalone SSE stream (GET) and no sessions to end (DELETE).
   if (req.method !== 'POST') return sendError(res, 405, 'Method not allowed', { Allow: 'POST' })
 
   const raw = req.headers[LOCATION_HEADER]
   const headerLocation = (Array.isArray(raw) ? raw[0] : raw) || undefined
-  const server = buildServer({ headerLocation, dataDir, terminals, allowRun }, version, onChange)
+  const rawTerm = req.headers[TERM_HEADER]
+  const headerTerm = (Array.isArray(rawTerm) ? rawTerm[0] : rawTerm) || undefined
+  const server = buildServer({ headerLocation, headerTerm, dataDir, terminals, allowRun }, version, onChange)
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   res.on('close', () => {
     void transport.close()
@@ -122,6 +133,73 @@ async function handle(
   })
   await server.connect(transport)
   await transport.handleRequest(req, res)
+}
+
+function reply(res: ServerResponse, status: number): void {
+  // Always an empty body: a hook's stdout can end up in the model's context.
+  res.writeHead(status)
+  res.end()
+}
+
+function readBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolvePromise) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > STATUS_BODY_CAP) {
+        chunks.length = 0
+        req.destroy()
+        resolvePromise(null)
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', () => resolvePromise(null))
+  })
+}
+
+/** POST /status: a Claude Code hook's stdin JSON (or ?state=) sets the agent status of the terminal named by X-Terminals-Term / ?term=. */
+async function handleStatus(req: IncomingMessage, res: ServerResponse, terminals: TerminalControl | null): Promise<void> {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { Allow: 'POST' })
+    res.end()
+    return
+  }
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  const raw = req.headers[TERM_HEADER]
+  const id = ((Array.isArray(raw) ? raw[0] : raw) || url.searchParams.get('term') || '').trim()
+  const text = await readBody(req)
+  if (text === null || !id) return reply(res, 400)
+  let body: unknown = null
+  if (text.trim()) {
+    try {
+      body = JSON.parse(text)
+    } catch {
+      return reply(res, 400)
+    }
+  }
+  let outcome: HookOutcome
+  const state = url.searchParams.get('state')
+  if (state !== null) {
+    const s = parseReportedStatus(state)
+    if (!s) return reply(res, 400)
+    outcome = { kind: 'set', status: s }
+  } else {
+    if (body === null || typeof body !== 'object') return reply(res, 400)
+    outcome = statusFromHookEvent(body)
+  }
+  if (!terminals) return reply(res, 404)
+  if (outcome.kind !== 'ignore') {
+    try {
+      terminals.report(id, outcome)
+    } catch (e) {
+      if (e instanceof ToolError) return reply(res, 404)
+      throw e
+    }
+  }
+  reply(res, 204)
 }
 
 function listen(port: number, onRequest: (req: IncomingMessage, res: ServerResponse) => void): Promise<Server> {
@@ -149,7 +227,7 @@ export async function startMcpServer(opts: {
   const token = loadOrCreateToken(opts.dataDir)
   const envPort = Number(process.env.TERMINALS_MCP_PORT)
   const wanted = Number.isInteger(envPort) && envPort > 0 && envPort < 65536 ? envPort : DEFAULT_MCP_PORT
-  const info: McpInfo = { url: '', token, port: 0 }
+  const info: McpInfo = { url: '', token, port: 0, statusUrl: '' }
   const onRequest = (req: IncomingMessage, res: ServerResponse): void => {
     handle(req, res, info, opts.dataDir, opts.version, opts.onChange, opts.terminals, opts.allowRun).catch((e) => {
       console.error('MCP request failed', e)
@@ -168,6 +246,7 @@ export async function startMcpServer(opts: {
   }
   info.port = (http.address() as AddressInfo).port
   info.url = `http://127.0.0.1:${info.port}${MCP_PATH}`
+  info.statusUrl = `http://127.0.0.1:${info.port}${STATUS_PATH}`
   const server = http
   info.close = () =>
     new Promise<void>((resolvePromise) => {

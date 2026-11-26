@@ -58,6 +58,8 @@ export interface TermHooks {
   onMoveItem: (dir: -1 | 1) => void
   /** The shell reported its working directory (OSC 7 or OSC 9;9). */
   onCwd: (id: string, cwd: string) => void
+  /** The terminal set its title (OSC 0/2). Raw; the app cleans it. */
+  onTitle: (id: string, title: string) => void
 }
 let hooks: TermHooks = {
   onNewTab: () => {},
@@ -70,7 +72,8 @@ let hooks: TermHooks = {
   onOpenSettings: () => {},
   onMoveTab: () => {},
   onMoveItem: () => {},
-  onCwd: () => {}
+  onCwd: () => {},
+  onTitle: () => {}
 }
 export function setTermHooks(h: TermHooks): void {
   hooks = h
@@ -363,6 +366,7 @@ export function createTerm(id: string, opts: { command?: boolean; elevated?: boo
     return true
   })
 
+  term.onTitleChange((t) => hooks.onTitle(id, t))
   term.onData((d) => window.api.ptyWrite(id, d))
   term.onResize(({ cols, rows }) => window.api.ptyResize(id, cols, rows))
 

@@ -1,3 +1,5 @@
+import type { TermStatus } from './agentStatus'
+
 /** Current on-disk schema version. Files without a `version` field are version 1. */
 export const SCHEMA_VERSION = 4
 
@@ -24,6 +26,8 @@ export interface Settings {
   homeDir: string
   /** MCP clients may open terminals, run commands, type into and read terminals. Read at every call. */
   allowMcpRun: boolean
+  /** Detect agent status (working/done/needs-you) from terminal output for tabs whose agent does not report. */
+  agentHeuristics: boolean
 }
 
 export interface LoginItemState {
@@ -70,6 +74,8 @@ export interface PersistedTab {
   elevated?: boolean
   /** Opened by an MCP agent; restored tabs stay controllable by MCP. */
   agent?: boolean
+  /** shell only: the user renamed the tab; terminal title changes never overwrite it. */
+  userTitle?: boolean
 }
 
 export interface UiState {
@@ -429,4 +435,13 @@ export interface TerminalsApi {
   onAgentCloseTab(cb: (id: string) => void): () => void
   onPtyData(cb: (id: string, data: string) => void): () => void
   onPtyExit(cb: (id: string, exitCode: number) => void): () => void
+
+  /** Agent status of a terminal changed (null = no longer an agent tab / closed). */
+  onTermStatus(cb: (id: string, s: TermStatus | null) => void): () => void
+  getTermStatuses(): Promise<Record<string, TermStatus>>
+  /** The user viewed the tab: a `done` status becomes idle. */
+  termSeen(id: string): void
+  getClaudeHooks(): Promise<Result<{ installed: boolean; path: string; scriptPath: string; config: object }>>
+  installClaudeHooks(): Promise<Result<{ installed: boolean; path: string; backup: string | null }>>
+  removeClaudeHooks(): Promise<Result<{ installed: boolean; path: string; backup: string | null }>>
 }

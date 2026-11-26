@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray, webContents } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -21,6 +21,7 @@ import type { GitDiffRequest, LoginItemState } from '../shared/types'
 import { startMcpServer, type McpInfo } from './mcp'
 import { locationById, ToolError } from './mcpTools'
 import { TerminalHost } from './terminalHost'
+import * as claudeHooks from './claudeHooks'
 
 // Must run before app is ready: lets tests/dev runs use an isolated data directory.
 const dataDirArg = process.argv.find((a) => a.startsWith('--data-dir='))?.slice('--data-dir='.length)
@@ -184,7 +185,7 @@ function spawnForHost(id: string, shellExe: string, locId: string, cwd: string, 
         if (attached.has(id) && !wc.isDestroyed()) wc.send('pty:exit', id, code)
       }
     },
-    ptyEnv(locId)
+    ptyEnv(locId, id)
   )
   spawned = p
   ptys.set(id, p)
@@ -201,7 +202,13 @@ const host = new TerminalHost({
   closeTab: closeAgentTab,
   release: (id) => releasePty(id),
   configuredShell: () => store.getShell(),
-  ownerWc: () => (win && !win.isDestroyed() ? win.webContents.id : null)
+  ownerWc: () => (win && !win.isDestroyed() ? win.webContents.id : null),
+  onStatus: (id, s) => {
+    const h = hosted.get(id)
+    const wc = h && webContents.fromId(h.wc)
+    if (wc && !wc.isDestroyed()) wc.send('term:status', id, s)
+  },
+  heuristics: () => store.getSettings().agentHeuristics
 })
 
 /** The portable build runs from a temp extraction dir, so it must register the original exe instead of process.execPath. */
@@ -423,16 +430,18 @@ function pushState(): void {
 }
 
 /**
- * Per-terminal MCP context. All four are always set (empty when unknown) so values inherited from a parent
+ * Per-terminal MCP context. All six are always set (empty when unknown) so values inherited from a parent
  * process, e.g. this app started from another instance's terminal, never leak through.
  */
-function ptyEnv(locId: unknown): Record<string, string> {
+function ptyEnv(locId: unknown, termId: string): Record<string, string> {
   const loc = mcp && typeof locId === 'string' && locId ? locationById(store.getState(), locId) : null
   return {
     TERMINALS_MCP_URL: mcp?.url ?? '',
     TERMINALS_MCP_TOKEN: mcp?.token ?? '',
     TERMINALS_LOC_ID: loc?.id ?? '',
-    TERMINALS_LOC_PATH: loc?.path ?? ''
+    TERMINALS_LOC_PATH: loc?.path ?? '',
+    TERMINALS_TERM_ID: termId,
+    TERMINALS_STATUS_URL: mcp?.statusUrl ?? ''
   }
 }
 
@@ -650,7 +659,7 @@ function registerIpc(): void {
     const cols = Math.max(req.cols, 2)
     const rows = Math.max(req.rows, 1)
     try {
-      const env = ptyEnv(req.locId)
+      const env = ptyEnv(req.locId, req.id)
       const p = elevatedCmd
         ? spawnElevated(elevatedCmd.file, elevatedCmd.args, cwd as string, cols, rows, handlers, env)
         : Array.isArray(req.steps)
@@ -679,10 +688,13 @@ function registerIpc(): void {
   })
   const ownsPty = (wcId: number, id: unknown): id is string => typeof id === 'string' && !!owners.get(wcId)?.has(id)
   ipcMain.on('pty:write', (e, id: string, data: string) => {
-    if (ownsPty(e.sender.id, id)) ptys.get(id)?.write(String(data))
+    if (!ownsPty(e.sender.id, id)) return
+    ptys.get(id)?.write(String(data))
+    host.input(id)
   })
   ipcMain.on('pty:resize', (e, id: string, cols: number, rows: number) => {
     if (!ownsPty(e.sender.id, id)) return
+    host.resized(id)
     try {
       if (cols > 0 && rows > 0) ptys.get(id)?.resize(Math.floor(cols), Math.floor(rows))
     } catch {
@@ -705,6 +717,13 @@ function registerIpc(): void {
     attached.add(id)
     return { ok: true, backlog: host.backlog(id) }
   })
+  ipcMain.handle('term:statuses', () => host.statuses())
+  ipcMain.on('term:seen', (e, id: string) => {
+    if (typeof id === 'string' && hosted.get(id)?.wc === e.sender.id) host.seen(id)
+  })
+  ipcMain.handle('hooks:get', () => claudeHooks.getHooks())
+  ipcMain.handle('hooks:install', () => claudeHooks.installHooks())
+  ipcMain.handle('hooks:remove', () => claudeHooks.removeHooks())
   ipcMain.on('agent:openTab:reply', (e, reqId: string, result: Result) => {
     if (!win || win.isDestroyed() || e.sender !== win.webContents) return
     const done = typeof reqId === 'string' ? pendingTabs.get(reqId) : undefined
@@ -724,6 +743,13 @@ if (SMOKE) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null)
     store.loadStore()
+    try {
+      // Refresh the hook script after an update or a data-dir change; settings.json itself is never touched here.
+      const h = claudeHooks.getHooks()
+      if (h.ok && h.installed) claudeHooks.ensureHookScript()
+    } catch (e) {
+      console.error('Could not refresh the status hook script', e)
+    }
     prunePasteDir()
     registerIpc()
     nativeTheme.on('updated', applyWindowTheme)

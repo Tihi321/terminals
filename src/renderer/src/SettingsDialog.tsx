@@ -16,7 +16,7 @@ import './SettingsDialog.css'
 type FieldDef =
   | { key: 'theme' | 'cursorStyle' | 'shell'; kind: 'select'; label: string; hint?: string }
   | { key: 'terminalFontSize' | 'scrollback'; kind: 'number'; label: string; min: number; max: number; step: number; hint?: string }
-  | { key: 'cursorBlink' | 'allowMcpRun'; kind: 'toggle'; label: string; hint?: string }
+  | { key: 'cursorBlink' | 'allowMcpRun' | 'agentHeuristics'; kind: 'toggle'; label: string; hint?: string }
   | { key: 'homeDir'; kind: 'path'; label: string; hint?: string }
   | { key: 'terminalFontFamily' | 'editor'; kind: 'text'; label: string; presets?: string[]; hint?: string }
 
@@ -79,6 +79,17 @@ const SECTIONS: { title: string; fields: FieldDef[] }[] = [
   {
     title: 'Home',
     fields: [{ key: 'homeDir', kind: 'path', label: 'Home folder', hint: 'Where Home terminals start. Empty = your Documents folder.' }]
+  },
+  {
+    title: 'Agent status',
+    fields: [
+      {
+        key: 'agentHeuristics',
+        kind: 'toggle',
+        label: 'Detect agent status from terminal output',
+        hint: 'Used for tabs whose agent does not report. Claude Code only.'
+      }
+    ]
   },
   {
     title: 'MCP',
@@ -189,6 +200,95 @@ function DraftInput(p: {
   )
 }
 
+interface HooksState {
+  installed: boolean
+  path: string
+  config: object
+}
+
+/** Claude Code hooks: install / remove / copy. Nothing is written to ~/.claude/settings.json without a click. */
+function ClaudeHooksRow(): JSX.Element {
+  const [state, setState] = useState<HooksState | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ text: string; error: boolean } | null>(null)
+
+  const load = async (): Promise<void> => {
+    const r = await window.api.getClaudeHooks()
+    if (r.ok) setState({ installed: r.installed, path: r.path, config: r.config })
+    else setMsg({ text: r.error, error: true })
+  }
+
+  useEffect(() => {
+    let alive = true
+    window.api
+      .getClaudeHooks()
+      .then((r) => {
+        if (!alive) return
+        if (r.ok) setState({ installed: r.installed, path: r.path, config: r.config })
+        else setMsg({ text: r.error, error: true })
+      })
+      .catch((e) => alive && setMsg({ text: String(e), error: true }))
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const run = async (mode: 'install' | 'remove'): Promise<void> => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await (mode === 'install' ? window.api.installClaudeHooks() : window.api.removeClaudeHooks())
+      if (r.ok) {
+        const verb = mode === 'install' ? 'Installed' : 'Removed'
+        setMsg({ text: `${verb} in ${r.path}.${r.backup ? ` Backup: ${r.backup}` : ''}`, error: false })
+      } else setMsg({ text: r.error, error: true })
+      await load()
+    } catch (e) {
+      setMsg({ text: String(e), error: true })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copy = async (): Promise<void> => {
+    if (!state) return
+    try {
+      await window.api.clipboardWrite(JSON.stringify(state.config, null, 2))
+      setMsg({ text: 'Hooks JSON copied.', error: false })
+    } catch (e) {
+      setMsg({ text: String(e), error: true })
+    }
+  }
+
+  return (
+    <div className="field">
+      <span>Claude Code hooks</span>
+      <div className="settings-path">
+        <span className="hint">{state ? (state.installed ? 'Installed' : 'Not installed') : 'Checking…'}</span>
+        <button className="btn" disabled={busy || !state} onClick={() => void run('install')}>
+          {state?.installed ? 'Reinstall' : 'Install'}
+        </button>
+        <button className="btn" disabled={busy || !state?.installed} onClick={() => void run('remove')}>
+          Remove
+        </button>
+        <button className="btn" disabled={!state} onClick={() => void copy()}>
+          Copy JSON
+        </button>
+      </div>
+      {state && <small className="settings-hint">{state.path}</small>}
+      <small className="settings-hint">
+        Hooks report working, needs-you and done exactly. Install writes them to this file (the old one is backed up). Copy JSON alone does not
+        create the script; click Install once.
+      </small>
+      {msg && (
+        <small className="settings-hint" role={msg.error ? 'alert' : 'status'} style={msg.error ? { color: 'var(--danger, #e5534b)' } : undefined}>
+          {msg.text}
+        </small>
+      )}
+    </div>
+  )
+}
+
 export function SettingsDialog({
   settings,
   homePath,
@@ -250,11 +350,19 @@ export function SettingsDialog({
   }
 
   const reset = (): void => {
-    const { shell: _shell, editor: _editor, homeDir: _homeDir, allowMcpRun: _allowMcpRun, ...rest } = DEFAULT_SETTINGS
+    const {
+      shell: _shell,
+      editor: _editor,
+      homeDir: _homeDir,
+      allowMcpRun: _allowMcpRun,
+      agentHeuristics: _agentHeuristics,
+      ...rest
+    } = DEFAULT_SETTINGS
     void _shell
     void _editor
     void _homeDir
     void _allowMcpRun
+    void _agentHeuristics
     onChange(rest)
   }
 
@@ -369,6 +477,7 @@ export function SettingsDialog({
                   {login && !login.supported && <small className="settings-hint">Only available in the installed app.</small>}
                 </label>
               )}
+              {s.title === 'Agent status' && <ClaudeHooksRow />}
             </section>
           ))}
         </div>

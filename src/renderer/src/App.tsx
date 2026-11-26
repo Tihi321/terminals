@@ -4,6 +4,9 @@ import { Download, FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClo
 import type { AgentTabRequest, AppState, Command, ElevatorInfo, GitDiffRequest, Result } from '../../shared/types'
 import { GSUDO_HINT, INSTALL_GSUDO_COMMAND } from '../../shared/elevation'
 import { removalSet } from '../../shared/groupTree'
+import { rollupOf } from '../../shared/agentStatus'
+import type { AgentStatus, StatusRollup, StatusSource, TermStatus } from '../../shared/agentStatus'
+import { cleanTermTitle } from '../../shared/termTitle'
 import { Sidebar } from './Sidebar'
 import type { Finished } from './Sidebar'
 import { TerminalView } from './TerminalView'
@@ -145,6 +148,8 @@ export function App(): JSX.Element {
   const runCtl = useRef(new Map<string, RunCtl>())
   const latestRun = useRef<Record<string, string>>({})
   const counters = useRef<Record<string, number>>({})
+  /** Live agent status per tab id, pushed by main (runtime only). */
+  const [statuses, setStatuses] = useState<Record<string, TermStatus>>({})
   const [pickerOpen, setPickerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   useAppearance(state?.settings)
@@ -631,6 +636,7 @@ export function App(): JSX.Element {
                 tab.shell = t.shell
                 tab.startCwd = t.startCwd
                 if (t.agent) tab.agent = true
+                if (t.userTitle) tab.userTitle = true
                 if (t.fallbackCwd) fallbackById.current[t.newId] = t.fallbackCwd
                 // New tabs continue the numbering ("PowerShell 3").
                 const n = /\s(\d+)$/.exec(t.title)
@@ -729,6 +735,71 @@ export function App(): JSX.Element {
     scheduleSave()
   }, [tabs, paneState, activeKey, scheduleSave])
 
+  // Agent status from main: initial snapshot, then pushed changes (null = the tab has no agent any more).
+  useEffect(() => {
+    let alive = true
+    void window.api.getTermStatuses().then((s) => alive && setStatuses((cur) => ({ ...s, ...cur })))
+    const off = window.api.onTermStatus((id, s) =>
+      setStatuses((cur) => {
+        if (!s) {
+          if (!(id in cur)) return cur
+          const { [id]: _gone, ...rest } = cur
+          return rest
+        }
+        return { ...cur, [id]: s }
+      })
+    )
+    return () => {
+      alive = false
+      off()
+    }
+  }, [])
+
+  /** Done becomes idle once the tab is viewed: it is the active tab of some pane while the window has focus. */
+  const markSeen = useCallback((ids: string[]): void => {
+    if (!document.hasFocus()) return
+    for (const id of ids) if (statusesRef.current[id]?.status === 'done') window.api.termSeen(id)
+  }, [])
+  const statusesRef = useRef(statuses)
+  statusesRef.current = statuses
+  useEffect(() => {
+    markSeen(Object.values(activeRef.current))
+  }, [statuses, activeKey, markSeen])
+  useEffect(() => {
+    const onWinFocus = (): void => markSeen(Object.values(activeRef.current))
+    window.addEventListener('focus', onWinFocus)
+    return () => window.removeEventListener('focus', onWinFocus)
+  }, [markSeen])
+
+  /** The terminal set its title: shell tabs follow it unless the user renamed the tab. */
+  const onTermTitle = useCallback(
+    (id: string, raw: string) => {
+      const tab = tabsRef.current.find((t) => t.id === id)
+      if (!tab || tab.kind !== 'shell') return
+      const c = cleanTermTitle(raw)
+      if (!c) return
+      const title = tab.userTitle ? tab.title : c
+      if (tab.autoTitle === c && tab.title === title) return
+      commitTabs((all) => all.map((t) => (t.id === id ? { ...t, autoTitle: c, title } : t)))
+    },
+    [commitTabs]
+  )
+
+  /** Tab rename: a title pins it (userTitle); null goes back to the terminal's own title. */
+  const renameTab = useCallback(
+    (id: string, title: string | null) => {
+      commitTabs((all) =>
+        all.map((t) => {
+          if (t.id !== id) return t
+          if (title) return { ...t, title, userTitle: true }
+          const { userTitle: _u, ...rest } = t
+          return { ...rest, title: t.autoTitle ?? t.title }
+        })
+      )
+    },
+    [commitTabs]
+  )
+
   const focusedPaneId = (): string | undefined => {
     const cur = panesRef.current
     return cur?.panes[cur.focused]?.id
@@ -811,6 +882,7 @@ export function App(): JSX.Element {
         cwdById.current[id] = cwd
         scheduleSave()
       },
+      onTitle: onTermTitle,
       onExit: handleExit,
       onZoom: (d) => void zoom(d),
       onTogglePanel: (t) => void togglePanel(t),
@@ -818,7 +890,7 @@ export function App(): JSX.Element {
       onOpenSettings: () => setSettingsOpen((o) => !o),
       onToggleSidebar: () => void toggleSidebar()
     })
-  }, [handleExit, zoom, togglePanel, toggleSidebar, scheduleSave])
+  }, [handleExit, zoom, togglePanel, toggleSidebar, scheduleSave, onTermTitle])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -912,6 +984,34 @@ export function App(): JSX.Element {
     }
     return f
   }, [tabs])
+
+  // Agent status per shell tab (non-idle only), its source for the tooltip, and the per-location roll-up for the sidebar.
+  const tabStatus = useMemo(() => {
+    const m: Record<string, AgentStatus> = {}
+    for (const t of tabs) {
+      const s = t.kind === 'shell' ? statuses[t.id] : undefined
+      if (s && s.status !== 'idle') m[t.id] = s.status
+    }
+    return m
+  }, [tabs, statuses])
+  const tabStatusSource = useMemo(() => {
+    const m: Record<string, StatusSource> = {}
+    for (const id of Object.keys(tabStatus)) m[id] = statuses[id].source
+    return m
+  }, [tabStatus, statuses])
+  const agentByLoc = useMemo(() => {
+    const byLoc: Record<string, { status: AgentStatus; title: string }[]> = {}
+    for (const t of tabs) {
+      const s = tabStatus[t.id]
+      if (s) (byLoc[t.locId] ??= []).push({ status: s, title: t.title })
+    }
+    const out: Record<string, StatusRollup> = {}
+    for (const [locId, list] of Object.entries(byLoc)) {
+      const r = rollupOf(list)
+      if (r) out[locId] = r
+    }
+    return out
+  }, [tabs, tabStatus])
 
   const closeTabsOf = useCallback(
     (ids: string[]) => {
@@ -1027,6 +1127,7 @@ export function App(): JSX.Element {
             onOpenSettings={() => setSettingsOpen(true)}
             counts={counts}
             finished={finished}
+            agent={agentByLoc}
             working={working}
             groupBy={ui.groupBy}
             idleCollapsed={ui.idleCollapsed}
@@ -1095,8 +1196,8 @@ export function App(): JSX.Element {
         )}
         {ui.sidebarCollapsed && (
           <nav className="active-rail" aria-label="Active folders">
-            {Object.keys(working)
-              .filter((id) => working[id] > 0 && locs.has(id))
+            {Object.keys({ ...working, ...agentByLoc })
+              .filter((id) => (working[id] > 0 || (agentByLoc[id]?.needsYou ?? 0) + (agentByLoc[id]?.done ?? 0) > 0) && locs.has(id))
               .map((id) => {
                 const l = locs.get(id)
                 if (!l) return null
@@ -1109,7 +1210,7 @@ export function App(): JSX.Element {
                     onClick={() => void select(id)}
                   >
                     {(l.name.trim()[0] ?? '?').toUpperCase()}
-                    <span className={`rail-dot ${fin && fin.failed > 0 ? 'failed' : ''}`} />
+                    <span className={`rail-dot ${fin && fin.failed > 0 ? 'failed' : ''} ${agentByLoc[id]?.top ?? ''}`} />
                   </button>
                 )
               })}
@@ -1195,6 +1296,9 @@ export function App(): JSX.Element {
                         onAcceptDrag={() => setDropHint(null)}
                         onClose={closeTab}
                         onPin={(id) => commitTabs((all) => all.map((x) => (x.id === id ? { ...x, preview: false } : x)))}
+                        onRename={renameTab}
+                        status={tabStatus}
+                        statusSource={tabStatusSource}
                         onRunAgain={runCommand}
                         onNew={() => newTab(loc.id, undefined, p.id)}
                         onNewAdmin={() => newAdminTab(loc.id, p.id)}

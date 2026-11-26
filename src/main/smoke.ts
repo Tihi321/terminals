@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,6 +14,10 @@ import { THEME_IDS, THEMES, UI_VARS, resolveThemeId } from '../shared/themes'
 import { contextLocation, findLocation, planCommand, planPrompt, resolveOpenTarget, RUN_DISABLED_ERROR, ToolError, visibleCommands } from './mcpTools'
 import { hostAllowed, startMcpServer, tokenMatches } from './mcp'
 import { TerminalHost } from './terminalHost'
+import { AgentStatusTracker, QUIET_MS } from './agentStatus'
+import { statusFromHookEvent } from '../shared/agentStatus'
+import { hookScript, mergeClaudeHooks } from '../shared/claudeHooks'
+import { cleanTermTitle } from '../shared/termTitle'
 import { buildRunInput, findMarkers, toLines } from './termText'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
 import { applyOrder, moveId, shiftId } from '../shared/order'
@@ -293,6 +297,55 @@ function checkOrder(): CheckResult {
   return { ok: true, msg: 'order: moveId/shiftId/applyOrder reorder a visible subset and keep everything else in place' }
 }
 
+/** Check: agent status tracker (fake clock), hook event mapping, hook install/remove merge and title cleaning. */
+function checkAgentStatus(): CheckResult {
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'agent status: ' + m })
+  const t = new AgentStatusTracker()
+  const st = (): string | null => t.get()?.status ?? null
+  let now = 1_000_000
+  t.output('PS C:\\a> dir\r\n', now)
+  if (t.get() !== null) return fail('plain output must not give a status')
+  now += 2000
+  t.output('\u001b[2m esc to interrupt\u001b[0m', now)
+  if (st() !== 'working' || t.get()?.source !== 'heuristic') return fail('esc to interrupt -> working, got ' + st())
+  now += QUIET_MS
+  if (!t.tick(now) || st() !== 'done') return fail('quiet -> done, got ' + st())
+  if (!t.seen(now) || st() !== 'idle') return fail('seen -> idle, got ' + st())
+  now += 1000
+  t.output('working...', now)
+  now += 10
+  t.output('\r\n Do you want to proceed?\r\n', now)
+  if (st() !== 'needs-you') return fail('permission prompt -> needs-you, got ' + st())
+  if (!t.input(now + 1) || st() !== 'idle') return fail('input must clear needs-you, got ' + st())
+  now += 1000
+  t.report({ kind: 'set', status: 'done' }, now)
+  t.output('esc to interrupt', now + 1000)
+  if (st() !== 'done' || t.get()?.source !== 'report') return fail('a report must beat the heuristic, got ' + st())
+  if (!t.report(statusFromHookEvent({ hook_event_name: 'SessionEnd' }), now) || t.get() !== null) return fail('SessionEnd must clear')
+  const ev = (e: object): string => JSON.stringify(statusFromHookEvent(e))
+  const set = (status: string): string => JSON.stringify({ kind: 'set', status })
+  if (
+    ev({ hook_event_name: 'Stop' }) !== set('done') ||
+    ev({ hook_event_name: 'PermissionRequest' }) !== set('needs-you') ||
+    ev({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }) !== set('needs-you') ||
+    ev({ hook_event_name: 'Notification', notification_type: 'idle_prompt' }) !== JSON.stringify({ kind: 'ignore' }) ||
+    ev({ hook_event_name: 'UserPromptSubmit' }) !== set('working')
+  )
+    return fail('statusFromHookEvent mapping')
+  const script = 'C:\\data\\status-hook.cmd'
+  const mine = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] }, model: 'opus' }
+  const once = mergeClaudeHooks(mine, 'install', script)
+  const twice = mergeClaudeHooks(once, 'install', script)
+  if (JSON.stringify(once) !== JSON.stringify(twice)) return fail('install twice must be idempotent')
+  const stops = (once.hooks as Record<string, unknown[]>).Stop
+  if (stops.length !== 2) return fail('install must append next to the user hook ' + JSON.stringify(stops))
+  const removed = mergeClaudeHooks(twice, 'remove', script)
+  if (JSON.stringify(removed) !== JSON.stringify(mine)) return fail('remove must leave the user hook and other keys ' + JSON.stringify(removed))
+  if (cleanTermTitle('\u2733 Fix login bug') !== 'Fix login bug') return fail('spinner glyph must be stripped from a title')
+  if (cleanTermTitle('C:\\Program Files\\PowerShell\\7\\pwsh.exe') !== null) return fail('an exe path is not a title')
+  return { ok: true, msg: 'agent status: heuristic working/done/needs-you, input and report precedence, hook event mapping, hook merge idempotent and reversible, title cleaning' }
+}
+
 /** Check: saved tabs are sanitised, and the restore plan keeps order, skips missing things, falls back cwd, anchors runs and maps ids. */
 function checkSession(): CheckResult {
   const fail = (m: string): CheckResult => ({ ok: false, msg: 'session: ' + m })
@@ -343,6 +396,9 @@ function checkSession(): CheckResult {
   if (plan.runs.length !== 1 || plan.runs[0].commandId !== 'cmd1' || plan.runs[0].anchor !== plan.idMap.f1 || plan.runs[0].snapshotIds[0] !== 'c1')
     return fail('run anchor ' + JSON.stringify(plan.runs))
   if (plan.idMap.s1 !== plan.tabs[0].newId || plan.idMap.f2 !== undefined) return fail('idMap ' + JSON.stringify(plan.idMap))
+  const titled = sanitizeTabs([{ ...good[0], userTitle: true }, { ...good[5], id: 'u2', userTitle: 'yes' }])
+  if (toPersistedTabs([{ ...good[7], userTitle: true }], {})[0]?.userTitle !== true || titled[0]?.userTitle !== true || titled[1]?.userTitle !== undefined)
+    return fail('userTitle: true must survive toPersistedTabs/sanitizeTabs and a non-boolean be dropped ' + JSON.stringify(titled))
   if (plan.tabs[4].elevated !== true) return fail('planRestore should carry elevated ' + JSON.stringify(plan.tabs[4]))
   return { ok: true, msg: 'session: sanitizeTabs drops bad entries; planRestore keeps order, skips missing folder/file/command, falls back cwd, anchors runs' }
 }
@@ -923,6 +979,8 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
     return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive, reports `exit 5` as exited with code 5, waitFor matches later output' }
   } catch (e) {
     return fail(String(e))
+  } finally {
+    host.dispose()
   }
 }
 
@@ -956,13 +1014,37 @@ async function checkMcpHttp(dir: string, track: (p: IPty) => void): Promise<Chec
     const run = await call('run_command', { id: o.id, command: "Write-Output ('h'+'i')" })
     const r = JSON.parse(run.text) as { output: string; exitCode: number }
     if (run.isError || r.output !== 'hi' || r.exitCode !== 0) return fail('run_command ' + run.text)
+    const statusOf = (): string | null => host.list().find((x) => x.id === o.id)?.status?.status ?? null
+    const post = (headers: Record<string, string>, body: string): Promise<Response> =>
+      fetch(info.statusUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body })
+    const auth = { Authorization: `Bearer ${info.token}`, 'X-Terminals-Term': o.id }
+    const stop = await post(auth, '{"hook_event_name":"Stop"}')
+    if (stop.status !== 204 || (await stop.text()) !== '' || statusOf() !== 'done') return fail(`POST /status Stop: HTTP ${stop.status}, status ${statusOf()}`)
+    if ((await post({ 'X-Terminals-Term': o.id }, '{"hook_event_name":"Stop"}')).status !== 401) return fail('/status without a token must be 401')
+    const rep = await call('report_status', { state: 'needs-you', terminal: o.id })
+    if (rep.isError || statusOf() !== 'needs-you') return fail('report_status ' + rep.text)
+    const script = join(dir, 'status-hook.cmd')
+    writeFileSync(script, hookScript())
+    // Async spawn: the server runs in this process, so a blocking spawnSync would starve it and the hook's curl would time out.
+    const hook = await new Promise<{ code: number | null; stdout: string }>((resolveHook, rejectHook) => {
+      const child = spawn('cmd.exe', ['/d', '/c', script], {
+        env: { ...process.env, TERMINALS_STATUS_URL: info.statusUrl, TERMINALS_MCP_TOKEN: info.token, TERMINALS_TERM_ID: o.id }
+      })
+      let stdout = ''
+      child.stdout.on('data', (d: Buffer) => (stdout += d.toString()))
+      child.on('error', rejectHook)
+      child.on('close', (code) => resolveHook({ code, stdout }))
+      child.stdin.end('{"hook_event_name":"UserPromptSubmit"}')
+    })
+    if (hook.code !== 0 || hook.stdout !== '' || statusOf() !== 'working') return fail(`status-hook.cmd: exit ${hook.code}, stdout ${JSON.stringify(hook.stdout)}, status ${statusOf()}`)
     const closed = await call('close_terminal', { id: o.id })
     if (closed.isError || host.list().length) return fail('close_terminal ' + closed.text)
-    return { ok: true, msg: 'mcp http: toggle off refuses run_command but list_terminals works; toggle on opens under Home, runs hi / exit 0, closes' }
+    return { ok: true, msg: 'mcp http: toggle off refuses run_command but list_terminals works; toggle on opens under Home, runs hi / exit 0, closes; POST /status (token required, 204 empty), report_status and the real status-hook.cmd set the tab status' }
   } catch (e) {
     return fail(String(e))
   } finally {
     await info.close?.()
+    host.dispose()
   }
 }
 
@@ -984,6 +1066,7 @@ export async function runSmoke(): Promise<void> {
     checkTabs(),
     checkOrder(),
     checkSession(),
+    checkAgentStatus(),
     checkElevation(),
     checkWrite(),
     checkMcpLogic(dir),

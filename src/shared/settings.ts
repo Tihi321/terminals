@@ -52,7 +52,8 @@ export const SETTINGS_SCHEMA: { [K in keyof Settings]: SettingField<Settings[K]>
       return t === '' || /^([a-zA-Z]:[\\/]|\\\\[^\\])/.test(t) ? t : undefined
     }
   },
-  allowMcpRun: { default: false, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) }
+  allowMcpRun: { default: false, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) },
+  agentHeuristics: { default: true, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) }
 }
 
 const KEYS = Object.keys(SETTINGS_SCHEMA) as (keyof Settings)[]

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { AgentTabRequest, AppState, Result, TerminalsApi, ThemeId } from '../shared/types'
+import type { TermStatus } from '../shared/agentStatus'
 
 const inv = (channel: string, ...args: unknown[]): Promise<never> => ipcRenderer.invoke(channel, ...args) as Promise<never>
 
@@ -116,7 +117,17 @@ const api: TerminalsApi = {
     const h = (_: unknown, id: string, code: number): void => cb(id, code)
     ipcRenderer.on('pty:exit', h)
     return () => ipcRenderer.removeListener('pty:exit', h)
-  }
+  },
+  onTermStatus: (cb) => {
+    const h = (_: unknown, id: string, s: TermStatus | null): void => cb(id, s)
+    ipcRenderer.on('term:status', h)
+    return () => ipcRenderer.removeListener('term:status', h)
+  },
+  getTermStatuses: () => inv('term:statuses'),
+  termSeen: (id) => ipcRenderer.send('term:seen', id),
+  getClaudeHooks: () => inv('hooks:get'),
+  installClaudeHooks: () => inv('hooks:install'),
+  removeClaudeHooks: () => inv('hooks:remove')
 }
 
 contextBridge.exposeInMainWorld('api', api)

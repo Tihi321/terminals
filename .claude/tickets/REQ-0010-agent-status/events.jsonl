@@ -1,0 +1,11 @@
+{"ts":"2026-11-26T17:39:08Z","actor":"director-scribe","type":"plan.created","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"planner returned the plan"}
+{"ts":"2026-11-26T17:39:09Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"approved by director on the user's 'just do it all'"}
+{"ts":"2026-11-26T17:39:55Z","actor":"implement","type":"implement.started","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"branch feat/herdr-agent-workflow from master"}
+{"ts":"2026-11-26T17:40:03Z","actor":"implement","type":"slice.started","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"main-side slice: shared contract, tracker, wiring, smoke","data":{"tasks":["T1","T2","T3","T7"]}}
+{"ts":"2026-11-26T17:45:07Z","actor":"implement","type":"slice.done","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"main-side slice done, typecheck+smoke pass (19 PASS)","data":{"tasks":["T1","T2","T3","T7"]}}
+{"ts":"2026-11-26T17:45:16Z","actor":"implement","type":"slice.started","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"renderer status UI and auto titles","data":{"tasks":["T4","T5"]}}
+{"ts":"2026-11-26T17:45:16Z","actor":"implement","type":"slice.started","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"settings UI and README","data":{"tasks":["T6","T8"]}}
+{"ts":"2026-11-26T17:47:38Z","actor":"implement","type":"slice.done","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"settings UI and README written","data":{"tasks":["T6","T8"]}}
+{"ts":"2026-11-26T17:48:40Z","actor":"implement","type":"slice.done","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"renderer status UI and auto titles done","data":{"tasks":["T4","T5"]}}
+{"ts":"2026-11-26T17:49:28Z","actor":"implement","type":"verify.passed","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"typecheck ok, smoke 19 PASS; A10-A15 untested"}
+{"ts":"2026-11-26T17:49:48Z","actor":"implement","type":"changelog.written","request":"REQ-0010","ticket":"REQ-0010-agent-status","detail":"changelog written; status stays in-progress for checker"}

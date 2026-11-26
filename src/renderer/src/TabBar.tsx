@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import { Bot, ChevronDown, Download, FileDiff, FileText, Plus, RotateCw, Shield, ShieldAlert, Terminal, X, Zap } from 'lucide-react'
+import { Bot, ChevronDown, Download, FileDiff, FileText, Pencil, Plus, RotateCw, Shield, ShieldAlert, Terminal, X, Zap } from 'lucide-react'
 import type { Command, ElevatorInfo } from '../../shared/types'
 import { GSUDO_HINT } from '../../shared/elevation'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import type { DiffSpec } from './gitUtil'
 import type { Loc } from './locations'
+import { STATUS_LABEL } from '../../shared/agentStatus'
+import type { AgentStatus, StatusSource } from '../../shared/agentStatus'
 
 export interface Tab {
   id: string
@@ -33,6 +35,10 @@ export interface Tab {
   elevated?: boolean
   /** Shell tabs: opened by an MCP agent. Saved in the session. */
   agent?: boolean
+  /** The user renamed this tab; terminal titles no longer replace it. Saved in the session. */
+  userTitle?: boolean
+  /** Shell tabs: the last cleaned title the terminal set itself. Runtime only. */
+  autoTitle?: string
   /** Elevated shell restored from a session: no term/pty until "Start as admin" is clicked. Not saved. */
   pending?: boolean
   /** Bumped on an elevated retry so the TerminalView remounts. */
@@ -59,6 +65,12 @@ interface Props {
   onActivate: (id: string) => void
   onClose: (id: string) => void
   onPin: (id: string) => void
+  /** A non-empty title renames the tab; null goes back to the terminal's own title. */
+  onRename: (id: string, title: string | null) => void
+  /** Agent status per tab id (non-idle only). */
+  status: Record<string, AgentStatus>
+  /** Where each tab's status came from, for the tooltip. */
+  statusSource: Record<string, StatusSource>
   onRunAgain: (cmd: Command) => void
   onNew: () => void
   /** Start the default shell elevated (UAC prompt). */
@@ -83,6 +95,25 @@ export function TabBar(p: Props): JSX.Element {
   const [marker, setMarker] = useState<{ x: number; beforeId: string | null } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const newDisabled = p.loc.missing || !p.loc.path
+  const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null)
+  const renameDone = useRef(false)
+
+  const commitRename = (): void => {
+    if (renameDone.current || !renaming) return
+    renameDone.current = true
+    const draft = renaming.draft.trim()
+    const cur = p.tabs.find((t) => t.id === renaming.id)
+    if (draft && cur && draft !== cur.title) p.onRename(renaming.id, draft)
+    setRenaming(null)
+  }
+  const cancelRename = (): void => {
+    renameDone.current = true
+    setRenaming(null)
+  }
+  const startRename = (t: Tab): void => {
+    renameDone.current = false
+    setRenaming({ id: t.id, draft: t.title })
+  }
 
   const openNewMenu = async (x: number, y: number): Promise<void> => {
     let info: ElevatorInfo | null = null
@@ -158,12 +189,16 @@ export function TabBar(p: Props): JSX.Element {
       {p.tabs.map((t) => {
         const status = t.kind === 'command' ? t.run?.status : t.exited ? 'exited' : undefined
         const finished = t.kind === 'command' && t.run?.status !== 'running'
+        const agentSt = t.kind === 'shell' ? p.status[t.id] : undefined
+        const agentTip = agentSt ? `\nAgent: ${STATUS_LABEL[agentSt]}${p.statusSource[t.id] ? ` (${p.statusSource[t.id]})` : ''}` : ''
+        const renamable = t.kind === 'shell' || t.kind === 'command'
+        const isRenaming = renaming?.id === t.id
         return (
           <div
             key={t.id}
             className={`tab ${t.id === p.activeId ? 'active' : ''} ${t.exited ? 'exited' : ''} ${t.elevated ? 'admin' : ''} ${t.preview ? 'preview' : ''} ${p.shownElsewhere.has(t.id) ? 'elsewhere' : ''}`}
             data-tab-id={t.id}
-            draggable
+            draggable={!isRenaming}
             onDragStart={(e) => {
               tabDrag.tab = t
               e.dataTransfer.setData(TAB_DRAG_TYPE, t.id)
@@ -175,9 +210,22 @@ export function TabBar(p: Props): JSX.Element {
               p.onDragEnd()
             }}
             onClick={() => p.onActivate(t.id)}
-            onDoubleClick={() => t.preview && p.onPin(t.id)}
+            onDoubleClick={() => {
+              if (renamable) startRename(t)
+              else if (t.preview) p.onPin(t.id)
+            }}
             onAuxClick={(e) => e.button === 1 && p.onClose(t.id)}
-            title={`${t.file ? t.file : t.diff ? `${t.diff.path}\n${t.cwd}` : `${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}${t.elevated ? '\n(administrator)' : ''}`}${p.shownElsewhere.has(t.id) ? '\n(shown in another pane)' : ''}`}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              const items: MenuItem[] = []
+              if (renamable) items.push({ label: 'Rename tab', icon: <Pencil size={14} />, onClick: () => startRename(t) })
+              if (t.kind === 'shell' && t.userTitle)
+                items.push({ label: 'Use terminal title', icon: <Terminal size={14} />, onClick: () => p.onRename(t.id, null) })
+              if (items.length > 0) items.push({ separator: true })
+              items.push({ label: 'Close', icon: <X size={14} />, onClick: () => p.onClose(t.id) })
+              setMenu({ x: e.clientX, y: e.clientY, items })
+            }}
+            title={`${t.file ? t.file : t.diff ? `${t.diff.path}\n${t.cwd}` : `${t.title}\n${t.cwd}${status ? `\n(${status})` : ''}${t.elevated ? '\n(administrator)' : ''}`}${agentTip}${p.shownElsewhere.has(t.id) ? '\n(shown in another pane)' : ''}`}
           >
             {t.kind === 'command' ? (
               <Zap size={13} className="tab-icon" />
@@ -195,7 +243,30 @@ export function TabBar(p: Props): JSX.Element {
                 <Bot size={12} />
               </span>
             )}
-            <span className="tab-title">{t.title}</span>
+            {agentSt && (
+              <span className={`agent-ind ${agentSt}`} title={STATUS_LABEL[agentSt]}>
+                {agentSt === 'needs-you' ? '!' : null}
+              </span>
+            )}
+            {isRenaming ? (
+              <input
+                className="tab-rename"
+                autoFocus
+                value={renaming?.draft ?? ''}
+                onFocus={(e) => e.currentTarget.select()}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onChange={(e) => setRenaming({ id: t.id, draft: e.target.value })}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Enter') commitRename()
+                  else if (e.key === 'Escape') cancelRename()
+                }}
+              />
+            ) : (
+              <span className="tab-title">{t.title}</span>
+            )}
             {t.kind === 'command' && <span className={`dot ${t.run?.status}`} />}
             {t.exited && <span className="tab-exited">exited</span>}
             {finished && t.run && (

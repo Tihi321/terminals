@@ -25,6 +25,7 @@ function sanitizeTab(raw: unknown): PersistedTab | null {
     if (str(r.startCwd)) t.startCwd = r.startCwd
     if (r.elevated === true) t.elevated = true
     if (r.agent === true && r.elevated !== true) t.agent = true
+    if (r.userTitle === true) t.userTitle = true
   } else if (t.kind === 'diff') {
     const d = r.diff as Record<string, unknown> | undefined
     if (!d || typeof d !== 'object' || !str(d.folder) || !str(d.path) || typeof d.mode !== 'string' || !DIFF_MODES.has(d.mode)) return null
@@ -77,6 +78,7 @@ export interface SessionTab {
   run?: { commandId: string; runId: string; target?: number }
   elevated?: boolean
   agent?: boolean
+  userTitle?: boolean
 }
 
 export function toPersistedTabs(tabs: SessionTab[], liveCwd: Record<string, string>): PersistedTab[] {
@@ -91,6 +93,7 @@ export function toPersistedTabs(tabs: SessionTab[], liveCwd: Record<string, stri
       startCwd: t.startCwd,
       elevated: t.elevated,
       agent: t.agent,
+      userTitle: t.userTitle,
       diff: t.diff,
       file: t.file,
       preview: t.preview,

@@ -3,6 +3,8 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { IPty } from '@lydell/node-pty'
 import type { AgentTabRequest, Result } from '../shared/types'
+import type { AgentStatus, HookOutcome, TermStatus } from '../shared/agentStatus'
+import { AgentStatusTracker } from './agentStatus'
 import { ToolError } from './toolError'
 import { RingBuffer, buildRunInput, findMarkers, psShell, toLines } from './termText'
 
@@ -30,6 +32,8 @@ export interface TermInfo {
   agent: boolean
   elevated: boolean
   busy: boolean
+  /** Agent status (report or heuristic); null for a plain shell. */
+  status: TermStatus | null
 }
 
 export interface RunResult {
@@ -72,6 +76,8 @@ export interface TerminalControl {
   send(id: string, text: string): void
   read(id: string, lines: number): ReadResult
   close(id: string): Promise<void>
+  /** Sets the agent status of a terminal (from a hook or report_status). Returns the new status. */
+  report(id: string, o: HookOutcome | AgentStatus): TermStatus | null
 }
 
 export interface HostDeps {
@@ -87,6 +93,10 @@ export interface HostDeps {
   configuredShell(): string
   /** webContents id that owns the ptys spawned by `spawn` (recorded as ownerWc). Omitted: null. */
   ownerWc?(): number | null
+  /** The agent status of a terminal changed (null: no longer an agent tab). */
+  onStatus?(id: string, s: TermStatus | null): void
+  /** settings.agentHeuristics, read per use. Default true. */
+  heuristics?(): boolean
 }
 
 const RING_CAP = 512 * 1024
@@ -129,6 +139,7 @@ interface Rec {
   lastDataAt: number
   run: Run | null
   waiters: Waiter[]
+  status: AgentStatusTracker
 }
 
 interface Waiter {
@@ -175,8 +186,20 @@ export class TerminalHost implements TerminalControl {
   private readonly recs = new Map<string, Rec>()
   private readonly deps: HostDeps
 
+  private readonly timer: ReturnType<typeof setInterval>
+
   constructor(deps: HostDeps) {
     this.deps = deps
+    this.timer = setInterval(() => {
+      const now = Date.now()
+      for (const rec of this.recs.values()) if (rec.alive && rec.status.tick(now)) this.emitStatus(rec)
+    }, 1000)
+    this.timer.unref()
+  }
+
+  /** Stops the status timer (smoke). */
+  dispose(): void {
+    clearInterval(this.timer)
   }
 
   add(id: string, pty: IPty, meta: TermMeta): void {
@@ -192,7 +215,8 @@ export class TerminalHost implements TerminalControl {
       exitCode: null,
       lastDataAt: 0,
       run: null,
-      waiters: []
+      waiters: [],
+      status: new AgentStatusTracker(() => (this.deps.heuristics ? this.deps.heuristics() : true))
     })
   }
 
@@ -211,6 +235,7 @@ export class TerminalHost implements TerminalControl {
       // Keep a possible split OSC prefix around for the next chunk.
       rec.cwdTail = (rec.cwdTail + chunk).slice(-512)
     }
+    if (rec.status.output(chunk, rec.lastDataAt)) this.emitStatus(rec)
     if (rec.run) this.feedRun(rec, rec.run, chunk)
     if (rec.waiters.length) this.feedWaiters(rec, chunk)
   }
@@ -220,6 +245,7 @@ export class TerminalHost implements TerminalControl {
     if (!rec) return
     rec.alive = false
     rec.exitCode = code
+    if (rec.status.report({ kind: 'clear' }, Date.now())) this.emitStatus(rec)
     this.endWaiters(rec, { exited: true })
     const run = rec.run
     if (run) {
@@ -234,6 +260,7 @@ export class TerminalHost implements TerminalControl {
     const rec = this.recs.get(id)
     if (!rec) return
     this.recs.delete(id)
+    if (rec.status.get()) this.deps.onStatus?.(id, null)
     this.endWaiters(rec, { exited: true })
     const run = rec.run
     if (run) {
@@ -248,6 +275,43 @@ export class TerminalHost implements TerminalControl {
     for (const rec of [...this.recs.values()]) {
       if (rec.meta.ownerWc === wcId && !rec.alive) this.remove(rec.id)
     }
+  }
+
+  /** The user typed into the pty. */
+  input(id: string): void {
+    const rec = this.recs.get(id)
+    if (rec && rec.status.input(Date.now())) this.emitStatus(rec)
+  }
+
+  /** The pty was resized (the redraw is not agent activity). */
+  resized(id: string): void {
+    this.recs.get(id)?.status.resized(Date.now())
+  }
+
+  /** The user viewed the tab: done -> idle. */
+  seen(id: string): void {
+    const rec = this.recs.get(id)
+    if (rec && rec.status.seen(Date.now())) this.emitStatus(rec)
+  }
+
+  report(id: string, o: HookOutcome | AgentStatus): TermStatus | null {
+    const rec = this.recs.get(id)
+    if (!rec) throw new ToolError(`Unknown terminal id "${id}". Use list_terminals.`)
+    if (rec.status.report(o, Date.now())) this.emitStatus(rec)
+    return rec.status.get()
+  }
+
+  statuses(): Record<string, TermStatus> {
+    const out: Record<string, TermStatus> = {}
+    for (const rec of this.recs.values()) {
+      const s = rec.status.get()
+      if (s) out[rec.id] = s
+    }
+    return out
+  }
+
+  private emitStatus(rec: Rec): void {
+    this.deps.onStatus?.(rec.id, rec.status.get())
   }
 
   backlog(id: string): string {
@@ -413,7 +477,8 @@ export class TerminalHost implements TerminalControl {
       exitCode: r.exitCode,
       agent: r.meta.agent,
       elevated: r.meta.elevated,
-      busy: r.run !== null
+      busy: r.run !== null,
+      status: r.status.get()
     }
   }
 

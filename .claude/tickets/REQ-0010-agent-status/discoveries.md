@@ -1,0 +1,4 @@
+- 2026-11-26 implementer: elevated and steps-based tabs also get TERMINALS_TERM_ID / TERMINALS_STATUS_URL via ptyEnv; harmless (src/main/index.ts:662) - suggested: none, or document
+- 2026-11-26 implementer: Reset-to-defaults tooltip does not mention the agent heuristic toggle that is now kept (src/renderer/src/SettingsDialog.tsx:376) - suggested: add it to the tooltip text
+- 2026-11-26 implementer: old build/smoke leftovers in the temp folder (.claude/temp/) - suggested: clean up
+- 2026-11-26 implementer: renamed command tabs lose userTitle on restore, only shell tabs carry it (src/shared/session.ts) - suggested: decide whether command tabs should keep renames

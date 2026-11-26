@@ -2,6 +2,7 @@ import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as z from 'zod'
+import { parseReportedStatus } from '../shared/agentStatus'
 import { HOME_ID, type AppState, type Command, type CommandTarget, type Snippet } from '../shared/types'
 import { nestError } from '../shared/groupTree'
 import * as store from './store'
@@ -33,6 +34,8 @@ export { ToolError }
 export interface ToolContext {
   /** Value of the X-Terminals-Location header (the terminal's TERMINALS_LOC_ID), if any. */
   headerLocation?: string
+  /** Value of the X-Terminals-Term header (the terminal's TERMINALS_TERM_ID), if any. */
+  headerTerm?: string
   dataDir: string
   /** Null when the server runs without a terminal host (logic tests). */
   terminals: TerminalControl | null
@@ -799,7 +802,7 @@ export const TOOLS: ToolDef[] = [
   defineTool({
     name: 'list_terminals',
     description:
-      "All terminals (the user's and those opened through MCP) with id, location, cwd, shell, alive and busy. allowRun tells whether terminal control is on; if not, ask the user to enable \"Allow MCP to run commands\".",
+      "All terminals (the user's and those opened through MCP) with id, location, cwd, shell, alive, busy and agent status (null for a plain shell). allowRun tells whether terminal control is on; if not, ask the user to enable \"Allow MCP to run commands\".",
     shape: {},
     mutates: false,
     readOnly: true,
@@ -807,6 +810,28 @@ export const TOOLS: ToolDef[] = [
       const s = store.getState()
       const terminals = (ctx.terminals?.list() ?? []).map((t) => ({ ...t, locationName: locationById(s, t.locationId)?.name ?? null }))
       return { allowRun: ctx.allowRun(), terminals }
+    }
+  }),
+  defineTool({
+    name: 'report_status',
+    description:
+      "Sets the agent status shown on this terminal's tab in the app: working, done (finished, the user has not looked yet), needs-you (blocked on the user) or idle. The terminal is this one (X-Terminals-Term header) unless `terminal` is given. Only sets tab metadata; not gated by \"Allow MCP to run commands\".",
+    shape: {
+      state: z.enum(['working', 'done', 'needs-you', 'idle']),
+      terminal: z.string().optional().describe('Terminal id (TERMINALS_TERM_ID). Default: the terminal this request comes from')
+    },
+    mutates: false,
+    readOnly: false,
+    run: (a, ctx) => {
+      if (!ctx.terminals) throw new ToolError('Terminal control is not available in this process.')
+      const id = (a.terminal ?? ctx.headerTerm ?? '').trim()
+      if (!id)
+        throw new ToolError(
+          'No terminal given. Pass `terminal` ($env:TERMINALS_TERM_ID in PowerShell), or re-register the MCP server with the X-Terminals-Term header (see the README).'
+        )
+      const state = parseReportedStatus(a.state)
+      if (!state) throw new ToolError('Invalid state')
+      return { id, status: ctx.terminals.report(id, state) }
     }
   }),
   defineTool({

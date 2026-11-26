@@ -2490,3 +2490,70 @@ kbd,
 .rail-dot.failed {
   background: var(--danger);
 }
+
+/* Agent status (tab bar, sidebar rows, collapsed strip). Done = blue, needs-you = orange, working = a slow pulse. */
+.agent-ind {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.agent-ind.working {
+  background: var(--success);
+  animation: agent-pulse 1.4s ease-in-out infinite;
+}
+.agent-ind.done {
+  background: var(--info, #3b82f6);
+}
+.agent-ind.needs-you {
+  width: auto;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--warning, #f59e0b);
+  color: #1a1100;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: center;
+}
+.agent-ind.idle {
+  display: none;
+}
+.activity-section.needs-you .section-label {
+  color: var(--warning, #f59e0b);
+}
+.rail-dot.working {
+  background: var(--success);
+  animation: agent-pulse 1.4s ease-in-out infinite;
+}
+.rail-dot.done {
+  background: var(--info, #3b82f6);
+}
+.rail-dot.needs-you {
+  background: var(--warning, #f59e0b);
+}
+.tab-rename {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 12.5px;
+}
+@keyframes agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-ind.working,
+  .rail-dot.working {
+    animation: none;
+  }
+}

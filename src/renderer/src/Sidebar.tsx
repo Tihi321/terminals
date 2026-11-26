@@ -43,6 +43,8 @@ import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { LOC_DRAG_TYPE, locDrag } from './TabBar'
 import { childGroups, nestError, nestTarget, removalSet, subtreeGroupIds } from '../../shared/groupTree'
+import { rollupStatus } from '../../shared/agentStatus'
+import type { StatusRollup } from '../../shared/agentStatus'
 
 /** Tabs that have finished (command done, shell exited) but are still open, per location or rolled up. */
 export interface Finished {
@@ -64,10 +66,17 @@ function finishedTitle(f: Finished): string {
 Middle-click to close finished tabs`
 }
 
+function agentTitle(a: StatusRollup): string {
+  const shown = a.items.slice(0, 6).join('\n')
+  return `Agent status\n${shown}${a.items.length > 6 ? '\n…' : ''}`
+}
+
 interface Props {
   state: AppState
   counts: Record<string, number>
   finished: Record<string, Finished>
+  /** Agent status roll-up per location (non-idle tabs only). */
+  agent: Record<string, StatusRollup>
   /** Working tabs (running commands) per location. */
   working: Record<string, number>
   groupBy: 'none' | 'activity'
@@ -140,6 +149,7 @@ interface RowProps {
   pinned?: boolean
   count: number
   finished?: Finished
+  agent?: StatusRollup
   /** Middle-click: close the finished tabs this row's dot counts. */
   onCloseFinished?: () => void
   dropActive?: boolean
@@ -249,6 +259,11 @@ function Row(r: RowProps): JSX.Element {
           </div>
         )}
       </div>
+      {r.agent && r.agent.top && (
+        <span className={`agent-ind ${r.agent.top}`} title={agentTitle(r.agent)}>
+          {r.agent.top === 'needs-you' ? '!' : null}
+        </span>
+      )}
       {r.finished && r.finished.total > 0 && (
         <span
           className={`fin-dot ${r.finished.failed > 0 ? 'failed' : r.finished.ok > 0 ? 'success' : 'neutral'}`}
@@ -323,6 +338,15 @@ export function Sidebar(p: Props): JSX.Element {
       if (!x) return false
       return x.id === state.selectedId || (x.kind === 'manual' ? membersOf(x.id) : x.children).some((c) => c.id === state.selectedId)
     })
+  /** Agent status of a group: its own and its members' roll-ups, through the whole subtree (same walk as `finished`). */
+  const groupAgent = (g: GroupView): StatusRollup | undefined =>
+    subtreeGroupIds(state.groups, g.id).reduce<StatusRollup | undefined>((sum, gid) => {
+      const x = state.groups.find((y) => y.id === gid)
+      if (!x) return sum
+      const kids = x.kind === 'manual' ? membersOf(x.id) : x.children
+      return kids.reduce((s, c) => rollupStatus(s, p.agent[c.id]), rollupStatus(sum, p.agent[x.id]))
+    }, undefined)
+  const needsYou = (a: StatusRollup | undefined): boolean => (a?.needsYou ?? 0) > 0
   const idleIsOpen =(gid: string): boolean => p.idleOpen.includes(gid)
   const toggleIdleOpen = (gid: string): void =>
     p.onSetIdleOpen(idleIsOpen(gid) ? p.idleOpen.filter((x) => x !== gid) : [...p.idleOpen, gid])
@@ -579,6 +603,7 @@ export function Sidebar(p: Props): JSX.Element {
       pinned={isPinned(f.id)}
       count={p.counts[f.id] ?? 0}
       finished={p.finished[f.id]}
+      agent={p.agent[f.id]}
       onCloseFinished={() => p.onCloseFinished([f.id])}
       dropActive={dragOver === f.id}
       copyActive={dragOver === 'copy:' + f.id}
@@ -637,6 +662,7 @@ export function Sidebar(p: Props): JSX.Element {
         missing={h.missing}
         count={p.counts[HOME_ID] ?? 0}
         finished={p.finished[HOME_ID]}
+        agent={p.agent[HOME_ID]}
         onCloseFinished={() => p.onCloseFinished([HOME_ID])}
         onClick={() => p.onSelect(HOME_ID)}
         onContext={(e) =>
@@ -822,6 +848,7 @@ export function Sidebar(p: Props): JSX.Element {
             pinned={isPinned(g.id)}
             count={count}
             finished={finished}
+            agent={groupAgent(g)}
             onCloseFinished={() => p.onCloseFinished(finishedIds)}
             dropActive={dragOver === g.id}
             editing={isEditing('group', g.id)}
@@ -965,6 +992,7 @@ export function Sidebar(p: Props): JSX.Element {
       dim={c.hidden}
       count={p.counts[c.id] ?? 0}
       finished={p.finished[c.id]}
+      agent={p.agent[c.id]}
       onCloseFinished={() => p.onCloseFinished([c.id])}
       copyActive={dragOver === 'copy:' + c.id}
       drag={{ onDragStart: () => undefined, onDragEnd: () => setDragOver(null), ...copyTargetDrag(c.id, c.path, c.name) }}
@@ -1072,11 +1100,12 @@ export function Sidebar(p: Props): JSX.Element {
             const entries = [
               ...childGroups(state.groups, null)
                 .filter((g) => !isPinned(g.id))
-                .map((g) => ({ working: groupWorking(g), sel: groupHasSelected(g), el: (): JSX.Element | null => (seen.has(g.id) ? null : groupBlock(g, 0, seen)) })),
-              ...standalone.map((f) => ({ working: isWorking(f.id), sel: f.id === state.selectedId, el: (): JSX.Element | null => folderRow(f, 0) }))
+                .map((g) => ({ working: groupWorking(g), needs: needsYou(groupAgent(g)), sel: groupHasSelected(g), el: (): JSX.Element | null => (seen.has(g.id) ? null : groupBlock(g, 0, seen)) })),
+              ...standalone.map((f) => ({ working: isWorking(f.id), needs: needsYou(p.agent[f.id]), sel: f.id === state.selectedId, el: (): JSX.Element | null => folderRow(f, 0) }))
             ]
-            const work = entries.filter((e) => e.working)
-            const idle = entries.filter((e) => !e.working)
+            const needs = entries.filter((e) => e.needs)
+            const work = entries.filter((e) => !e.needs && e.working)
+            const idle = entries.filter((e) => !e.needs && !e.working)
             // The toggle always wins, even when the selection is inside: a forced-open section could never be collapsed.
             const idleShown = !p.idleCollapsed
             return (
@@ -1103,6 +1132,12 @@ export function Sidebar(p: Props): JSX.Element {
                   if (from) p.onMoveFolder(from, null)
                 }}
               >
+                {needs.length > 0 && (
+                  <div className="activity-section needs-you">
+                    <div className="section-label">Needs you ({needs.length})</div>
+                    {needs.map((e) => e.el())}
+                  </div>
+                )}
                 {work.length > 0 && (
                   <div className="activity-section working">
                     <div className="section-label">Working ({work.length})</div>
