@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import type { GitResult, Result, WorktreeStatus } from '../shared/types'
 import { worktreeTargetPath } from '../shared/worktreePath'
@@ -121,14 +121,12 @@ export async function removeWorktree(
       r = await run(repoDir, args, { timeoutMs: ADD_TIMEOUT })
     }
     if (r.code !== 0) {
-      // git may have dropped its metadata and then failed to delete the folder: finish the job ourselves.
+      // git may have dropped its metadata and then failed to delete the folder. We never delete anything ourselves
+      // (a recursive delete would follow junctions out of the worktree): report it instead.
       if (readWorktrees(repoDir).some((w) => key(w.path) === key(dir))) return { ok: false, error: failText(r) }
-      try {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 })
-      } catch {
-        /* reported below */
+      if (existsSync(dir)) {
+        warning = `Git removed the worktree, but the folder could not be fully deleted (a file is probably still in use): ${dir}. Delete it yourself once nothing uses it.`
       }
-      if (existsSync(dir)) warning = `folder could not be fully deleted: ${dir}`
     }
   }
   if (opts.deleteBranch && branch) {

@@ -31,7 +31,7 @@ import { DEFAULT_SETTINGS, patchSettings, sanitizeSettings } from '../shared/set
 import { childGroups, nestError, nestTarget, removalSet } from '../shared/groupTree'
 import { applyOrder } from '../shared/order'
 import { resolveShell } from './pty'
-import { isMainWorktree, readGit, readWorktrees } from './git'
+import { isMainWorktree, readGit, readWorktrees, samePath } from './git'
 
 interface PersistedGroup {
   id: string
@@ -280,9 +280,18 @@ function isSiblingWorktree(p: string, dir: string, names: Dirent[]): boolean {
     const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))
     if (!m) return false
     const target = resolve(p, m[1].trim())
+    // Only a sibling whose admin entry points back at this folder owns it; an unrepaired moved folder stays a child.
+    let back = false
+    try {
+      const first = readFileSync(join(target, 'gitdir'), 'utf8').split(/\r?\n/)[0].trim()
+      back = !!first && samePath(dirname(resolve(target, first)), p)
+    } catch {
+      back = false
+    }
+    if (!back) return false
     return names.some((n) => {
       const sib = join(dir, n.name)
-      return sib !== p && norm(target).startsWith(norm(join(sib, '.git', 'worktrees')) + sep.toLowerCase())
+      return !samePath(sib, p) && samePath(dirname(target), join(sib, '.git', 'worktrees'))
     })
   } catch {
     return false
@@ -542,8 +551,22 @@ export function removeGroupData(d: Persisted, id: string): RemovalSummary {
   // Direct children of removed parent-folder groups own commands/prompts under `child:` ids.
   const prefixes: string[] = []
   for (const g of d.groups) if (gset.has(g.id) && g.kind === 'parent' && g.path) prefixes.push(childId(g.path) + sep)
+  // Linked worktrees of the removed folders and of the removed parent groups' children own things under `wt:` ids.
+  const wtIds = new Set<string>()
+  const addWts = (repo: string): void => {
+    for (const w of readWorktrees(repo)) wtIds.add(worktreeId(w.path))
+  }
+  for (const f of d.folders) if (fset.has(f.id)) addWts(f.path)
+  for (const g of d.groups) {
+    if (!gset.has(g.id) || g.kind !== 'parent' || !g.path) continue
+    try {
+      for (const e of readdirSync(g.path, { withFileTypes: true })) if (e.isDirectory()) addWts(join(g.path, e.name))
+    } catch {
+      /* folder gone */
+    }
+  }
   const owned = (o: string): boolean =>
-    gset.has(o) || fset.has(o) || prefixes.some((p) => o.startsWith(p) && !/[\\/]/.test(o.slice(p.length)))
+    gset.has(o) || fset.has(o) || wtIds.has(o) || prefixes.some((p) => o.startsWith(p) && !/[\\/]/.test(o.slice(p.length)))
   const sel = d.selectedId
   const selRemoved = !!sel && owned(sel)
   const cmds = d.commands.filter((c) => !owned(c.ownerId))
@@ -554,7 +577,7 @@ export function removeGroupData(d: Persisted, id: string): RemovalSummary {
   d.snippets = snips
   d.groups = d.groups.filter((g) => !gset.has(g.id))
   d.folders = d.folders.filter((f) => !fset.has(f.id))
-  d.pinned = d.pinned.filter((x) => !gset.has(x) && !fset.has(x))
+  d.pinned = d.pinned.filter((x) => !gset.has(x) && !fset.has(x) && !wtIds.has(x))
   if (selRemoved) d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? HOME_ID
   else fixSelection(d)
   return summary
