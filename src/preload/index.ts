@@ -80,6 +80,11 @@ const api: TerminalsApi = {
   gitPush: (f, publish) => inv('git:push', f, publish),
   gitBranches: (f) => inv('git:branches', f),
   gitSwitch: (f, name, opts) => inv('git:switch', f, name, opts),
+  gitBaseChanges: (f) => inv('git:baseChanges', f),
+  setRepoBase: (f, base) => inv('git:setBase', f, base),
+  worktreeAdd: (repo, branch, base) => inv('worktree:add', repo, branch, base),
+  worktreeStatus: (path) => inv('worktree:status', path),
+  worktreeRemove: (path, opts) => inv('worktree:remove', path, opts),
 
   clipboardRead: () => inv('clipboard:read'),
   clipboardReadForPaste: () => inv('clipboard:readForPaste'),

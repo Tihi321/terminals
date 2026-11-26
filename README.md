@@ -60,6 +60,14 @@ electron . --data-dir=C:\temp\terminals-test --remote-debugging-port=9333
 - Right-click any folder or group: Open terminal, Open in Windows Terminal, Open in Explorer, Open in editor, Rename, Hide (children) / Remove, Copy path. Double-click a name to rename.
 - The sidebar is resizable (drag its right edge); the width is persisted.
 
+### Git worktrees
+
+- **Worktree rows**: a saved folder or parent-group child whose `.git` is a directory lists its linked git worktrees under its row (name = folder name, subtitle = branch). A worktree row is selectable like a folder: the Files, Git and Commands panels work on it and terminal, diff and file tabs attach to it. Ids are derived from the path (`wt:<path>`), so open terminals survive a rescan and a restart. The list is read from git's own metadata on disk. Worktrees whose folder is gone are dimmed ("Folder not found") and can still be removed. Worktree rows show the agent status dot like other rows and count toward group status and Activity grouping; in Activity mode they stay with their repo row.
+- **New worktree…** (right-click menu or the branch-plus button on a main working tree row): asks for a branch name and a base branch, runs `git worktree add`, selects the new worktree and opens a terminal in it. A branch name that already exists locally is checked out instead of created. The location comes from Settings > Git > "Worktree location": `<repo parent>\<repo>.worktrees\<branch>` (default) or `<repo parent>\<repo>-<branch>`. The base is remembered for the Git panel's Branch view.
+- **Remove worktree…** (right-click on a worktree row): an in-app confirm dialog shows the number of uncommitted changes and requires ticking "Discard N uncommitted changes" before Remove is enabled (then `--force`). Locked worktrees are refused. "Also delete branch" (off by default) runs `git branch -d`, so an unmerged branch is kept and the refusal is shown. The worktree's tabs are closed first.
+- Parent-group scans hide a `<name>.worktrees` folder when a sibling `<name>` folder exists, so the default container does not appear as a child.
+- Not covered: worktrees under Home or a parent-group root row, worktrees of a worktree, lock/unlock/prune UI.
+
 ## Files panel (Ctrl+Shift+E)
 
 Right-hand panel with a **Files** and a **Commands** tab; resizable, collapsible, width and open state persisted.
@@ -68,6 +76,14 @@ Right-hand panel with a **Files** and a **Commands** tab; resizable, collapsible
 - Click a file to open it in `settings.editor` (default `zed`, resolved on PATH; falls back to the OS default app if it is not found).
 - Context menu: Open in editor, Open with default app, Reveal in Explorer (`explorer /select,`), Copy path, Copy relative path, and for directories "Open terminal here" (a new tab in the current folder's tab list with that cwd).
 - The main process only lists or opens paths that are inside a saved folder or a parent-folder group root (resolved, case-insensitive prefix check).
+
+## Git panel (Ctrl+Shift+G)
+
+Changes, History and, when the current branch is not the base branch, **Branch**:
+
+- **Branch view**: the files changed on the branch relative to `merge-base(HEAD, base)`, including uncommitted and untracked changes, with the number of commits ahead and `+added -deleted` totals. Clicking a file opens a diff tab ("vs merge-base abc1234"); untracked files open as untracked diffs. It works for any repo (worktree or not) and is hidden on the base branch and on a detached HEAD.
+- **Base picker**: the `vs <base>` select lists local and remote branches and "Default (...)". The choice is stored per repo (per worktree for worktrees) in the app data and survives restarts.
+- **Base resolution order** when none is set: the recorded base of a new worktree, else the local default branch (the name from `origin/HEAD`, then `main`, then `master`; the local branch is used so unpushed commits on it are not shown as branch changes), and only when no such local branch exists the remote target itself (for example `origin/main`). With none of these the view shows "No base branch found".
 
 ## Saved commands (Ctrl+Shift+R)
 
@@ -173,7 +189,7 @@ Transport: Streamable HTTP (stateless, JSON responses) at `http://127.0.0.1:<por
 | Tool | What it does |
 | --- | --- |
 | `get_context` | This terminal's location (id, name, path, kind, group) and the data directory |
-| `list_locations` | All groups (parent groups with their subfolders), saved folders, ids, paths, group membership |
+| `list_locations` | All groups (parent groups with their subfolders), saved folders, git worktrees (kind `worktree`, id `wt:<path>`), ids, paths, group membership |
 | `list_commands` | Commands of a location plus those inherited from its group (`inherited: true`) |
 | `save_command` | Create (no `id`) or update a command. `steps` alone builds one target in the location's folder; `targets` = `[{ cwd, steps }]`; `scope: "group"` saves it on the location's group |
 | `delete_command` | Delete a command |
@@ -262,7 +278,7 @@ The MCP server's token is stored next to it as `mcp-token` (see [MCP server](#mc
 
 `settings.shell` is the shell executable. Empty means auto: `pwsh.exe` if it is on PATH, else `powershell.exe`. Settings are edited in the app (Ctrl+,).
 
-`settings.homeDir` is the directory Home terminals start in. Empty (the default) means your Documents folder; otherwise it must be an absolute Windows path (invalid values are ignored). `settings.allowMcpRun` (default `false`) lets MCP clients open terminals, run commands, type into and read them (see [Terminal control](#terminal-control)). `settings.agentHeuristics` (default `true`) turns the output-based agent status fallback on or off (see [Agent status](#agent-status)).
+`settings.homeDir` is the directory Home terminals start in. Empty (the default) means your Documents folder; otherwise it must be an absolute Windows path (invalid values are ignored). `settings.allowMcpRun` (default `false`) lets MCP clients open terminals, run commands, type into and read them (see [Terminal control](#terminal-control)). `settings.agentHeuristics` (default `true`) turns the output-based agent status fallback on or off (see [Agent status](#agent-status)). `settings.worktreeLayout` (`container` default, or `sibling`) is where new worktrees are created (see [Git worktrees](#git-worktrees)); the recorded Branch-view bases are stored as `repoBases` in `terminals.json`.
 
 ## Behaviour notes
 

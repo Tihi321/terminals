@@ -5,7 +5,7 @@ import type { PersistedTab } from './types'
 export const MAX_SAVED_TABS = 200
 
 const KINDS = new Set(['shell', 'command', 'diff', 'file'])
-const DIFF_MODES = new Set(['unstaged', 'staged', 'untracked', 'commit'])
+const DIFF_MODES = new Set(['unstaged', 'staged', 'untracked', 'commit', 'base'])
 
 const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0
 
@@ -30,8 +30,10 @@ function sanitizeTab(raw: unknown): PersistedTab | null {
     const d = r.diff as Record<string, unknown> | undefined
     if (!d || typeof d !== 'object' || !str(d.folder) || !str(d.path) || typeof d.mode !== 'string' || !DIFF_MODES.has(d.mode)) return null
     if (d.mode === 'commit' && !str(d.hash)) return null
+    if (d.mode === 'base' && !(str(d.base) && /^[0-9a-f]{40}$/i.test(d.base))) return null
     t.diff = { folder: d.folder, mode: d.mode as NonNullable<PersistedTab['diff']>['mode'], path: d.path }
     if (d.mode === 'commit') t.diff.hash = d.hash as string
+    if (d.mode === 'base') t.diff.base = d.base as string
     if (r.preview === true) t.preview = true
   } else if (t.kind === 'file') {
     if (!str(r.file)) return null

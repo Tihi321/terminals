@@ -17,6 +17,8 @@ import { runSmoke } from './smoke'
 import { copyIntoDir, createFolderIn } from './fsCopy'
 import { DirWatcher, listDir, openInEditor, readFileContent, writeTextFile } from './fsops'
 import * as gitcli from './gitcli'
+import { isMainWorktree, readGit } from './git'
+import * as worktree from './worktree'
 import type { GitDiffRequest, LoginItemState } from '../shared/types'
 import { startMcpServer, type McpInfo } from './mcp'
 import { locationById, ToolError } from './mcpTools'
@@ -567,6 +569,51 @@ function registerIpc(): void {
   ipcMain.handle('git:switch', (_e, f: string, name: string, opts?: { create?: boolean; track?: boolean }) =>
     allowed(f) ? gitcli.gitSwitch(f, name, { create: !!opts?.create, track: !!opts?.track }) : notAllowed
   )
+  ipcMain.handle('git:baseChanges', async (_e, f: string) => {
+    if (!allowed(f)) return notAllowed
+    const rr = await gitcli.repoRoot(f)
+    if (!rr.ok) return rr
+    const rb = await worktree.resolveBase(rr.root, store.getRepoBase(rr.root))
+    if (!rb.ok) return rb
+    const r = await gitcli.gitBaseChanges(f, rb.base)
+    return r.ok ? { ok: true as const, changes: { ...r.changes, baseIsSet: rb.baseIsSet } } : r
+  })
+  ipcMain.handle('git:setBase', async (_e, f: string, base: string | null) => {
+    if (!allowed(f)) return store.getState()
+    const rr = await gitcli.repoRoot(f)
+    if (!rr.ok) return store.getState()
+    if (base === null || base === undefined || base === '') return store.setRepoBase(rr.root, null)
+    if (typeof base !== 'string' || base.startsWith('-') || base.includes('\0')) return store.getState()
+    const ok = await gitcli.run(rr.root, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`])
+    return ok.code === 0 ? store.setRepoBase(rr.root, base) : store.getState()
+  })
+
+  // ---------- worktrees ----------
+  ipcMain.handle('worktree:add', async (_e, repo: string, branch: string, base: string | null) => {
+    if (!allowed(repo)) return { ok: false as const, error: 'Folder is not a saved folder' }
+    if (!isMainWorktree(repo)) return { ok: false as const, error: 'Worktrees can only be created from a main working tree' }
+    const baseRef = typeof base === 'string' && base.trim() ? base.trim() : null
+    const r = await worktree.addWorktree(repo, String(branch ?? ''), baseRef, store.getSettings().worktreeLayout)
+    if (!r.ok) return r
+    // Remember what the branch was cut from (only when this call created it).
+    if (r.created) {
+      const cur = readGit(repo).branch
+      const from = baseRef ?? (cur && !cur.startsWith('detached @') ? cur : null)
+      if (from) store.setRepoBase(r.path, from)
+    }
+    return { ok: true as const, id: store.worktreeId(r.path), path: r.path, state: store.getState() }
+  })
+  ipcMain.handle('worktree:status', (_e, path: string) =>
+    allowed(path) && store.findWorktree(path) ? worktree.worktreeStatus(path) : { ok: false as const, error: 'Not a known worktree' }
+  )
+  ipcMain.handle('worktree:remove', async (_e, path: string, opts: { force?: boolean; deleteBranch?: boolean }) => {
+    const found = allowed(path) ? store.findWorktree(path) : null
+    if (!found) return { ok: false as const, error: 'Not a known worktree' }
+    const r = await worktree.removeWorktree(found.repo, path, { force: !!opts?.force, deleteBranch: !!opts?.deleteBranch })
+    if (!r.ok) return r
+    store.forgetWorktree(path, found.repoLocId)
+    return { ok: true as const, state: store.getState(), ...(r.branchError ? { branchError: r.branchError } : {}) }
+  })
 
   ipcMain.handle('clipboard:read', () => clipboard.readText())
   ipcMain.handle('clipboard:readForPaste', () => readForPaste())

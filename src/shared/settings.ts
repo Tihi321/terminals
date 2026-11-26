@@ -53,7 +53,11 @@ export const SETTINGS_SCHEMA: { [K in keyof Settings]: SettingField<Settings[K]>
     }
   },
   allowMcpRun: { default: false, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) },
-  agentHeuristics: { default: true, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) }
+  agentHeuristics: { default: true, sanitize: (v) => (typeof v === 'boolean' ? v : undefined) },
+  worktreeLayout: {
+    default: 'container',
+    sanitize: (v) => (v === 'container' || v === 'sibling' ? (v as Settings['worktreeLayout']) : undefined)
+  }
 }
 
 const KEYS = Object.keys(SETTINGS_SCHEMA) as (keyof Settings)[]

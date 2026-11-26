@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import { markSidebarClick } from './sidebarFocus'
+import { WorktreeRows, withWorktrees } from './WorktreeRows'
 import type { JSX, ReactNode } from 'react'
 import {
   PanelRight,
@@ -23,6 +24,7 @@ import {
   ArrowRightToLine,
   ArrowUp,
   GitBranch,
+  GitBranchPlus,
   Group,
   House,
   TriangleAlert,
@@ -37,7 +39,7 @@ import {
   Terminal,
   Trash2
 } from 'lucide-react'
-import type { AppState, ChildView, CopyResult, FolderView, GroupView } from '../../shared/types'
+import type { AppState, ChildView, CopyResult, FolderView, GroupView, WorktreeView } from '../../shared/types'
 import { HOME_ID } from '../../shared/types'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
@@ -123,6 +125,10 @@ interface Props {
   onOpenEditor: (path: string) => void
   onCopy: (text: string) => void
   onOpenSettings: () => void
+  /** "New worktree…" on a main working tree row. */
+  onNewWorktree: (repoLocId: string, repoPath: string) => void
+  /** "Remove worktree…" on a worktree row. */
+  onRemoveWorktree: (wt: WorktreeView, repoLocId: string, repoPath: string) => void
 }
 
 interface MenuState {
@@ -131,7 +137,7 @@ interface MenuState {
   items: MenuItem[]
 }
 
-interface RowProps {
+export interface RowProps {
   /** Location this row stands for; makes the row draggable onto a pane edge. */
   locId?: string
   indent: number
@@ -174,7 +180,7 @@ interface RowProps {
   chevron?: ReactNode
 }
 
-function Row(r: RowProps): JSX.Element {
+export function Row(r: RowProps): JSX.Element {
   return (
     <div
       className={[
@@ -322,7 +328,13 @@ export function Sidebar(p: Props): JSX.Element {
 
   // Group by: Activity. "Working" = a location with an open shell or a running command (see isWorkingTab in App.tsx).
   const activity = p.groupBy === 'activity'
-  const isWorking = (id: string): boolean => (p.working[id] ?? 0) > 0
+  // A repo row stands for itself and its worktrees in every roll-up.
+  const wtMap = new Map<string, WorktreeView[]>()
+  for (const f of folders) if (f.worktrees.length > 0) wtMap.set(f.id, f.worktrees)
+  for (const g of state.groups) for (const c of g.children) if (c.worktrees.length > 0) wtMap.set(c.id, c.worktrees)
+  const rowIds = (id: string): string[] => withWorktrees(id, wtMap.get(id) ?? [])
+  const isWorking = (id: string): boolean => rowIds(id).some((x) => (p.working[x] ?? 0) > 0)
+  const agentOf = (id: string): StatusRollup | undefined => rowIds(id).reduce<StatusRollup | undefined>((s, x) => rollupStatus(s, p.agent[x]), undefined)
   /** A group is working when it, or any folder/child in its subtree, has a working tab. */
   const groupWorking = (g: GroupView): boolean =>
     subtreeGroupIds(state.groups, g.id).some((gid) => {
@@ -336,7 +348,7 @@ export function Sidebar(p: Props): JSX.Element {
     subtreeGroupIds(state.groups, g.id).some((gid) => {
       const x = state.groups.find((y) => y.id === gid)
       if (!x) return false
-      return x.id === state.selectedId || (x.kind === 'manual' ? membersOf(x.id) : x.children).some((c) => c.id === state.selectedId)
+      return x.id === state.selectedId || (x.kind === 'manual' ? membersOf(x.id) : x.children).some((c) => rowIds(c.id).includes(state.selectedId ?? ''))
     })
   /** Agent status of a group: its own and its members' roll-ups, through the whole subtree (same walk as `finished`). */
   const groupAgent = (g: GroupView): StatusRollup | undefined =>
@@ -344,7 +356,7 @@ export function Sidebar(p: Props): JSX.Element {
       const x = state.groups.find((y) => y.id === gid)
       if (!x) return sum
       const kids = x.kind === 'manual' ? membersOf(x.id) : x.children
-      return kids.reduce((s, c) => rollupStatus(s, p.agent[c.id]), rollupStatus(sum, p.agent[x.id]))
+      return kids.reduce((s, c) => rollupStatus(s, agentOf(c.id)), rollupStatus(sum, p.agent[x.id]))
     }, undefined)
   const needsYou = (a: StatusRollup | undefined): boolean => (a?.needsYou ?? 0) > 0
   const idleIsOpen =(gid: string): boolean => p.idleOpen.includes(gid)
@@ -383,6 +395,40 @@ export function Sidebar(p: Props): JSX.Element {
     { label: 'Open in Explorer', icon: <FolderOpen size={14} />, disabled: missing, onClick: () => p.onOpenExplorer(path) },
     { label: 'Open in editor', icon: <Code size={14} />, disabled: missing, onClick: () => p.onOpenEditor(path) }
   ]
+
+  /** "New worktree…" for a main working tree row (nothing for other rows). */
+  const newWorktreeItems = (id: string, path: string, offered: boolean): MenuItem[] =>
+    offered ? [{ label: 'New worktree…', icon: <GitBranchPlus size={14} />, onClick: () => p.onNewWorktree(id, path) }] : []
+  const newWorktreeButton = (id: string, path: string, offered: boolean): JSX.Element | null =>
+    offered ? (
+      <button className="icon-btn" title="New worktree" onClick={() => p.onNewWorktree(id, path)}>
+        <GitBranchPlus size={14} />
+      </button>
+    ) : null
+  /** Worktree rows under a repo row (folder or child). */
+  const worktreeRows = (repoId: string, repoPath: string, list: WorktreeView[], indent: number): JSX.Element | null =>
+    list.length === 0 ? null : (
+      <WorktreeRows
+        worktrees={list}
+        indent={indent}
+        selectedId={state.selectedId}
+        counts={p.counts}
+        finished={p.finished}
+        agent={p.agent}
+        RowComponent={Row}
+        onSelect={p.onSelect}
+        onOpenTerminal={p.onOpenTerminal}
+        onOpenToSide={p.onOpenToSide}
+        canOpenToSide={p.canOpenToSide}
+        onOpenExplorer={p.onOpenExplorer}
+        onOpenEditor={p.onOpenEditor}
+        onOpenWt={p.onOpenWt}
+        onCopy={p.onCopy}
+        onCloseFinished={p.onCloseFinished}
+        onRemove={(wt) => p.onRemoveWorktree(wt, repoId, repoPath)}
+        openMenu={openMenu}
+      />
+    )
 
   /** Move up/down/into group above/out of group, each only when it would do something (same rules as the shortcuts). */
   const arrangeItems = (id: string): MenuItem[] => {
@@ -432,6 +478,7 @@ export function Sidebar(p: Props): JSX.Element {
   const folderMenu = (f: FolderView): MenuItem[] => {
     return [
       ...pathItems(f.id, f.path, f.missing),
+      ...newWorktreeItems(f.id, f.path, f.isMainWorktree && !f.missing),
       { separator: true },
       pinItem(f.id),
       { label: 'Rename', icon: <Pencil size={14} />, onClick: () => startRename('folder', f.id, f.name) },
@@ -522,6 +569,7 @@ export function Sidebar(p: Props): JSX.Element {
 
   const childMenu = (g: GroupView, c: ChildView): MenuItem[] => [
     ...pathItems(c.id, c.path, false),
+    ...newWorktreeItems(c.id, c.path, c.isMainWorktree),
     { separator: true },
     c.hidden
       ? { label: 'Unhide', icon: <Eye size={14} />, onClick: () => p.onHideChild(g.id, c.path, false) }
@@ -589,8 +637,8 @@ export function Sidebar(p: Props): JSX.Element {
   const folderRow = (f: FolderView, indent: number): JSX.Element => {
     const osCopy = copyTargetDrag(f.id, f.path, f.name)
     return (
+    <Fragment key={f.id}>
     <Row
-      key={f.id}
       indent={indent}
       icon={f.missing ? <FolderX size={16} /> : f.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
       name={f.name}
@@ -638,11 +686,16 @@ export function Sidebar(p: Props): JSX.Element {
         onDrop: (e) => (isOsDrag(e) ? (f.missing ? undefined : osCopy.onDrop(e)) : drop(f, e))
       }}
       actions={
-        <button className="icon-btn" title="New terminal" disabled={f.missing} onClick={() => p.onOpenTerminal(f.id)}>
-          <Terminal size={14} />
-        </button>
+        <>
+          {newWorktreeButton(f.id, f.path, f.isMainWorktree && !f.missing)}
+          <button className="icon-btn" title="New terminal" disabled={f.missing} onClick={() => p.onOpenTerminal(f.id)}>
+            <Terminal size={14} />
+          </button>
+        </>
       }
     />
+    {worktreeRows(f.id, f.path, f.worktrees, indent + 1)}
+    </Fragment>
     )
   }
 
@@ -783,8 +836,8 @@ export function Sidebar(p: Props): JSX.Element {
       if (!x) return sum
       const own =
         x.kind === 'manual'
-          ? membersOf(x.id).reduce((n, f) => n + (p.counts[f.id] ?? 0), 0)
-          : x.children.reduce((n, c) => n + (p.counts[c.id] ?? 0), 0)
+          ? membersOf(x.id).reduce((n, f) => n + rowIds(f.id).reduce((m, id) => m + (p.counts[id] ?? 0), 0), 0)
+          : x.children.reduce((n, c) => n + rowIds(c.id).reduce((m, id) => m + (p.counts[id] ?? 0), 0), 0)
       return sum + (p.counts[x.id] ?? 0) + own
     }, 0)
     const finishedIds: string[] = []
@@ -792,8 +845,8 @@ export function Sidebar(p: Props): JSX.Element {
       const x = state.groups.find((y) => y.id === gid)
       if (!x) return sum
       const kids = x.kind === 'manual' ? membersOf(x.id) : x.children
-      finishedIds.push(x.id, ...kids.map((c) => c.id))
-      return kids.reduce((s, c) => mergeFinished(s, p.finished[c.id]), mergeFinished(sum, p.finished[x.id]))
+      finishedIds.push(x.id, ...kids.flatMap((c) => rowIds(c.id)))
+      return kids.reduce((s, c) => rowIds(c.id).reduce((s2, id) => mergeFinished(s2, p.finished[id]), s), mergeFinished(sum, p.finished[x.id]))
     }, undefined)
     const removal = removalSet(state.groups, state.folders, g.id)
     const total = removal.folderIds.length
@@ -804,8 +857,8 @@ export function Sidebar(p: Props): JSX.Element {
     const sel = state.selectedId
     const kids: { el: JSX.Element; working: boolean; sel: boolean }[] = g.collapsed ? [] : [
       ...subgroups.map((c) => ({ el: groupBlock(c, depth + 1, seen), working: groupWorking(c), sel: groupHasSelected(c) })),
-      ...members.map((f) => ({ el: folderRow(f, depth + 1), working: isWorking(f.id), sel: f.id === sel })),
-      ...(g.kind === 'parent' ? visibleChildren.map((c) => ({ el: childRow(g, c, depth), working: isWorking(c.id), sel: c.id === sel })) : [])
+      ...members.map((f) => ({ el: folderRow(f, depth + 1), working: isWorking(f.id), sel: rowIds(f.id).includes(sel ?? '') })),
+      ...(g.kind === 'parent' ? visibleChildren.map((c) => ({ el: childRow(g, c, depth), working: isWorking(c.id), sel: rowIds(c.id).includes(sel ?? '') })) : [])
     ]
     const idleKids = kids.filter((k) => !k.working)
     // Expanded on request, or forced open while the selection sits inside it (not persisted).
@@ -979,8 +1032,8 @@ export function Sidebar(p: Props): JSX.Element {
 
   /** Row for a child folder of a parent-kind group. */
   const childRow = (g: GroupView, c: ChildView, depth: number): JSX.Element => (
+    <Fragment key={c.id}>
     <Row
-      key={c.id}
       indent={depth + 1}
       icon={c.isGit ? <FolderGit2 size={16} /> : <FolderIcon size={16} />}
       name={c.name}
@@ -1000,6 +1053,7 @@ export function Sidebar(p: Props): JSX.Element {
       onContext={(e) => openMenu(e, childMenu(g, c))}
       actions={
         <>
+          {newWorktreeButton(c.id, c.path, c.isMainWorktree)}
           <button className="icon-btn" title="New terminal" onClick={() => p.onOpenTerminal(c.id)}>
             <Terminal size={14} />
           </button>
@@ -1013,6 +1067,8 @@ export function Sidebar(p: Props): JSX.Element {
         </>
       }
     />
+    {worktreeRows(c.id, c.path, c.worktrees, depth + 2)}
+    </Fragment>
   )
 
   const empty = state.groups.length === 0 && standalone.length === 0 && creating === null
@@ -1101,7 +1157,7 @@ export function Sidebar(p: Props): JSX.Element {
               ...childGroups(state.groups, null)
                 .filter((g) => !isPinned(g.id))
                 .map((g) => ({ working: groupWorking(g), needs: needsYou(groupAgent(g)), sel: groupHasSelected(g), el: (): JSX.Element | null => (seen.has(g.id) ? null : groupBlock(g, 0, seen)) })),
-              ...standalone.map((f) => ({ working: isWorking(f.id), needs: needsYou(p.agent[f.id]), sel: f.id === state.selectedId, el: (): JSX.Element | null => folderRow(f, 0) }))
+              ...standalone.map((f) => ({ working: isWorking(f.id), needs: needsYou(agentOf(f.id)), sel: rowIds(f.id).includes(state.selectedId ?? ''), el: (): JSX.Element | null => folderRow(f, 0) }))
             ]
             const needs = entries.filter((e) => e.needs)
             const work = entries.filter((e) => !e.needs && e.working)

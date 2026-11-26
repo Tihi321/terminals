@@ -1,0 +1,11 @@
+{"ts":"2026-11-26T17:39:08Z","actor":"director-scribe","type":"plan.created","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"planner returned the plan"}
+{"ts":"2026-11-26T17:39:09Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"approved by director on the user's 'just do it all'"}
+{"ts":"2026-11-26T18:15:56Z","actor":"implement","type":"implement.started","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"on existing branch feat/herdr-agent-workflow"}
+{"ts":"2026-11-26T18:16:19Z","actor":"implement","type":"slice.started","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"slice A: shared, main, smoke","data":{"tasks":["T1","T2","T5"]}}
+{"ts":"2026-11-26T18:22:07Z","actor":"implement","type":"slice.done","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"slice A done; node typecheck + smoke pass","data":{"tasks":["T1","T2","T5"]}}
+{"ts":"2026-11-26T18:22:40Z","actor":"implement","type":"slice.started","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"slice B: sidebar, dialogs, App wiring, README","data":{"tasks":["T3","T6"]}}
+{"ts":"2026-11-26T18:22:40Z","actor":"implement","type":"slice.started","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"slice C: Git panel Branch view, base diffs","data":{"tasks":["T4"]}}
+{"ts":"2026-11-26T18:24:23Z","actor":"implement","type":"slice.done","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"slice C done; its files typecheck clean, smoke passes","data":{"tasks":["T4"]}}
+{"ts":"2026-11-26T18:26:24Z","actor":"implement","type":"slice.done","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"slice B done; typecheck and smoke pass","data":{"tasks":["T3","T6"]}}
+{"ts":"2026-11-26T18:28:09Z","actor":"implement","type":"verify.passed","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"yarn typecheck and yarn smoke pass; manual 3-11 untested"}
+{"ts":"2026-11-26T18:28:09Z","actor":"implement","type":"changelog.written","request":"REQ-0011","ticket":"REQ-0011-worktree-tabs","detail":"changelog.md written; status stays in-progress"}

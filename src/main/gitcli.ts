@@ -8,7 +8,9 @@ import type {
   GitNumstat,
   GitResult,
   GitStatus,
-  GitBranch
+  GitBranch,
+  GitBaseChanges,
+  GitBaseFile
 } from '../shared/types'
 
 /** Everything here shells out to the `git` CLI (no shell, args as arrays) and never throws. */
@@ -18,6 +20,7 @@ const TIMEOUT = 20000
 /** fetch/pull/push can be slow on a bad connection; credential helpers may also show a dialog. */
 const NET_TIMEOUT = 120000
 const HASH_RE =/^[0-9a-f]{4,40}$/i
+const FULL_HASH_RE = /^[0-9a-f]{40}$/i
 /** Untracked files above this size are not read for line counts. */
 const COUNT_LIMIT = 1024 * 1024
 
@@ -27,7 +30,7 @@ interface RunOpts {
   /** Overrides the default timeout (network commands). */
   timeoutMs?: number
 }
-interface RunOut {
+export interface RunOut {
   code: number
   stdout: string
   stderr: string
@@ -39,7 +42,7 @@ interface RunOut {
 // --no-optional-locks: status polling must never take index.lock away from the user's own git commands.
 const BASE = ['--no-optional-locks', '-c', 'core.quotepath=off', '-c', 'core.safecrlf=false', '-c', 'color.ui=never']
 
-function run(cwd: string, args: string[], opts: RunOpts = {}): Promise<RunOut> {
+export function run(cwd: string, args: string[], opts: RunOpts = {}): Promise<RunOut> {
   return new Promise((resolveRun) => {
     const max = opts.maxBytes ?? MAX_OUT
     const stdout: Buffer[] = []
@@ -90,7 +93,7 @@ function run(cwd: string, args: string[], opts: RunOpts = {}): Promise<RunOut> {
   })
 }
 
-function failText(r: RunOut): string {
+export function failText(r: RunOut): string {
   if (r.spawnError) return r.spawnError
   return (r.stderr.trim() || r.stdout.trim() || `git exited with code ${r.code}`).slice(0, 4000)
 }
@@ -98,7 +101,7 @@ function failText(r: RunOut): string {
 const rootCache = new Map<string, string>()
 
 /** Resolves the repository root for a folder (the folder may be a subdirectory of the repo). */
-async function repoRoot(folder: string): Promise<GitResult<{ root: string }>> {
+export async function repoRoot(folder: string): Promise<GitResult<{ root: string }>> {
   const dir = resolve(folder)
   try {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return { ok: false, error: 'Folder does not exist' }
@@ -142,6 +145,41 @@ export function parseNumstat(out: string): GitNumstat[] {
     } else {
       res.push({ path: m[3], added, deleted })
     }
+  }
+  return res
+}
+
+/** Parses `git diff --name-status -z -M`: "M\0path\0" or "R100\0old\0new\0". Status is the first letter. */
+export function parseNameStatus(out: string): { path: string; origPath?: string; status: string }[] {
+  const parts = out.split('\0')
+  const res: { path: string; origPath?: string; status: string }[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const code = parts[i]
+    if (!code) continue
+    const status = code[0]
+    if (status === 'R' || status === 'C') {
+      const origPath = parts[++i]
+      const path = parts[++i]
+      if (path) res.push({ path, origPath, status })
+    } else {
+      const path = parts[++i]
+      if (path) res.push({ path, status })
+    }
+  }
+  return res
+}
+
+/** Parses `git worktree list --porcelain` (blocks separated by blank lines). Used by the smoke check only. */
+export function parseWorktreePorcelain(out: string): { path: string; branch: string | null }[] {
+  const res: { path: string; branch: string | null }[] = []
+  for (const block of out.split(/\r?\n\r?\n/)) {
+    let path: string | null = null
+    let branch: string | null = null
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('worktree ')) path = line.slice('worktree '.length)
+      else if (line.startsWith('branch ')) branch = line.slice('branch '.length).replace(/^refs\/heads\//, '')
+    }
+    if (path) res.push({ path, branch })
   }
   return res
 }
@@ -318,6 +356,10 @@ export async function gitDiff(folder: string, req: GitDiffRequest): Promise<GitR
       if (typeof req.hash !== 'string' || !HASH_RE.test(req.hash)) return { ok: false, error: 'Invalid commit hash' }
       args = ['show', '--format=', '--first-parent', ...common, req.hash, '--', req.path]
       break
+    case 'base':
+      if (typeof req.base !== 'string' || !FULL_HASH_RE.test(req.base)) return { ok: false, error: 'Invalid base commit' }
+      args = ['diff', ...common, '-M', req.base, '--', req.path]
+      break
     default:
       return { ok: false, error: 'Invalid diff mode' }
   }
@@ -327,6 +369,46 @@ export async function gitDiff(folder: string, req: GitDiffRequest): Promise<GitR
   }
   if (!okCodes.includes(r.code) && !r.truncated) return { ok: false, error: failText(r) }
   return { ok: true, text: r.stdout, truncated: r.truncated }
+}
+
+/**
+ * Files changed on HEAD's branch vs merge-base(HEAD, base), including uncommitted and untracked changes.
+ * Returns `onBase: true` (no diff computed) when HEAD is detached or already on `base`. `baseIsSet` is filled in by the caller.
+ */
+export async function gitBaseChanges(folder: string, base: string): Promise<GitResult<{ changes: Omit<GitBaseChanges, 'baseIsSet'> }>> {
+  if (typeof base !== 'string' || !base || base.startsWith('-') || base.includes('\0')) return { ok: false, error: 'Invalid base branch' }
+  const rr = await repoRoot(folder)
+  if (!rr.ok) return rr
+  const root = rr.root
+  const br = await run(root, ['symbolic-ref', '-q', '--short', 'HEAD'])
+  const branch = br.code === 0 && br.stdout.trim() ? br.stdout.trim() : null
+  if (branch === null || branch === base || branch === base.replace(/^origin\//, '')) {
+    return { ok: true, changes: { base, branch, onBase: true, mergeBase: '', ahead: 0, files: [] } }
+  }
+  const mb = await run(root, ['merge-base', 'HEAD', base])
+  const mergeBase = mb.stdout.trim()
+  if (mb.code !== 0 || !FULL_HASH_RE.test(mergeBase)) {
+    return { ok: false, error: mb.spawnError ?? `No common history with ${base}` }
+  }
+  const [ahead, names, nums, untracked] = await Promise.all([
+    run(root, ['rev-list', '--count', `${base}..HEAD`]),
+    run(root, ['diff', '--name-status', '-z', '-M', '--no-ext-diff', mergeBase]),
+    run(root, ['diff', '--numstat', '-z', '-M', '--no-ext-diff', mergeBase]),
+    run(root, ['ls-files', '--others', '--exclude-standard', '-z'])
+  ])
+  if (names.code !== 0) return { ok: false, error: failText(names) }
+  const counts = new Map(parseNumstat(nums.code === 0 ? nums.stdout : '').map((n) => [n.path, n]))
+  const files: GitBaseFile[] = parseNameStatus(names.stdout).map((f) => {
+    const n = counts.get(f.path)
+    return { path: f.path, origPath: f.origPath, status: f.status, added: n ? n.added : null, deleted: n ? n.deleted : null }
+  })
+  if (untracked.code === 0) {
+    for (const p of untracked.stdout.split('\0')) {
+      if (p) files.push({ path: p, status: 'U', added: countLines(resolve(root, p)), deleted: 0 })
+    }
+  }
+  const n = Number.parseInt(ahead.stdout.trim(), 10)
+  return { ok: true, changes: { base, branch, onBase: false, mergeBase, ahead: Number.isFinite(n) ? n : 0, files } }
 }
 
 async function changePaths(folder: string, paths: string[] | null, label: string): Promise<GitResult<{ root: string }>> {

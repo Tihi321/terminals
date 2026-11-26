@@ -14,7 +14,7 @@ import { THEMES, THEME_IDS } from '../../shared/themes'
 import './SettingsDialog.css'
 
 type FieldDef =
-  | { key: 'theme' | 'cursorStyle' | 'shell'; kind: 'select'; label: string; hint?: string }
+  | { key: 'theme' | 'cursorStyle' | 'shell' | 'worktreeLayout'; kind: 'select'; label: string; hint?: string }
   | { key: 'terminalFontSize' | 'scrollback'; kind: 'number'; label: string; min: number; max: number; step: number; hint?: string }
   | { key: 'cursorBlink' | 'allowMcpRun' | 'agentHeuristics'; kind: 'toggle'; label: string; hint?: string }
   | { key: 'homeDir'; kind: 'path'; label: string; hint?: string }
@@ -79,6 +79,10 @@ const SECTIONS: { title: string; fields: FieldDef[] }[] = [
   {
     title: 'Home',
     fields: [{ key: 'homeDir', kind: 'path', label: 'Home folder', hint: 'Where Home terminals start. Empty = your Documents folder.' }]
+  },
+  {
+    title: 'Git',
+    fields: [{ key: 'worktreeLayout', kind: 'select', label: 'Worktree location', hint: 'Applies to new worktrees.' }]
   },
   {
     title: 'Agent status',
@@ -338,7 +342,12 @@ export function SettingsDialog({
 
   const set = (key: keyof Settings, value: unknown): void => onChange({ [key]: value } as Partial<Settings>)
 
-  const selectOptions = (key: 'theme' | 'cursorStyle' | 'shell'): { value: string; label: string; disabled?: boolean }[] => {
+  const selectOptions = (key: 'theme' | 'cursorStyle' | 'shell' | 'worktreeLayout'): { value: string; label: string; disabled?: boolean }[] => {
+    if (key === 'worktreeLayout')
+      return [
+        { value: 'container', label: 'Next to the repo in <repo>.worktrees\\<branch>' },
+        { value: 'sibling', label: 'Next to the repo as <repo>-<branch>' }
+      ]
     if (key === 'theme') return [{ value: 'system', label: 'Follow system' }, ...THEME_IDS.map((id) => ({ value: id, label: THEMES[id].name }))]
     if (key === 'cursorStyle') return CURSOR_OPTIONS
     const opts = shells.map((s) => ({

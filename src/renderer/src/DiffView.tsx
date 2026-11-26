@@ -47,7 +47,12 @@ export function DiffView({ spec, fontSize, onChangeSpec }: Props): JSX.Element {
     inflight.current = true
     const s = specRef.current
     try {
-      const req: GitDiffRequest = s.mode === 'commit' ? { mode: 'commit', path: s.path, hash: s.hash } : { mode: s.mode, path: s.path }
+      const req: GitDiffRequest =
+        s.mode === 'commit'
+          ? { mode: 'commit', path: s.path, hash: s.hash }
+          : s.mode === 'base'
+            ? { mode: 'base', path: s.path, base: s.base }
+            : { mode: s.mode, path: s.path }
       const [d, st] = await Promise.all([window.api.gitDiff(s.folder, req), window.api.gitStatus(s.folder)])
       const cur = specRef.current
       if (cur.folder !== s.folder || cur.mode !== s.mode || cur.path !== s.path) return
@@ -65,7 +70,7 @@ export function DiffView({ spec, fontSize, onChangeSpec }: Props): JSX.Element {
     }
   }, [])
 
-  const key = `${spec.folder}|${spec.mode}|${spec.path}|${spec.mode === 'commit' ? spec.hash : ''}`
+  const key = `${spec.folder}|${spec.mode}|${spec.path}|${spec.mode === 'commit' ? spec.hash : spec.mode === 'base' ? spec.base : ''}`
   useEffect(() => {
     lastText.current = null
     setText(null)
@@ -148,7 +153,7 @@ export function DiffView({ spec, fontSize, onChangeSpec }: Props): JSX.Element {
           </span>
         )}
         <span className="git-fill" />
-        {spec.mode !== 'commit' && (
+        {spec.mode !== 'commit' && spec.mode !== 'base' && (
           <button className="btn small" disabled={busy} onClick={() => void stageAction()}>
             {spec.mode === 'staged' ? <Minus size={13} /> : <Plus size={13} />}
             {spec.mode === 'staged' ? 'Unstage' : 'Stage'}

@@ -15,7 +15,7 @@ import {
   Minus,
   RefreshCw
 } from 'lucide-react'
-import type { GitCommit, GitDiffRequest, GitFile, GitNumstat, GitStatus } from '../../shared/types'
+import type { GitBaseChanges, GitBaseFile, GitBranch as GitBranchInfo, GitCommit, GitDiffRequest, GitFile, GitNumstat, GitStatus } from '../../shared/types'
 import { BranchPicker } from './BranchPicker'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
@@ -40,10 +40,15 @@ function pathsOf(f: GitFile): string[] {
 }
 
 function letterOf(f: GitFile, section: Section): { ch: string; cls: string; label: string } {
-  if (section === 'untracked') return { ch: 'U', cls: 'add', label: 'Untracked' }
+  if (section === 'untracked') return letterOfStatus('U')
   if (f.conflicted) return { ch: '!', cls: 'del', label: 'Conflict' }
-  const c = (section === 'staged' ? f.staged : f.unstaged) ?? 'M'
+  return letterOfStatus((section === 'staged' ? f.staged : f.unstaged) ?? 'M')
+}
+
+function letterOfStatus(c: string): { ch: string; cls: string; label: string } {
   switch (c) {
+    case 'U':
+      return { ch: 'U', cls: 'add', label: 'Untracked' }
     case 'A':
       return { ch: 'A', cls: 'add', label: 'Added' }
     case 'D':
@@ -88,7 +93,11 @@ function Check3({ state, onClick, title }: { state: 'on' | 'off' | 'mixed'; onCl
 }
 
 export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element {
-  const [sub, setSub] = useState<'changes' | 'history'>('changes')
+  const [sub, setSub] = useState<'changes' | 'history' | 'branch'>('changes')
+  const [baseInfo, setBaseInfo] = useState<GitBaseChanges | null>(null)
+  const [baseError, setBaseError] = useState<string | null>(null)
+  const [branchList, setBranchList] = useState<GitBranchInfo[]>([])
+  const [baseSpinning, setBaseSpinning] = useState(false)
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [error, setError] = useState<{ text: string; notRepo: boolean } | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -165,6 +174,87 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
   useEffect(() => {
     void refresh()
   }, [sub, refresh])
+
+  const baseInflight = useRef(false)
+  const lastBase = useRef('')
+  const fallbackBase = useRef<string | null>(null)
+
+  const loadBase = useCallback(async (manual = false): Promise<void> => {
+    const folder = rootRef.current
+    if (!folder || baseInflight.current) return
+    baseInflight.current = true
+    if (manual) setBaseSpinning(true)
+    try {
+      const r = await window.api.gitBaseChanges(folder)
+      if (rootRef.current !== folder) return
+      const key = JSON.stringify(r)
+      if (key === lastBase.current) return
+      lastBase.current = key
+      if (r.ok) {
+        if (!r.changes.baseIsSet) fallbackBase.current = r.changes.base
+        setBaseInfo(r.changes)
+        setBaseError(null)
+      } else {
+        setBaseInfo(null)
+        setBaseError(r.error)
+      }
+    } finally {
+      baseInflight.current = false
+      if (manual) setBaseSpinning(false)
+    }
+  }, [])
+
+  // Folder changed: forget the previous folder's branch comparison.
+  useEffect(() => {
+    lastBase.current = ''
+    fallbackBase.current = null
+    baseInflight.current = false
+    setBaseInfo(null)
+    setBaseError(null)
+    setBranchList([])
+    void loadBase()
+  }, [root, loadBase])
+
+  // Current branch changed (switch, new worktree checkout): recompute whether the Branch view applies.
+  const curBranch = status?.detached ? null : (status?.branch ?? null)
+  useEffect(() => {
+    void loadBase()
+  }, [curBranch, loadBase])
+
+  // While the Branch view is open: poll like the status, and keep the branch list for the base select.
+  useEffect(() => {
+    if (sub !== 'branch') return
+    const folder = root
+    if (folder)
+      void window.api.gitBranches(folder).then((r) => {
+        if (rootRef.current === folder && r.ok) setBranchList(r.branches)
+      })
+    const go = (): void => void loadBase()
+    const poll = window.setInterval(() => {
+      if (document.hasFocus() && !document.hidden) go()
+    }, POLL_MS)
+    window.addEventListener('focus', go)
+    window.addEventListener('git-changed', go)
+    return () => {
+      window.clearInterval(poll)
+      window.removeEventListener('focus', go)
+      window.removeEventListener('git-changed', go)
+    }
+  }, [sub, root, loadBase])
+
+  // The user landed on the base branch while viewing the Branch tab: it no longer applies.
+  useEffect(() => {
+    if (sub === 'branch' && baseInfo?.onBase) setSub('changes')
+  }, [sub, baseInfo])
+
+  const changeBase = async (value: string): Promise<void> => {
+    const folder = root
+    if (!folder) return
+    await window.api.setRepoBase(folder, value === '' ? null : value)
+    lastBase.current = ''
+    baseInflight.current = false
+    void loadBase(true)
+  }
 
   useEffect(() => {
     const onFocus = (): void => void refresh()
@@ -411,6 +501,123 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
   }
 
   const hasUnstaged = groups.tracked.length + groups.untracked.length > 0
+  const showBranchTab = (baseInfo !== null && !baseInfo.onBase) || (sub === 'branch' && baseError !== null)
+
+  const renderBranch = (): JSX.Element => {
+    if (baseError) {
+      return (
+        <div className="git-scroll">
+          <div className="panel-error">{baseError}</div>
+        </div>
+      )
+    }
+    if (!baseInfo) return <div className="panel-hint">Loading…</div>
+    const bi = baseInfo
+    const a = bi.files.reduce((n, f) => n + num(f.added), 0)
+    const d = bi.files.reduce((n, f) => n + num(f.deleted), 0)
+    const locals = branchList.filter((b) => !b.remote)
+    const remotes = branchList.filter((b) => b.remote)
+    const known = branchList.some((b) => b.name === bi.base)
+    const selValue = bi.baseIsSet ? bi.base : ''
+    const defaultLabel = `Default (${fallbackBase.current ?? bi.base})`
+    const specOf = (f: GitBaseFile): GitDiffRequest =>
+      f.status === 'U' ? { mode: 'untracked', path: f.path } : { mode: 'base', path: f.path, base: bi.mergeBase }
+    const row = (f: GitBaseFile): JSX.Element => {
+      const { name, dir } = splitPath(f.path)
+      const abs = status ? absPath(status.root, f.path) : null
+      const l = letterOfStatus(f.status)
+      return (
+        <div
+          key={f.path}
+          className="git-row"
+          title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}
+          onClick={() => onOpenDiff(root, specOf(f), false)}
+          onDoubleClick={() => onOpenDiff(root, specOf(f), true)}
+        >
+          <span className={`git-letter ${l.cls}`} title={l.label}>
+            {l.ch}
+          </span>
+          <span className="git-ficon">{fileIcon(name)}</span>
+          <span className="git-name">{name}</span>
+          {(f.origPath || dir) && (
+            <span className="git-dir">
+              <bdi>{f.origPath ? `← ${f.origPath}` : dir}</bdi>
+            </span>
+          )}
+          <span className="git-fill" />
+          <Stat added={f.added} deleted={f.deleted} />
+          <button
+            className="git-open"
+            title="Open in editor"
+            disabled={!abs}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (abs) void window.api.openInEditor(abs)
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            <ExternalLink size={12} />
+          </button>
+        </div>
+      )
+    }
+    return (
+      <>
+        <div className="git-header">
+          <span className="git-header-title">
+            <GitCompare size={14} />
+            <span>vs</span>
+            <select
+              className="git-base-select"
+              value={selValue}
+              title="Base branch"
+              onChange={(e) => void changeBase(e.target.value)}
+            >
+              <option value="">{defaultLabel}</option>
+              {bi.baseIsSet && !known && <option value={bi.base}>{bi.base}</option>}
+              {locals.map((b) => (
+                <option key={b.name} value={b.name}>
+                  {b.name}
+                </option>
+              ))}
+              {remotes.map((b) => (
+                <option key={b.name} value={b.name}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+            {bi.files.length > 0 && (
+              <span className="git-stat">
+                <span className="plus">+{a}</span>
+                <span className="minus">−{d}</span>
+              </span>
+            )}
+          </span>
+          <span className="git-fill" />
+          <span className="git-note">
+            {bi.ahead} commit{bi.ahead === 1 ? '' : 's'} ahead
+          </span>
+          <button className="icon-btn" title="Refresh" onClick={() => void loadBase(true)}>
+            <RefreshCw size={14} className={baseSpinning ? 'spin' : ''} />
+          </button>
+        </div>
+        <div className="git-scroll">
+          {bi.files.length === 0 ? (
+            <div className="panel-empty">
+              <span className="empty-glyph">
+                <Check size={20} strokeWidth={1.75} />
+              </span>
+              <div>
+                <div className="empty-title">No changes vs {bi.base}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="git-section">{bi.files.map(row)}</div>
+          )}
+        </div>
+      </>
+    )
+  }
 
   return (
     <div className="gitpanel">
@@ -422,6 +629,11 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
           <button className={sub === 'history' ? 'active' : ''} onClick={() => setSub('history')}>
             History
           </button>
+          {showBranchTab && (
+            <button className={sub === 'branch' ? 'active' : ''} onClick={() => setSub('branch')}>
+              Branch
+            </button>
+          )}
         </div>
       </div>
 
@@ -573,6 +785,8 @@ export function GitPanel({ root, rootMissing, onOpenDiff }: Props): JSX.Element 
             </button>
           </div>
         </>
+      ) : sub === 'branch' ? (
+        renderBranch()
       ) : (
         <div className="git-scroll">
           {commits === null ? (

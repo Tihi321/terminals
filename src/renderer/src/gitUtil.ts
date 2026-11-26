@@ -65,11 +65,13 @@ export function diffTitle(spec: GitDiffRequest): string {
   const { name } = splitPath(spec.path)
   if (spec.mode === 'staged') return `${name} (staged)`
   if (spec.mode === 'commit') return `${name} @${spec.hash.slice(0, 7)}`
+  if (spec.mode === 'base') return `${name} (branch)`
   return name
 }
 
 export function diffModeLabel(spec: GitDiffRequest): string {
   if (spec.mode === 'commit') return `commit ${spec.hash.slice(0, 7)}`
+  if (spec.mode === 'base') return `vs merge-base ${spec.base.slice(0, 7)}`
   return spec.mode
 }
 

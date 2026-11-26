@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
 import { resolveShell, spawnShell, spawnSteps, stepsShell } from './pty'
 import { childId, migrate, moveGroupData, moveItemData, nestItemData, removeGroupData, setGroupFolderData, type Persisted } from './store'
@@ -26,7 +26,9 @@ import { planRestore, restorePaths, sanitizeTabs, toPersistedTabs, type RestoreC
 import { checkElevatedRequest, elevatedCommand, gsudoCandidates, parseSudoMode, resolveElevator } from './elevation'
 import { elevationFailed } from '../shared/elevation'
 import type { PersistedTab } from '../shared/types'
-import { gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage } from './gitcli'
+import { gitBaseChanges, gitCommit, gitCommitFiles, gitDiff, gitLog, gitStage, gitStatus, gitUnstage, parseWorktreePorcelain } from './gitcli'
+import { readWorktrees } from './git'
+import { addWorktree, removeWorktree, resolveBase } from './worktree'
 
 interface CheckResult {
   ok: boolean
@@ -412,6 +414,10 @@ function checkSession(): CheckResult {
   if (toPersistedTabs([{ ...good[7], userTitle: true }], {})[0]?.userTitle !== true || titled[0]?.userTitle !== true || titled[1]?.userTitle !== undefined)
     return fail('userTitle: true must survive toPersistedTabs/sanitizeTabs and a non-boolean be dropped ' + JSON.stringify(titled))
   if (plan.tabs[4].elevated !== true) return fail('planRestore should carry elevated ' + JSON.stringify(plan.tabs[4]))
+  const h40 = 'a'.repeat(40)
+  const baseTab = { id: 'b1', locId: 'A', kind: 'diff', title: 'd', cwd: 'C:\\b', diff: { folder: 'C:\\b', mode: 'base', path: 'p', base: h40 } }
+  const baseKept = sanitizeTabs([baseTab, { ...baseTab, id: 'b2', diff: { ...baseTab.diff, base: undefined } }])
+  if (baseKept.length !== 1 || baseKept[0].id !== 'b1' || baseKept[0].diff?.base !== h40) return fail('base diff tab needs a 40-hex base ' + JSON.stringify(baseKept))
   return { ok: true, msg: 'session: sanitizeTabs drops bad entries; planRestore keeps order, skips missing folder/file/command, falls back cwd, anchors runs' }
 }
 
@@ -491,6 +497,79 @@ async function checkGit(): Promise<CheckResult> {
   } finally {
     try {
       rmSync(repo, { recursive: true, force: true, maxRetries: 3 })
+    } catch {
+      /* read-only git objects can resist cleanup on Windows; the OS temp dir absorbs them */
+    }
+  }
+}
+
+/** Check: worktree add / list / base changes / remove against a temp repo; the on-disk listing is cross-checked with `git worktree list`. */
+async function checkWorktree(): Promise<CheckResult> {
+  const root = mkdtempSync(join(tmpdir(), 'terminals-smoke-wt-'))
+  const repo = join(root, 'repo')
+  const git = (cwd: string, ...a: string[]): string =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  const fail = (m: string): CheckResult => ({ ok: false, msg: 'worktree: ' + m })
+  // Same directory, whatever spelling (8.3 temp names, slashes, case) git or Node used.
+  const key = (p: string): string => {
+    try {
+      return realpathSync.native(p).toLowerCase()
+    } catch {
+      return resolvePath(p).toLowerCase()
+    }
+  }
+  try {
+    mkdirSync(repo)
+    git(repo, 'init', '-q', '-b', 'main')
+    writeFileSync(join(repo, 'a.txt'), 'one\ntwo\n')
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-q', '-m', 'init')
+
+    const add = await addWorktree(repo, 'feat/x', 'main', 'container')
+    if (!add.ok) return fail('add ' + add.error)
+    const wt = join(root, 'repo.worktrees', 'feat-x')
+    if (key(add.path) !== key(wt) || !existsSync(wt)) return fail('path ' + add.path)
+
+    const listed = readWorktrees(repo)
+    if (listed.length !== 1 || key(listed[0].path) !== key(wt) || listed[0].branch !== 'feat/x' || listed[0].locked || listed[0].missing)
+      return fail('readWorktrees ' + JSON.stringify(listed))
+    const porcelain = parseWorktreePorcelain(git(repo, 'worktree', 'list', '--porcelain')).filter((w) => key(w.path) !== key(repo))
+    if (porcelain.length !== listed.length || key(porcelain[0].path) !== key(listed[0].path) || porcelain[0].branch !== listed[0].branch)
+      return fail('readWorktrees differs from git worktree list: ' + JSON.stringify({ listed, porcelain }))
+
+    writeFileSync(join(wt, 'b.txt'), 'bee\n')
+    git(wt, 'add', 'b.txt')
+    git(wt, 'commit', '-q', '-m', 'b')
+    writeFileSync(join(wt, 'a.txt'), 'one\nTWO\n')
+    writeFileSync(join(wt, 'c.txt'), 'see\n')
+    const bc = await gitBaseChanges(wt, 'main')
+    if (!bc.ok) return fail('baseChanges ' + bc.error)
+    const st = (p: string): string | undefined => bc.changes.files.find((f) => f.path === p)?.status
+    if (bc.changes.onBase || bc.changes.ahead !== 1 || bc.changes.branch !== 'feat/x' || st('b.txt') !== 'A' || st('a.txt') !== 'M' || st('c.txt') !== 'U')
+      return fail('baseChanges ' + JSON.stringify(bc.changes))
+    const d = await gitDiff(wt, { mode: 'base', path: 'a.txt', base: bc.changes.mergeBase })
+    if (!d.ok || !d.text.includes('+TWO')) return fail('base diff ' + JSON.stringify(d).slice(0, 200))
+    const rb = await resolveBase(wt, undefined)
+    if (!rb.ok || rb.base !== 'main' || rb.baseIsSet) return fail('resolveBase ' + JSON.stringify(rb))
+    const onBase = await gitBaseChanges(repo, 'main')
+    if (!onBase.ok || !onBase.changes.onBase) return fail('main should be onBase ' + JSON.stringify(onBase))
+
+    const dirty = await removeWorktree(repo, wt, { force: false, deleteBranch: true })
+    if (dirty.ok || !existsSync(wt)) return fail('remove without force must refuse uncommitted changes ' + JSON.stringify(dirty))
+    const gone = await removeWorktree(repo, wt, { force: true, deleteBranch: true })
+    if (!gone.ok || existsSync(wt) || readWorktrees(repo).length !== 0) return fail('forced remove ' + JSON.stringify(gone))
+    if (!gone.branchError) return fail('branch -d should refuse an unmerged branch')
+    try {
+      git(repo, 'show-ref', '--verify', '-q', 'refs/heads/feat/x')
+    } catch {
+      return fail('unmerged branch should be kept')
+    }
+    return { ok: true, msg: 'worktree: add (container path), on-disk list matches git worktree list, base changes + base diff, refuses dirty remove, forced remove keeps unmerged branch' }
+  } catch (err) {
+    return fail(String(err))
+  } finally {
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 3 })
     } catch {
       /* read-only git objects can resist cleanup on Windows; the OS temp dir absorbs them */
     }
@@ -759,9 +838,11 @@ function checkMcpLogic(dir: string): CheckResult {
     groupId,
     missing: false,
     isGit: false,
-    branch: null
+    branch: null,
+    isMainWorktree: false,
+    worktrees: []
   })
-  const group = (id: string, kind: 'manual' | 'parent', name: string, path: string | null): AppState['groups'][number] => ({
+  const group =(id: string, kind: 'manual' | 'parent', name: string, path: string | null): AppState['groups'][number] => ({
     id,
     kind,
     name,
@@ -779,7 +860,7 @@ function checkMcpLogic(dir: string): CheckResult {
   })
   const repos = group('g2', 'parent', 'repos', p('repos'))
   const childPath = p('repos', 'one')
-  repos.children = [{ id: childId(childPath), path: childPath, name: 'one', isGit: false, branch: null, hidden: false }]
+  repos.children = [{ id: childId(childPath), path: childPath, name: 'one', isGit: false, branch: null, hidden: false, isMainWorktree: false, worktrees: [] }]
   const state: AppState = {
     folders: [
       folder('f1', 'alpha', p('alpha'), 'g1'),
@@ -1085,7 +1166,8 @@ export async function runSmoke(): Promise<void> {
     checkTermText(),
     await withWatchdog(checkRunCommand(dir, track), 60000, 'run command'),
     await withWatchdog(checkMcpHttp(dir, track), 60000, 'mcp http'),
-    await checkGit()
+    await checkGit(),
+    await checkWorktree()
   ]
   for (const r of results) console.log(r.ok ? `PASS: ${r.msg}` : `FAIL: ${r.msg}`)
   const ok = results.every((r) => r.ok)

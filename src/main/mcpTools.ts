@@ -14,7 +14,7 @@ import type { TerminalControl } from './terminalHost'
  * over an AppState; the tool `run` functions apply the result through the store (never by editing terminals.json).
  */
 
-export type LocKind = 'folder' | 'child' | 'parent' | 'manual' | 'home'
+export type LocKind = 'folder' | 'child' | 'parent' | 'manual' | 'home' | 'worktree'
 
 /** Anything a terminal can belong to: a saved folder, a parent group's subfolder, or a group. */
 export interface McpLoc {
@@ -51,7 +51,8 @@ const KIND_LABEL: Record<LocKind, string> = {
   child: 'subfolder of a parent folder group',
   parent: 'parent folder group',
   manual: 'manual group',
-  home: 'Home location'
+  home: 'Home location',
+  worktree: 'git worktree of a saved folder'
 }
 
 const HOW_TO =
@@ -70,6 +71,12 @@ export function buildLocations(state: AppState): McpLoc[] {
   for (const g of state.groups) out.push({ id: g.id, name: g.name, path: g.path, kind: g.kind, groupId: null, missing: g.missing })
   for (const g of state.groups)
     for (const c of g.children) out.push({ id: c.id, name: c.name, path: c.path, kind: 'child', groupId: g.id, missing: false })
+  // Linked git worktrees of saved folders and parent-group children; they belong to their repo row's group.
+  for (const f of state.folders)
+    for (const w of f.worktrees) out.push({ id: w.id, name: w.name, path: w.path, kind: 'worktree', groupId: f.groupId, missing: w.missing })
+  for (const g of state.groups)
+    for (const c of g.children)
+      for (const w of c.worktrees) out.push({ id: w.id, name: w.name, path: w.path, kind: 'worktree', groupId: g.id, missing: w.missing })
   // Last, so a saved folder at the same path wins.
   out.push({ id: HOME_ID, name: state.home.name, path: state.home.path, kind: 'home', groupId: null, missing: state.home.missing })
   return out

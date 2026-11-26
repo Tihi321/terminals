@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileText, FolderTree, FolderX, GitBranch, Group, PanelLeftClose, PanelLeftOpen, PanelRightClose, Plus, Shield, SquareTerminal, Terminal, X, Zap } from 'lucide-react'
-import type { AgentTabRequest, AppState, Command, ElevatorInfo, GitDiffRequest, Result } from '../../shared/types'
+import type { AgentTabRequest, AppState, Command, ElevatorInfo, GitDiffRequest, Result, WorktreeView } from '../../shared/types'
 import { GSUDO_HINT, INSTALL_GSUDO_COMMAND } from '../../shared/elevation'
 import { removalSet } from '../../shared/groupTree'
 import { rollupOf } from '../../shared/agentStatus'
@@ -46,6 +46,8 @@ import type { RunInfo } from './CommandsPanel'
 import { baseName, buildLocs } from './locations'
 import { createTerm, getTerm, pasteInto, setTermHooks, whenShellQuiet } from './termRegistry'
 import { SettingsDialog } from './SettingsDialog'
+import { NewWorktreeDialog } from './NewWorktreeDialog'
+import { RemoveWorktreeDialog } from './RemoveWorktreeDialog'
 import { useAppearance } from './appearance'
 import { DEFAULT_SETTINGS, FONT_SIZE_MAX, FONT_SIZE_MIN } from '../../shared/settings'
 
@@ -152,6 +154,8 @@ export function App(): JSX.Element {
   const [statuses, setStatuses] = useState<Record<string, TermStatus>>({})
   const [pickerOpen, setPickerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [newWt, setNewWt] = useState<{ repoPath: string } | null>(null)
+  const [removeWt, setRemoveWt] = useState<{ wt: WorktreeView; repoLocId: string } | null>(null)
   useAppearance(state?.settings)
   const [paneState, setPaneState] = useState<PaneState | null>(null)
   const panesRef = useRef<PaneState | null>(null)
@@ -384,7 +388,11 @@ export function App(): JSX.Element {
       if (!locId) return
       const spec: DiffSpec = { ...req, folder }
       const same = (a: DiffSpec, b: DiffSpec): boolean =>
-        a.folder === b.folder && a.mode === b.mode && a.path === b.path && (a.mode !== 'commit' || (b.mode === 'commit' && a.hash === b.hash))
+        a.folder === b.folder &&
+        a.mode === b.mode &&
+        a.path === b.path &&
+        (a.mode !== 'commit' || (b.mode === 'commit' && a.hash === b.hash)) &&
+        (a.mode !== 'base' || (b.mode === 'base' && a.base === b.base))
       const existing = tabsRef.current.find((t) => t.locId === locId && t.diff && same(t.diff, spec))
       if (existing) {
         if (pin && existing.preview) commitTabs((all) => all.map((t) => (t.id === existing.id ? { ...t, preview: false } : t)))
@@ -646,9 +654,11 @@ export function App(): JSX.Element {
                 tab.diff =
                   d.mode === 'commit' && d.hash
                     ? { folder: d.folder, mode: 'commit', path: d.path, hash: d.hash }
-                    : d.mode === 'commit'
-                      ? undefined
-                      : { folder: d.folder, mode: d.mode, path: d.path }
+                    : d.mode === 'base' && d.base
+                      ? { folder: d.folder, mode: 'base', path: d.path, base: d.base }
+                      : d.mode === 'commit' || d.mode === 'base'
+                        ? undefined
+                        : { folder: d.folder, mode: d.mode, path: d.path }
                 tab.preview = t.preview
               } else if (t.kind === 'file') {
                 tab.file = t.file
@@ -1125,6 +1135,8 @@ export function App(): JSX.Element {
           <Sidebar
             state={state}
             onOpenSettings={() => setSettingsOpen(true)}
+            onNewWorktree={(_repoLocId, repoPath) => setNewWt({ repoPath })}
+            onRemoveWorktree={(wt, repoLocId) => setRemoveWt({ wt, repoLocId })}
             counts={counts}
             finished={finished}
             agent={agentByLoc}
@@ -1565,6 +1577,36 @@ export function App(): JSX.Element {
           onPick={(s) => {
             setPickerOpen(false)
             void insertSnippet(s.body, false)
+          }}
+        />
+      )}
+      {newWt && (
+        <NewWorktreeDialog
+          repoPath={newWt.repoPath}
+          layout={state.settings.worktreeLayout}
+          onCancel={() => setNewWt(null)}
+          onCreated={(id, st) => {
+            setNewWt(null)
+            setState(st)
+            void openTerminal(id)
+          }}
+        />
+      )}
+      {removeWt && (
+        <RemoveWorktreeDialog
+          wt={removeWt.wt}
+          onCancel={() => setRemoveWt(null)}
+          onConfirm={async (opts) => {
+            const { wt } = removeWt
+            // Close its terminals first and give the shells a moment to release the directory.
+            closeTabsOf([wt.id])
+            await new Promise((r) => setTimeout(r, 300))
+            const r = await window.api.worktreeRemove(wt.path, opts)
+            if (!r.ok) return r.error
+            setState(r.state)
+            setRemoveWt(null)
+            if (r.branchError) alert(`Worktree removed, but the branch was kept: ${r.branchError}`)
+            return null
           }}
         />
       )}

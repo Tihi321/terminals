@@ -28,6 +28,8 @@ export interface Settings {
   allowMcpRun: boolean
   /** Detect agent status (working/done/needs-you) from terminal output for tabs whose agent does not report. */
   agentHeuristics: boolean
+  /** Where "New worktree" creates worktrees: `<repo>.worktrees\<branch>` (container) or `<repo>-<branch>` (sibling). */
+  worktreeLayout: 'container' | 'sibling'
 }
 
 export interface LoginItemState {
@@ -66,7 +68,7 @@ export interface PersistedTab {
   shell?: string
   /** shell only: cwd the tab was started in; fallback when `cwd` cannot be used. */
   startCwd?: string
-  diff?: { folder: string; mode: 'unstaged' | 'staged' | 'untracked' | 'commit'; path: string; hash?: string }
+  diff?: { folder: string; mode: 'unstaged' | 'staged' | 'untracked' | 'commit' | 'base'; path: string; hash?: string; base?: string }
   file?: string
   preview?: boolean
   run?: { commandId: string; runId: string; target: number }
@@ -105,11 +107,28 @@ export interface Folder {
   groupId: string | null
 }
 
+/** A linked git worktree of a main working tree. Id derived from the path: 'wt:' + norm(path). */
+export interface WorktreeView {
+  id: string
+  path: string
+  /** Folder name (basename of path). */
+  name: string
+  /** Branch short name, `detached @ abc1234`, or null when HEAD cannot be read. */
+  branch: string | null
+  locked: boolean
+  /** Directory no longer exists (prunable). */
+  missing: boolean
+}
+
 export interface FolderView extends Folder {
   /** True when the folder no longer exists on disk. */
   missing: boolean
   isGit: boolean
   branch: string | null
+  /** `.git` is a directory (a main working tree): "New worktree" is offered. */
+  isMainWorktree: boolean
+  /** Linked worktrees (empty unless `.git` is a directory with linked worktrees). */
+  worktrees: WorktreeView[]
 }
 
 /** Auto-discovered subdirectory of a parent-folder group. Id is derived from the path so it is stable across rescans. */
@@ -120,6 +139,10 @@ export interface ChildView {
   isGit: boolean
   branch: string | null
   hidden: boolean
+  /** `.git` is a directory (a main working tree): "New worktree" is offered. */
+  isMainWorktree: boolean
+  /** Linked worktrees (empty unless `.git` is a directory with linked worktrees). */
+  worktrees: WorktreeView[]
 }
 
 export interface GroupView {
@@ -316,6 +339,39 @@ export interface GitNumstat {
 export type GitDiffRequest =
   | { mode: 'unstaged' | 'staged' | 'untracked'; path: string }
   | { mode: 'commit'; path: string; hash: string }
+  /** Working tree vs the merge-base commit (`base`, 40 hex): committed + uncommitted changes. */
+  | { mode: 'base'; path: string; base: string }
+
+export interface GitBaseFile {
+  path: string
+  origPath?: string
+  /** A M D R C T, or 'U' for untracked. */
+  status: string
+  added: number | null
+  deleted: number | null
+}
+
+export interface GitBaseChanges {
+  /** Ref the merge-base was taken against, e.g. "main" or "origin/main". */
+  base: string
+  /** True when `base` came from repoBases (set by the user), false when it is the fallback. */
+  baseIsSet: boolean
+  /** Current branch short name (null = detached). */
+  branch: string | null
+  /** True when HEAD is detached or `branch` equals `base` (local name, or `base` minus `origin/`): the Branch view is hidden. When true, mergeBase/files are empty and no diff is computed. */
+  onBase: boolean
+  mergeBase: string
+  /** Commits on HEAD not in base. */
+  ahead: number
+  files: GitBaseFile[]
+}
+
+export interface WorktreeStatus {
+  /** Number of entries in `git status --porcelain` (tracked changes + untracked). */
+  changes: number
+  branch: string | null
+  locked: boolean
+}
 
 /** Git calls never throw: failures come back as `{ ok: false, error }`, with `notRepo` set when the folder is not in a repository. */
 export type GitResult<T = object> = ({ ok: true } & T) | { ok: false; error: string; notRepo?: boolean }
@@ -418,6 +474,20 @@ export interface TerminalsApi {
   gitBranches(folder: string): Promise<GitResult<{ branches: GitBranch[] }>>
   /** create = `switch -c`, track = `switch --track` (remote-tracking branch). */
   gitSwitch(folder: string, name: string, opts?: { create?: boolean; track?: boolean }): Promise<GitResult>
+  /** Files changed on the current branch relative to merge-base(HEAD, base), incl. uncommitted and untracked. Works for any repo folder. */
+  gitBaseChanges(folder: string): Promise<GitResult<{ changes: GitBaseChanges }>>
+  /** Stores (or clears with null) the base branch of the repo containing `folder`. */
+  setRepoBase(folder: string, base: string | null): Promise<AppState>
+
+  /**
+   * Creates a worktree of the main working tree `repo` for `branch` (checks it out when it already exists locally, else creates it from
+   * `base`; null = repo HEAD). Main picks the location from settings.worktreeLayout. Returns the new location id.
+   */
+  worktreeAdd(repo: string, branch: string, base: string | null): Promise<Result<{ id: string; path: string; state: AppState }>>
+  /** Uncommitted change count, branch and lock state of a known worktree. */
+  worktreeStatus(path: string): Promise<GitResult<{ status: WorktreeStatus }>>
+  /** Removes a worktree. Refuses locked ones, and ones with changes unless `force`. deleteBranch = `git branch -d` (failure comes back as branchError). */
+  worktreeRemove(path: string, opts: { force: boolean; deleteBranch: boolean }): Promise<Result<{ state: AppState; branchError?: string }>>
 
   clipboardRead(): Promise<string>
   clipboardReadForPaste(): Promise<PasteContent>

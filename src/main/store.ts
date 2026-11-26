@@ -22,7 +22,8 @@ import {
   type GroupView,
   type Snippet,
   type Settings,
-  type UiState
+  type UiState,
+  type WorktreeView
 } from '../shared/types'
 import { sanitizePersisted } from '../shared/panes'
 import { sanitizeTabs } from '../shared/session'
@@ -30,7 +31,7 @@ import { DEFAULT_SETTINGS, patchSettings, sanitizeSettings } from '../shared/set
 import { childGroups, nestError, nestTarget, removalSet } from '../shared/groupTree'
 import { applyOrder } from '../shared/order'
 import { resolveShell } from './pty'
-import { readGit } from './git'
+import { isMainWorktree, readGit, readWorktrees } from './git'
 
 interface PersistedGroup {
   id: string
@@ -59,6 +60,8 @@ export interface Persisted {
   selectedId: string | null
   settings: Settings
   ui: UiState
+  /** Base branch per repo top-level path (norm). Absent in older files. */
+  repoBases: Record<string, string>
 }
 
 const DEFAULT_UI: UiState = { sidebarWidth: 260, panelWidth: 340, sidebarCollapsed: false, panes: null, panelOpen: false, panelTab: 'files', tabs: [], groupBy: 'none', idleCollapsed: false, idleOpen: [] }
@@ -73,7 +76,8 @@ function emptyData(): Persisted {
     snippets: [],
     selectedId: null,
     settings: { ...DEFAULT_SETTINGS },
-    ui: { ...DEFAULT_UI }
+    ui: { ...DEFAULT_UI },
+    repoBases: {}
   }
 }
 
@@ -82,6 +86,10 @@ let file = ''
 
 export const norm = (p: string): string => resolve(p).replace(/[\\/]+$/, '').toLowerCase()
 export const childId = (p: string): string => 'child:' + norm(p)
+export const worktreeId = (p: string): string => 'wt:' + norm(p)
+
+/** Paths of all known linked worktrees; refreshed by every getState() and added to the allowed roots. */
+let worktreeRoots: string[] = []
 
 function num(v: unknown, def: number, min: number, max: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : def
@@ -170,6 +178,13 @@ export function migrate(raw: Record<string, unknown>): Persisted {
   // Pins (added without a schema bump: absent = none). Keep only existing folder/group ids, once each.
   const pinnable = new Set([...d.folders.map((f) => f.id), ...d.groups.map((g) => g.id)])
   d.pinned = (Array.isArray(raw.pinned) ? raw.pinned : []).filter((x, i, a): x is string => typeof x === 'string' && pinnable.has(x) && a.indexOf(x) === i)
+  // Base branch per repo (added without a schema bump: absent = none).
+  d.repoBases = {}
+  if (raw.repoBases && typeof raw.repoBases === 'object' && !Array.isArray(raw.repoBases)) {
+    for (const [k, v] of Object.entries(raw.repoBases as Record<string, unknown>)) {
+      if (typeof v === 'string' && v) d.repoBases[k] = v
+    }
+  }
   // Drop dangling group references rather than losing the folder.
   const groupIds = new Set(d.groups.map((g) => g.id))
   for (const f of d.folders) if (f.groupId && !groupIds.has(f.groupId)) f.groupId = null
@@ -246,7 +261,18 @@ function save(): void {
 
 const IGNORED_CHILDREN = new Set(['node_modules'])
 
-function scanChildren(dir: string, hidden: Set<string>): ChildView[] {
+function worktreeViews(dir: string, savedKeys: Set<string>, roots: string[]): WorktreeView[] {
+  const out: WorktreeView[] = []
+  for (const w of readWorktrees(dir)) {
+    // A worktree that is also a saved folder already has its own row.
+    if (savedKeys.has(norm(w.path))) continue
+    roots.push(w.path)
+    out.push({ id: worktreeId(w.path), path: w.path, name: basename(w.path) || w.path, branch: w.branch, locked: w.locked, missing: w.missing })
+  }
+  return out
+}
+
+function scanChildren(dir: string, hidden: Set<string>, savedKeys: Set<string>, roots: string[]): ChildView[] {
   let names: Dirent[]
   try {
     names = readdirSync(dir, { withFileTypes: true })
@@ -266,18 +292,38 @@ function scanChildren(dir: string, hidden: Set<string>): ChildView[] {
       }
     }
     if (!isDir) continue
+    // "<name>.worktrees" next to "<name>" is the default worktree container, not a project.
+    if (/\.worktrees$/i.test(ent.name)) {
+      try {
+        if (statSync(join(dir, ent.name.slice(0, -'.worktrees'.length))).isDirectory()) continue
+      } catch {
+        /* no sibling: keep it */
+      }
+    }
     const g = readGit(p)
-    out.push({ id: childId(p), path: p, name: ent.name, isGit: g.isGit, branch: g.branch, hidden: hidden.has(norm(p)) })
+    const main = g.isGit && isMainWorktree(p)
+    out.push({
+      id: childId(p),
+      path: p,
+      name: ent.name,
+      isGit: g.isGit,
+      branch: g.branch,
+      hidden: hidden.has(norm(p)),
+      isMainWorktree: main,
+      worktrees: main ? worktreeViews(p, savedKeys, roots) : []
+    })
   }
   return out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
 }
 
 export function getState(): AppState {
+  const roots: string[] = []
+  const savedKeys = new Set(data.folders.map((f) => norm(f.path)))
   const groups: GroupView[] = data.groups.map((g) => {
     const isParent = g.kind === 'parent' && !!g.path
     const missing = isParent ? !existsSync(g.path as string) : false
     const git = isParent && !missing ? readGit(g.path as string) : { isGit: false, branch: null }
-    const children = isParent && !missing ? scanChildren(g.path as string, new Set(g.hidden)) : []
+    const children = isParent && !missing ? scanChildren(g.path as string, new Set(g.hidden), savedKeys, roots) : []
     return {
       id: g.id,
       kind: g.kind,
@@ -298,6 +344,13 @@ export function getState(): AppState {
   const homePath = getHomeDir()
   const homeMissing = !existsSync(homePath)
   const homeGit = homeMissing ? { isGit: false, branch: null } : readGit(homePath)
+  const folders = data.folders.map((f) => {
+    const missing = !existsSync(f.path)
+    const git = missing ? { isGit: false, branch: null } : readGit(f.path)
+    const main = !missing && git.isGit && isMainWorktree(f.path)
+    return { ...f, missing, isGit: git.isGit, branch: git.branch, isMainWorktree: main, worktrees: main ? worktreeViews(f.path, savedKeys, roots) : [] }
+  })
+  worktreeRoots = roots
   return {
     home: {
       id: HOME_ID,
@@ -308,11 +361,7 @@ export function getState(): AppState {
       isGit: homeGit.isGit,
       branch: homeGit.branch
     },
-    folders: data.folders.map((f) => {
-      const missing = !existsSync(f.path)
-      const git = missing ? { isGit: false, branch: null } : readGit(f.path)
-      return { ...f, missing, isGit: git.isGit, branch: git.branch }
-    }),
+    folders,
     groups,
     pinned: data.pinned,
     commands: data.commands,
@@ -347,7 +396,8 @@ export function getRoots(): string[] {
     ...data.folders.map((f) => f.path),
     ...data.groups.filter((g) => g.path).map((g) => g.path as string),
     ...data.groups.filter((g) => g.kind === 'manual' && g.folder).map((g) => g.folder as string),
-    getHomeDir()
+    getHomeDir(),
+    ...worktreeRoots
   ]
 }
 
@@ -438,7 +488,7 @@ export function createManualGroup(name: string, parentId?: string | null): strin
 
 function fixSelection(d: Persisted): void {
   const s = d.selectedId
-  if (!s || s === HOME_ID || s.startsWith('child:')) return
+  if (!s || s === HOME_ID || s.startsWith('child:') || s.startsWith('wt:')) return
   if (!d.folders.some((f) => f.id === s) && !d.groups.some((g) => g.id === s)) {
     d.selectedId = d.folders[0]?.id ?? d.groups[0]?.id ?? HOME_ID
   }
@@ -772,4 +822,42 @@ export function setUi(patch: Partial<UiState>): AppState {
   if (patch.panelTab === 'files' || patch.panelTab === 'commands' || patch.panelTab === 'git') u.panelTab = patch.panelTab
   save()
   return getState()
+}
+
+// ---------- worktrees ----------
+
+/** Base branch stored for the repo whose top-level path is `path`. */
+export function getRepoBase(path: string): string | undefined {
+  return data.repoBases[norm(path)]
+}
+
+/** Stores (or clears with null) the base branch of the repo whose top-level path is `path`. */
+export function setRepoBase(path: string, base: string | null): AppState {
+  const k = norm(path)
+  if (typeof base === 'string' && base) data.repoBases[k] = base
+  else delete data.repoBases[k]
+  save()
+  return getState()
+}
+
+/** The repo row (saved folder or parent-group child) a known linked worktree belongs to. */
+export function findWorktree(path: string): { repo: string; repoLocId: string } | null {
+  const key = norm(path)
+  const st = getState()
+  for (const f of st.folders) if (f.worktrees.some((w) => norm(w.path) === key)) return { repo: f.path, repoLocId: f.id }
+  for (const g of st.groups) {
+    for (const c of g.children) if (c.worktrees.some((w) => norm(w.path) === key)) return { repo: c.path, repoLocId: c.id }
+  }
+  return null
+}
+
+/** Drops everything the app stored for a removed worktree. `repoLocId` = row to select when the worktree was selected. */
+export function forgetWorktree(path: string, repoLocId?: string): void {
+  const id = worktreeId(path)
+  delete data.repoBases[norm(path)]
+  data.commands = data.commands.filter((c) => c.ownerId !== id)
+  data.snippets = data.snippets.filter((s) => s.scope !== id)
+  data.pinned = data.pinned.filter((x) => x !== id)
+  if (data.selectedId === id) data.selectedId = repoLocId ?? data.folders[0]?.id ?? data.groups[0]?.id ?? HOME_ID
+  save()
 }
