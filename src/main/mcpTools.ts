@@ -7,7 +7,7 @@ import { HOME_ID, type AppState, type Command, type CommandTarget, type Snippet 
 import { nestError } from '../shared/groupTree'
 import * as store from './store'
 import { ToolError } from './toolError'
-import type { TerminalControl } from './terminalHost'
+import type { TerminalControl, WaitMatcher } from './terminalHost'
 
 /**
  * Tool logic of the built-in MCP server. Location resolution and the command/prompt builders are pure functions
@@ -449,6 +449,38 @@ const locationArg = z
   .describe("Location id, absolute path or unique name. Default: this terminal's location.")
 const groupRef = (what: string): z.ZodString => z.string().describe(`${what}: group id or unique group name`)
 const folderRef = z.string().describe('Saved folder: id, absolute path or unique name')
+/** wait_for_output limits. A JS regex has no timeout, so these only bound the damage (see README). */
+export const MAX_PATTERN_LEN = 256
+export const MAX_PATTERNS = 8
+/** A regex matcher tests only this many leading characters of a line. */
+export const MAX_TEST_LINE = 2000
+
+/** Compiles the `pattern` / `patterns` arguments of wait_for_output into matchers (case-insensitive with ignoreCase). */
+export function compileWaitPatterns(a: { pattern?: string; patterns?: string[]; regex?: boolean; ignoreCase?: boolean }): WaitMatcher[] {
+  if ((a.pattern === undefined) === (a.patterns === undefined)) throw new ToolError('Give exactly one of `pattern` or `patterns`.')
+  const sources = a.pattern !== undefined ? [a.pattern] : (a.patterns as string[])
+  if (sources.length === 0) throw new ToolError('`patterns` is empty.')
+  if (sources.length > MAX_PATTERNS) throw new ToolError(`Too many patterns (max ${MAX_PATTERNS}).`)
+  return sources.map((src): WaitMatcher => {
+    if (!src) throw new ToolError('A pattern is empty.')
+    if (src.length > MAX_PATTERN_LEN) throw new ToolError(`A pattern is too long (max ${MAX_PATTERN_LEN} characters).`)
+    if (a.regex === true) {
+      let re: RegExp
+      try {
+        re = new RegExp(src, a.ignoreCase === true ? 'i' : '')
+      } catch (e) {
+        throw new ToolError(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      return { source: src, test: (line) => re.test(line.length > MAX_TEST_LINE ? line.slice(0, MAX_TEST_LINE) : line) }
+    }
+    if (a.ignoreCase === true) {
+      const low = src.toLowerCase()
+      return { source: src, test: (line) => line.toLowerCase().includes(low) }
+    }
+    return { source: src, test: (line) => line.includes(src) }
+  })
+}
+
 /** Gate for the terminal tools: the toggle first, then the host. */
 function terminalsOrThrow(ctx: ToolContext): TerminalControl {
   if (!ctx.allowRun()) throw new ToolError(RUN_DISABLED_ERROR)
@@ -753,7 +785,7 @@ export const TOOLS: ToolDef[] = [
   defineTool({
     name: 'run_command',
     description:
-      'Run a command in a terminal opened with open_terminal, in its live PowerShell (cd and variables persist between calls). Returns the output (ANSI-stripped, without the echoed input or prompt) and the exit code. One run at a time per terminal. On timeout the partial output is returned with timedOut: true and the shell keeps running (the terminal stays busy until the command ends; use read_terminal, or send_input "\\u0003" to interrupt). Only for terminals opened through MCP.',
+      'Run a command in a terminal opened with open_terminal, in its live PowerShell (cd and variables persist between calls). Returns the output (ANSI-stripped, without the echoed input or prompt), the exit code and a runId. One run at a time per terminal. On timeout the partial output is returned with timedOut: true and the shell keeps running (the terminal stays busy until the command ends): collect the final result with get_run_result using the returned runId, watch it with read_terminal, or send_input "\\u0003" to interrupt. Only for terminals opened through MCP.',
     shape: {
       id: termId,
       command: z.string().describe('PowerShell command or script text'),
@@ -784,25 +816,47 @@ export const TOOLS: ToolDef[] = [
     }
   }),
   defineTool({
-    name: 'read_terminal',
+    name: 'get_run_result',
     description:
-      "Recent output of any terminal (including the user's own tabs), as ANSI-stripped lines from the raw stream. Full-screen programs read back poorly. Needs \"Allow MCP to run commands\" because output can hold secrets.",
+      'Result of a run_command that returned timedOut: true. state running|done; with waitSeconds waits for the end. Needs "Allow MCP to run commands".',
     shape: {
       id: termId,
-      lines: z.number().int().min(1).max(2000).optional().describe('Last N lines. Default 100')
+      runId: z.string().min(1).describe('runId returned by run_command'),
+      waitSeconds: z.number().int().min(0).max(600).optional().describe('Wait up to this long for a run that is still going. Default 0 (just look)')
     },
     mutates: false,
     readOnly: true,
-    run: (a, ctx) => terminalsOrThrow(ctx).read(a.id, a.lines ?? 100)
+    run: (a, ctx) => terminalsOrThrow(ctx).runResult(a.id, a.runId, (a.waitSeconds ?? 0) * 1000)
+  }),
+  defineTool({
+    name: 'read_terminal',
+    description:
+      "Recent output of any terminal (including the user's own tabs), as ANSI-stripped lines from the raw stream. For full-screen programs (editors, TUIs) use screen: true, which returns the visible screen as rendered, also while the window is hidden. Needs \"Allow MCP to run commands\" because output can hold secrets.",
+    shape: {
+      id: termId,
+      lines: z.number().int().min(1).max(2000).optional().describe('Last N lines. Default 100'),
+      screen: z
+        .boolean()
+        .optional()
+        .describe('Return the visible screen as rendered (rows x cols) instead of the last lines of the stream. lines is ignored')
+    },
+    mutates: false,
+    readOnly: true,
+    run: (a, ctx) => {
+      const terminals = terminalsOrThrow(ctx)
+      return a.screen === true ? terminals.screen(a.id) : terminals.read(a.id, a.lines ?? 100)
+    }
   }),
   defineTool({
     name: 'wait_for_output',
     description:
-      "Waits until a line of a terminal's output (any terminal, ANSI-stripped, including the unfinished last line) contains `pattern` (plain case-sensitive substring) or matches it (regex: true), or until the timeout or the terminal's exit. By default only output arriving after the call counts; fromNow: false also searches the buffered output. Returns { matched, line, timedOut, exited, tail (last 20 lines) }. Needs \"Allow MCP to run commands\".",
+      "Waits until a line of a terminal's output (any terminal, ANSI-stripped, including the unfinished last line) contains `pattern` (plain substring, case-sensitive unless ignoreCase) or matches it (regex: true), or until the timeout or the terminal's exit. Give `patterns` (up to 8) instead of `pattern` to wait for any of several: the result says which one matched. Patterns are at most 256 characters, a regex tests only the first 2000 characters of a line, and at most 4 waits can be pending per terminal. By default only output arriving after the call counts; fromNow: false also searches the buffered output. Returns { matched, line, patternIndex, pattern, timedOut, exited, tail (last 20 lines) }. Needs \"Allow MCP to run commands\".",
     shape: {
       id: termId,
-      pattern: z.string().min(1).describe('Text to find in a line'),
-      regex: z.boolean().optional().describe('Treat pattern as a JavaScript regular expression. Default false'),
+      pattern: z.string().min(1).optional().describe('Text to find in a line (use this or patterns)'),
+      patterns: z.array(z.string().min(1)).min(1).max(8).optional().describe('Several texts; the first line matching any of them wins'),
+      regex: z.boolean().optional().describe('Treat the pattern(s) as JavaScript regular expressions. Default false'),
+      ignoreCase: z.boolean().optional().describe('Case-insensitive match. Default false'),
       timeoutSeconds: z.number().int().min(1).max(600).optional().describe('Default 30'),
       fromNow: z.boolean().optional().describe('Only output arriving after this call (default true); false also searches the current buffer')
     },
@@ -810,15 +864,8 @@ export const TOOLS: ToolDef[] = [
     readOnly: true,
     run: async (a, ctx) => {
       const terminals = terminalsOrThrow(ctx)
-      let pattern: RegExp | string = a.pattern
-      if (a.regex === true) {
-        try {
-          pattern = new RegExp(a.pattern)
-        } catch (e) {
-          throw new ToolError(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`)
-        }
-      }
-      return terminals.waitFor(a.id, pattern, (a.timeoutSeconds ?? 30) * 1000, a.fromNow !== false)
+      const matchers = compileWaitPatterns({ pattern: a.pattern, patterns: a.patterns, regex: a.regex, ignoreCase: a.ignoreCase })
+      return terminals.waitFor(a.id, matchers, (a.timeoutSeconds ?? 30) * 1000, a.fromNow !== false)
     }
   }),
   defineTool({

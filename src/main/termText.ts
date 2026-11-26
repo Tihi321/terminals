@@ -76,6 +76,28 @@ function psQuote(s: string): string {
   return `'${s.replace(/[‘’‚‛']/g, "''")}'`
 }
 
+/** Every run line starts with exactly this text; the PSReadLine history handler (agentInitArgs) keys on it. */
+export const RUN_LINE_PREFIX =
+  ". ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"
+
+/**
+ * One line of PowerShell that installs a PSReadLine AddToHistoryHandler: lines starting with RUN_LINE_PREFIX stay out of
+ * history (memory and file), and a handler the user already has is chained. A handler installed by line L does not see
+ * L, so agent shells install it at spawn (agentInitArgs); the run wrapper repeats it as a fallback.
+ */
+export function historyHandlerScript(): string {
+  return [
+    `try { if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) { $__th = (Get-PSReadLineOption).AddToHistoryHandler`,
+    `Set-PSReadLineOption -AddToHistoryHandler ({ param($l) if ($l.StartsWith(${psQuote(RUN_LINE_PREFIX)})) { return $false }; if ($__th) { $__th.Invoke($l) } else { $true } }).GetNewClosure() } } catch {}`,
+    `$global:__terminalsHist = 1`
+  ].join('; ')
+}
+
+/** Arguments for a PowerShell agent tab: run the history handler script after the profile and stay interactive. */
+export function agentInitArgs(): string[] {
+  return ['-NoLogo', '-NoExit', '-EncodedCommand', Buffer.from(`${historyHandlerScript()}; Remove-Variable __th -ErrorAction SilentlyContinue`, 'utf16le').toString('base64')]
+}
+
 /**
  * The single line (ending in '\r') typed into PowerShell for one run. It carries only base64, never ESC, so neither the
  * echo nor PSReadLine's redraw can contain a marker. Dot-sourced at the prompt, so `cd` and variables persist.
@@ -83,27 +105,31 @@ function psQuote(s: string): string {
  */
 export function buildRunInput(command: string, nonce: string): string {
   const first = (command.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').trim().slice(0, 200)
-  const wrapper = [
-    `$__tr = @{ done = 0; code = 1; err0 = $(if ($Error.Count) { $Error[0] } else { $null }); ev = $null; v7 = ($PSVersionTable.PSVersion.Major -ge 7) }`,
-    `if ($__tr.v7) { $__tr.ev = $global:ErrorView; $global:ErrorView = 'ConciseView' }`,
+  // One physical line on purpose: PowerShell 7's ConciseView (the default) adds a "Line | ..." excerpt of the wrapper to a
+  // non-terminating error (Write-Error) unless the invoking statement sits on line 1 of an unnamed script block.
+  // Windows PowerShell 5.1 always prints its "At line:" excerpt.
+  const pre = [
+    `$__tr = @{ done = 0; code = 1; err0 = $(if ($Error.Count) { $Error[0] } else { $null }) }`,
+    `if (-not $global:__terminalsHist) { ${historyHandlerScript()} }`,
     `Write-Host ('[agent] ' + ${psQuote(first)}) -ForegroundColor DarkGray`,
     `[Console]::Write([string][char]27 + ']133;C;terminals=${nonce}' + [char]7)`,
-    `$global:LASTEXITCODE = 0`,
-    `try {`,
-    `  . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(command)}'))))`,
-    `  $__tr.done = 1`,
-    `  if ($global:LASTEXITCODE) { $__tr.code = $global:LASTEXITCODE }`,
-    `  elseif ($Error.Count -and -not [object]::ReferenceEquals($Error[0], $__tr.err0)) { $__tr.code = 1 }`,
-    `  else { $__tr.code = 0 }`,
-    `} catch { $__tr.done = 1; $__tr.code = 1; $_ | Out-Host }`,
-    `finally {`,
-    `  $__c = 1; $__d = 0`,
-    `  if ($__tr -is [hashtable]) { $__c = [int]$__tr.code; $__d = [int]$__tr.done; if ($__tr.v7) { $global:ErrorView = $__tr.ev } }`,
-    `  [Console]::Write([string][char]27 + ']133;D;' + $__c + $(if ($__d) { '' } else { 'x' }) + ';terminals=${nonce}' + [char]7)`,
-    `  Remove-Variable __tr, __c, __d -Scope Global -ErrorAction SilentlyContinue`,
-    `}`
-  ].join('\n')
-  return `. ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(wrapper)}'))))\r`
+    `$global:LASTEXITCODE = 0`
+  ]
+  const body = [
+    `. ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(command)}'))))`,
+    `$__tr.done = 1`,
+    `if ($global:LASTEXITCODE) { $__tr.code = $global:LASTEXITCODE } elseif ($Error.Count -and -not [object]::ReferenceEquals($Error[0], $__tr.err0)) { $__tr.code = 1 } else { $__tr.code = 0 }`
+  ]
+  // The end marker is written first; the cleanup after it cannot throw. $ErrorView is never touched, so a value the
+  // user's command sets stays (the wrapper used to force ConciseView for the run and restore it afterwards).
+  const fin = [
+    `$__c = 1; $__d = 0`,
+    `if ($__tr -is [hashtable]) { $__c = [int]$__tr.code; $__d = [int]$__tr.done }`,
+    `[Console]::Write([string][char]27 + ']133;D;' + $__c + $(if ($__d) { '' } else { 'x' }) + ';terminals=${nonce}' + [char]7)`,
+    `Remove-Variable __tr, __c, __d, __th -Scope Global -ErrorAction SilentlyContinue`
+  ]
+  const wrapper = `${pre.join('; ')}; try { ${body.join('; ')} } catch { $__tr.done = 1; $__tr.code = 1; $_ | Out-Host } finally { ${fin.join('; ')} }`
+  return `${RUN_LINE_PREFIX}${b64(wrapper)}'))))\r`
 }
 
 /** Finds this run's markers in `buf` (searching from `from`). begin = index just after the begin marker; end = index of the end marker start. */

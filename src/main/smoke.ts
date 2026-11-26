@@ -11,7 +11,7 @@ import { readFileContent, writeTextFile } from './fsops'
 import { SCHEMA_VERSION, type AppState } from '../shared/types'
 import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_FONT, patchSettings, sanitizeSettings } from '../shared/settings'
 import { THEME_IDS, THEMES, UI_VARS, resolveThemeId } from '../shared/themes'
-import { contextLocation, findLocation, locationsPayload, planCommand, planPrompt, resolveOpenTarget, RUN_DISABLED_ERROR, ToolError, visibleCommands } from './mcpTools'
+import { compileWaitPatterns, contextLocation, findLocation, locationsPayload, planCommand, planPrompt, resolveOpenTarget, RUN_DISABLED_ERROR, ToolError, visibleCommands } from './mcpTools'
 import { hostAllowed, startMcpServer, tokenMatches } from './mcp'
 import { TerminalHost } from './terminalHost'
 import { AgentStatusTracker, QUIET_MS } from './agentStatus'
@@ -19,7 +19,7 @@ import { statusFromHookEvent, formatAgo, rollupSummary } from '../shared/agentSt
 import { classifyHookTest, hookScript, mergeClaudeHooks } from '../shared/claudeHooks'
 import { runHookTest } from './hookTest'
 import { cleanTermTitle } from '../shared/termTitle'
-import { buildRunInput, findMarkers, isTerminalReply, toLines } from './termText'
+import { RUN_LINE_PREFIX, agentInitArgs, buildRunInput, findMarkers, isTerminalReply, toLines } from './termText'
 import { canAddPane, closePane, dragDivider, dropOnEdge, focusLoc, fromPersisted, normalize, openToSide, splitBeside, toPersisted } from '../shared/panes'
 import { applyOrder, moveId, shiftId } from '../shared/order'
 import { activateIn, moveTab, nthTabOfLoc, reconcileActive, shiftTab } from '../shared/tabs'
@@ -1043,9 +1043,13 @@ function checkMcpLogic(dir: string): CheckResult {
     if (!hostAllowed('127.0.0.1:5000', 5000) || !hostAllowed('localhost:5000', 5000)) return fail('host allowed')
     if (hostAllowed('evil.example:5000', 5000) || hostAllowed('127.0.0.1:5001', 5000) || hostAllowed('127.0.0.1', 5000) || hostAllowed(undefined, 5000))
       return fail('host rejected')
+    if (!err(() => compileWaitPatterns({ pattern: 'x'.repeat(257) }))?.includes('too long') || !err(() => compileWaitPatterns({ pattern: 'a', patterns: ['b'] })))
+      return fail('wait_for_output must refuse a 257-character pattern and `pattern` together with `patterns`')
+    const ic = compileWaitPatterns({ pattern: 'READY', ignoreCase: true })[0].test('ready') && compileWaitPatterns({ pattern: 'RE.DY', regex: true, ignoreCase: true })[0].test('ready')
+    if (!ic || compileWaitPatterns({ pattern: 'READY' })[0].test('ready')) return fail('ignoreCase must make substring and regex matching case-insensitive (and be off by default)')
     if (!tokenMatches('Bearer abc', 'abc') || !tokenMatches('bearer abc', 'abc')) return fail('token accepted')
     if (tokenMatches('Bearer abd', 'abc') || tokenMatches('abc', 'abc') || tokenMatches(undefined, 'abc') || tokenMatches('Bearer ', '')) return fail('token rejected')
-    return { ok: true, msg: 'mcp logic: location by id/path/name/child, ambiguity and kind errors, header fallback, command/prompt validation, host and token guards' }
+    return { ok: true, msg: 'mcp logic: location by id/path/name/child, ambiguity and kind errors, header fallback, command/prompt validation, host and token guards, wait_for_output pattern caps and ignoreCase' }
   } catch (e) {
     return fail(String(e))
   }
@@ -1070,7 +1074,8 @@ function checkTermText(): CheckResult {
     if (!m2.end || m2.end.code !== 3 || joined.slice(m2.begin ?? 0, m2.end.index) !== 'out\r\n') return fail('split end marker ' + JSON.stringify(m2))
     const echo = buildRunInput('Write-Output hi', nonce)
     const m3 = findMarkers(echo, nonce)
-    if (m3.begin !== null || m3.end !== null || echo.includes('\u001b') || !echo.endsWith('\r')) return fail('echoed input line must not contain a marker')
+    if (m3.begin !== null || m3.end !== null || echo.includes('\u001b') || !echo.endsWith('\r') || !echo.startsWith(RUN_LINE_PREFIX) || echo.includes('\n'))
+      return fail('echoed input line must be one line, start with RUN_LINE_PREFIX and not contain a marker')
     return { ok: true, msg: 'term text: toLines strips ANSI/OSC and applies \\r and \\b, markers found across a chunk split, typed run line carries no marker' }
   } catch (e) {
     return fail(String(e))
@@ -1082,10 +1087,18 @@ function makeSmokeHost(track: (p: IPty) => void): TerminalHost {
   const live = new Map<string, IPty>()
   const host: TerminalHost = new TerminalHost({
     spawn: (id, sh, _locId, cwd, cols, rows) => {
-      const p = spawnShell(sh, cwd, cols, rows, {
-        onData: (d) => host.data(id, d),
-        onExit: (c) => host.exit(id, c)
-      })
+      const p = spawnShell(
+        sh,
+        cwd,
+        cols,
+        rows,
+        {
+          onData: (d) => host.data(id, d),
+          onExit: (c) => host.exit(id, c)
+        },
+        {},
+        /pwsh|powershell/i.test(sh) ? agentInitArgs() : []
+      )
       live.set(id, p)
       track(p)
       return p
@@ -1120,6 +1133,9 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
   try {
     const t = await host.open({ locId: 'home', cwd: dir })
     if (!t.id || !t.alive || !t.agent) return fail('open ' + JSON.stringify(t))
+    // The user's own history file may still hold run lines leaked by older builds, so count against a baseline taken before the first run.
+    const histCmd = '@([Microsoft.PowerShell.PSConsoleReadLine]::GetHistoryItems() | ? CommandLine -like "*FromBase64String*").Count'
+    const hist0 = (await host.run(t.id, histCmd, 20000)).output
     const r1 = await host.run(t.id, "Write-Output ('a'+'1'); cmd /c exit 3", 20000)
     if (r1.output !== 'a1' || r1.exitCode !== 3 || r1.success !== false || r1.timedOut || r1.exited) return fail('output/exit code ' + JSON.stringify(r1))
     await host.run(t.id, '$x = 41 + 1', 20000)
@@ -1134,9 +1150,22 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
     }
     if (!busy.includes('busy')) return fail('second run while busy must be rejected, got ' + JSON.stringify(busy))
     await slow
+    const hist1 = (await host.run(t.id, histCmd, 20000)).output
+    if (!/^[0-9]+$/.test(hist0) || hist1 !== hist0) return fail(`the run line must stay out of PSReadLine history (count ${hist0} before the runs, ${hist1} after)`)
+    await host.run(t.id, "Write-Host ('abc' + [char]13 + 'X')", 20000)
+    const scr = await host.screen(t.id)
+    if (scr.lines.length !== 30 || !scr.lines.includes('Xbc')) return fail('screen must return 30 rendered rows with Xbc ' + JSON.stringify(scr.lines.slice(0, 12)))
+    const we = await host.run(t.id, "Write-Error boom; 'after'", 20000)
+    if (!we.output.includes('boom') || !we.output.includes('after') || we.output.includes('ScriptBlock]::Create') || we.output.includes('FromBase64String') || we.exitCode !== 1)
+      return fail('Write-Error output must be clean, continue, and exit 1 ' + JSON.stringify(we))
+    await host.run(t.id, "$ErrorView = 'NormalView'", 20000)
+    const ev = await host.run(t.id, '$ErrorView', 20000)
+    if (ev.output !== 'NormalView') return fail('a $ErrorView the command set must be kept, got ' + JSON.stringify(ev.output))
     const r3 = await host.run(t.id, 'Start-Sleep 5', 1000)
     const info = host.list().find((x) => x.id === t.id)
     if (!r3.timedOut || r3.exitCode !== null || !info?.alive || !info.busy) return fail('timeout keeps shell alive and busy ' + JSON.stringify({ r3, info }))
+    const fin = await host.runResult(t.id, r3.runId, 15000)
+    if (!r3.runId || fin.state !== 'done' || fin.result?.exitCode !== 0 || fin.result.timedOut) return fail('the final result of a timed-out run must be fetchable ' + JSON.stringify({ runId: r3.runId, fin }))
     await host.close(t.id)
     if (host.list().length) return fail('close must forget the terminal')
     const t2 = await host.open({ locId: 'home', cwd: dir })
@@ -1145,10 +1174,10 @@ async function checkRunCommand(dir: string, track: (p: IPty) => void): Promise<C
     await host.close(t2.id).catch(() => undefined)
     const t3 = await host.open({ locId: 'home', cwd: dir })
     host.send(t3.id, "Start-Sleep -Milliseconds 300; 're'+'ady'\r")
-    const w = await host.waitFor(t3.id, 'ready', 5000, true)
+    const w = await host.waitFor(t3.id, compileWaitPatterns({ patterns: ['nope', 'ready'] }), 5000, true)
     await host.close(t3.id).catch(() => undefined)
-    if (!w.matched) return fail('wait_for_output must match later output ' + JSON.stringify(w))
-    return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive, reports `exit 5` as exited with code 5, waitFor matches later output' }
+    if (!w.matched || w.patternIndex !== 1 || w.pattern !== 'ready') return fail('wait_for_output must match later output and say which pattern ' + JSON.stringify(w))
+    return { ok: true, msg: 'run command: live pwsh via TerminalHost gives a1 / exit 3, keeps state, rejects a second run while busy, times out with the shell still alive, reports `exit 5` as exited with code 5, waitFor matches later output and reports the pattern index, the run line stays out of PSReadLine history, screen returns the rendered rows, a user-set $ErrorView is kept, Write-Error prints cleanly, and a timed-out run has a fetchable final result' }
   } catch (e) {
     return fail(String(e))
   } finally {

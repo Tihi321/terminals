@@ -98,16 +98,17 @@ function spawnPty(
   return p
 }
 
-/** Interactive shell. Single spawn path used by both the app and the smoke test. `extraEnv` is added to the inherited environment. */
+/** Interactive shell. Single spawn path used by both the app and the smoke test. `extraEnv` is added to the inherited environment; `args` go to the shell (agent tabs: agentInitArgs()). */
 export function spawnShell(
   shell: string,
   cwd: string,
   cols: number,
   rows: number,
   handlers: PtyHandlers,
-  extraEnv: Record<string, string> = {}
+  extraEnv: Record<string, string> = {},
+  args: string[] = []
 ): pty.IPty {
-  return spawnPty(shell, [], cwd, cols, rows, handlers, extraEnv)
+  return spawnPty(shell, args, cwd, cols, rows, handlers, extraEnv)
 }
 
 /** Elevated shell: `file` is the resolved elevator and `args` its fixed command line (see elevation.ts). */

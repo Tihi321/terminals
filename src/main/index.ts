@@ -23,7 +23,7 @@ import type { GitDiffRequest, LoginItemState } from '../shared/types'
 import { startMcpServer, type McpInfo } from './mcp'
 import { locationById, ToolError } from './mcpTools'
 import { TerminalHost } from './terminalHost'
-import { isTerminalReply } from './termText'
+import { agentInitArgs, isTerminalReply } from './termText'
 import * as claudeHooks from './claudeHooks'
 import { runHookTest } from './hookTest'
 import type { HookTestResult } from '../shared/claudeHooks'
@@ -190,7 +190,8 @@ function spawnForHost(id: string, shellExe: string, locId: string, cwd: string, 
         if (attached.has(id) && !wc.isDestroyed()) wc.send('pty:exit', id, code)
       }
     },
-    ptyEnv(locId, id)
+    ptyEnv(locId, id),
+    /pwsh|powershell/i.test(shellExe) ? agentInitArgs() : []
   )
   spawned = p
   ptys.set(id, p)
@@ -723,7 +724,7 @@ function registerIpc(): void {
         ? spawnElevated(elevatedCmd.file, elevatedCmd.args, cwd as string, cols, rows, handlers, env)
         : Array.isArray(req.steps)
           ? spawnSteps(stepsShell(store.getShell()), req.steps.map(String), cwd as string, cols, rows, handlers, env)
-          : spawnShell(shellExe, cwd as string, cols, rows, handlers, env)
+          : spawnShell(shellExe, cwd as string, cols, rows, handlers, env, wantAgent && /pwsh|powershell/i.test(shellExe) ? agentInitArgs() : [])
       spawned = p
       ptys.set(req.id, p)
       if (elevatedCmd) elevatedIds.add(req.id)
@@ -735,7 +736,9 @@ function registerIpc(): void {
         kind: Array.isArray(req.steps) ? 'command' : 'shell',
         agent: wantAgent,
         elevated: wantElevated,
-        ownerWc: e.sender.id
+        ownerWc: e.sender.id,
+        cols,
+        rows
       })
       const mine = owners.get(e.sender.id) ?? new Set<string>()
       mine.add(req.id)
@@ -753,7 +756,7 @@ function registerIpc(): void {
   })
   ipcMain.on('pty:resize', (e, id: string, cols: number, rows: number) => {
     if (!ownsPty(e.sender.id, id)) return
-    host.resized(id)
+    host.resized(id, cols, rows)
     try {
       if (cols > 0 && rows > 0) ptys.get(id)?.resize(Math.floor(cols), Math.floor(rows))
     } catch {

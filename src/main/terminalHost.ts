@@ -7,6 +7,7 @@ import type { AgentStatus, HookOutcome, TermStatus } from '../shared/agentStatus
 import { AgentStatusTracker } from './agentStatus'
 import { ToolError } from './toolError'
 import { RingBuffer, buildRunInput, findMarkers, psShell, toLines } from './termText'
+import { ScreenMirror, type ScreenSnapshot } from './screen'
 
 export interface TermMeta {
   locId: string
@@ -17,6 +18,9 @@ export interface TermMeta {
   elevated: boolean
   /** webContents id that owns it (null in smoke). */
   ownerWc: number | null
+  /** Size of the pty when it was created (the mirror starts there; pty:resize keeps it current). */
+  cols: number
+  rows: number
 }
 
 export interface TermInfo {
@@ -38,6 +42,8 @@ export interface TermInfo {
 
 export interface RunResult {
   id: string
+  /** Identifies this run for get_run_result (the final result of a run that timed out). */
+  runId: string
   exitCode: number | null
   success: boolean | null
   output: string
@@ -61,8 +67,25 @@ export interface WaitResult {
   line: string | null
   timedOut: boolean
   exited: boolean
+  /** Index of the matcher that matched (the lowest one on the matching line), null when nothing matched. */
+  patternIndex: number | null
+  /** The `source` of that matcher, null when nothing matched. */
+  pattern: string | null
   /** Last 20 lines of the terminal at the time the wait ended. */
   tail: string[]
+}
+
+/** A compiled wait_for_output pattern (compileWaitPatterns in mcpTools.ts). */
+export interface WaitMatcher {
+  source: string
+  test(line: string): boolean
+}
+
+export interface RunLookup {
+  id: string
+  runId: string
+  state: 'running' | 'done'
+  result: RunResult | null
 }
 
 /** What the MCP tools use. All methods throw ToolError with a user-readable message. */
@@ -70,9 +93,13 @@ export interface TerminalControl {
   list(): TermInfo[]
   /** `reveal`: also show/focus the window and select the location (default false: background). */
   open(target: { locId: string; cwd: string; reveal?: boolean }): Promise<TermInfo>
-  /** Waits for a line of the terminal's output to contain `pattern` (substring) or match it (RegExp). */
-  waitFor(id: string, pattern: RegExp | string, timeoutMs: number, fromNow: boolean): Promise<WaitResult>
+  /** Waits for a line of the terminal's output to match one of `matchers`: the first matching line wins, and on it the lowest index. */
+  waitFor(id: string, matchers: WaitMatcher[], timeoutMs: number, fromNow: boolean): Promise<WaitResult>
   run(id: string, command: string, timeoutMs: number): Promise<RunResult>
+  /** Final result of a run_command (also one that timed out); waits up to `waitMs` while it still runs. */
+  runResult(id: string, runId: string, waitMs: number): Promise<RunLookup>
+  /** The visible screen as rendered (a headless xterm mirror of the pty), for any terminal. */
+  screen(id: string): Promise<ScreenSnapshot & { id: string; alive: boolean }>
   send(id: string, text: string): void
   read(id: string, lines: number): ReadResult
   close(id: string): Promise<void>
@@ -107,6 +134,10 @@ const PRE_KEEP = 2048
 const READY_QUIET_MS = 500
 const READY_MAX_MS = 10_000
 const EXIT_WAIT_MS = 1500
+const FINISHED_KEEP = 32
+/** Pending waits (wait_for_output and get_run_result) per terminal and in total. */
+const MAX_WAITERS_PER_TERM = 4
+const MAX_WAITERS_TOTAL = 16
 
 interface Run {
   nonce: string
@@ -122,6 +153,8 @@ interface Run {
   settled: boolean
   resolve: (r: RunResult) => void
   timer: ReturnType<typeof setTimeout> | null
+  /** get_run_result calls waiting for this run to end. */
+  waits: RunWaiter[]
   /** The end marker showed the user code did not finish normally (`exit`, Ctrl+C): waiting briefly to see if the shell exits. */
   ending: { code: number; text: string; timer: ReturnType<typeof setTimeout> } | null
 }
@@ -140,17 +173,24 @@ interface Rec {
   run: Run | null
   waiters: Waiter[]
   status: AgentStatusTracker
+  screen: ScreenMirror
 }
 
 interface Waiter {
-  pattern: RegExp | string
-  /** Output seen since the wait began (capped); matched line by line, including the unfinished last line. */
-  buf: string
+  matchers: WaitMatcher[]
+  /** Raw text after the last newline seen so far (capped): the unfinished line, rescanned as it grows. */
+  pending: string
   timer: ReturnType<typeof setTimeout>
   resolve: (r: WaitResult) => void
 }
 
+interface RunWaiter {
+  timer: ReturnType<typeof setTimeout>
+  resolve: (l: RunLookup) => void
+}
+
 const WAIT_BUF_CAP = 64 * 1024
+const PENDING_CAP = 8 * 1024
 const TAIL_LINES = 20
 
 const OSC99_RE = /\u001b\]9;9;"?([^"\u0007\u001b]+?)"?(?:\u0007|\u001b\\)/g
@@ -177,6 +217,12 @@ function later(fn: () => void): void {
   setTimeout(fn, 0)
 }
 
+/** Index of the first matcher that matches `line`, or -1. */
+function firstMatch(matchers: WaitMatcher[], line: string): number {
+  for (let i = 0; i < matchers.length; i++) if (matchers[i].test(line)) return i
+  return -1
+}
+
 function limitOutput(text: string, alreadyCut: boolean): { output: string; truncated: boolean } {
   if (text.length > OUTPUT_CAP) return { output: text.slice(-OUTPUT_CAP), truncated: true }
   return { output: text, truncated: alreadyCut }
@@ -184,6 +230,8 @@ function limitOutput(text: string, alreadyCut: boolean): { output: string; trunc
 
 export class TerminalHost implements TerminalControl {
   private readonly recs = new Map<string, Rec>()
+  /** The newest FINISHED_KEEP run results by runId; they outlive close_terminal. */
+  private readonly finished = new Map<string, { termId: string; result: RunResult }>()
   private readonly deps: HostDeps
 
   private readonly timer: ReturnType<typeof setInterval>
@@ -216,13 +264,15 @@ export class TerminalHost implements TerminalControl {
       lastDataAt: 0,
       run: null,
       waiters: [],
-      status: new AgentStatusTracker(() => (this.deps.heuristics ? this.deps.heuristics() : true))
+      status: new AgentStatusTracker(() => (this.deps.heuristics ? this.deps.heuristics() : true)),
+      screen: new ScreenMirror(meta.cols, meta.rows)
     })
   }
 
   data(id: string, chunk: string): void {
     const rec = this.recs.get(id)
     if (!rec) return
+    rec.screen.write(chunk)
     rec.ring.push(chunk)
     rec.pushed += chunk.length
     rec.lastDataAt = Date.now()
@@ -251,7 +301,7 @@ export class TerminalHost implements TerminalControl {
     if (run) {
       rec.run = null
       if (run.ending) clearTimeout(run.ending.timer)
-      this.settle(rec, run, { exitCode: code, exited: true, text: run.ending?.text })
+      this.finish(rec, run, { exitCode: code, exited: true, text: run.ending?.text })
     }
   }
 
@@ -266,8 +316,9 @@ export class TerminalHost implements TerminalControl {
     if (run) {
       rec.run = null
       if (run.ending) clearTimeout(run.ending.timer)
-      this.settle(rec, run, { exitCode: rec.exitCode, exited: true, text: run.ending?.text })
+      this.finish(rec, run, { exitCode: rec.exitCode, exited: true, text: run.ending?.text })
     }
+    rec.screen.dispose()
   }
 
   /** Exited records owned by a renderer that is gone or closed the tab. */
@@ -283,9 +334,12 @@ export class TerminalHost implements TerminalControl {
     if (rec && rec.status.input(Date.now())) this.emitStatus(rec)
   }
 
-  /** The pty was resized (the redraw is not agent activity). */
-  resized(id: string): void {
-    this.recs.get(id)?.status.resized(Date.now())
+  /** The pty was resized (the redraw is not agent activity); the screen mirror follows the new size. */
+  resized(id: string, cols?: number, rows?: number): void {
+    const rec = this.recs.get(id)
+    if (!rec) return
+    rec.status.resized(Date.now())
+    if (cols !== undefined && rows !== undefined && cols > 0 && rows > 0) rec.screen.resize(cols, rows)
   }
 
   /** The user viewed the tab: done -> idle. */
@@ -338,7 +392,9 @@ export class TerminalHost implements TerminalControl {
       kind: 'shell',
       agent: true,
       elevated: false,
-      ownerWc: this.deps.ownerWc ? this.deps.ownerWc() : null
+      ownerWc: this.deps.ownerWc ? this.deps.ownerWc() : null,
+      cols: 120,
+      rows: 30
     })
     let res: Result
     try {
@@ -392,12 +448,17 @@ export class TerminalHost implements TerminalControl {
         settled: false,
         resolve,
         timer: null,
+        waits: [],
         ending: null
       }
       run.timer = setTimeout(() => {
         if (run.settled) return
-        // Leave rec.run in place: the shell is still busy until the end marker, exit or close.
-        this.settle(rec, run, { exitCode: null, timedOut: true })
+        // Leave rec.run in place: the shell is still busy until the end marker, exit or close. The final result is
+        // recorded when the run really ends (finish) and fetched with get_run_result.
+        run.timer = null
+        run.settled = true
+        const result = this.buildResult(rec, run, { exitCode: null, timedOut: true })
+        later(() => run.resolve(result))
       }, ms)
       rec.run = run
       try {
@@ -433,25 +494,61 @@ export class TerminalHost implements TerminalControl {
     }
   }
 
-  waitFor(id: string, pattern: RegExp | string, timeoutMs: number, fromNow: boolean): Promise<WaitResult> {
+  waitFor(id: string, matchers: WaitMatcher[], timeoutMs: number, fromNow: boolean): Promise<WaitResult> {
     const rec = this.recs.get(id)
     if (!rec) throw new ToolError(`Unknown terminal id "${id}". Use list_terminals.`)
+    if (!matchers.length) throw new ToolError('No pattern to wait for.')
+    this.checkWaitRoom(rec)
     const ms = Math.max(1, Math.min(Number.isFinite(timeoutMs) ? timeoutMs : 30_000, 600_000))
-    const pat = typeof pattern === 'string' ? pattern : new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ''))
     return new Promise<WaitResult>((resolve) => {
       const w: Waiter = {
-        pattern: pat,
-        buf: fromNow ? '' : rec.ring.text().slice(-WAIT_BUF_CAP),
+        matchers,
+        pending: '',
         timer: setTimeout(() => this.finishWaiter(rec, w, { timedOut: true }), ms),
         resolve
       }
       rec.waiters.push(w)
       if (!fromNow) {
-        const line = this.matchLine(w)
-        if (line !== null) return this.finishWaiter(rec, w, { line })
+        // One scan of the buffered output (last 64 KiB); from then on only new output is scanned.
+        const hit = this.scanText(w, rec.ring.text().slice(-WAIT_BUF_CAP))
+        if (hit) return this.finishWaiter(rec, w, hit)
       }
       if (!rec.alive) this.finishWaiter(rec, w, { exited: true })
     })
+  }
+
+  /** Final result of a run (also one that timed out); with `waitMs` waits for a run that is still going. */
+  runResult(id: string, runId: string, waitMs: number): Promise<RunLookup> {
+    const done = this.finished.get(runId)
+    if (done && done.termId === id) return Promise.resolve({ id, runId, state: 'done', result: done.result })
+    const rec = this.recs.get(id)
+    if (!rec) throw new ToolError(`Unknown terminal id "${id}". Use list_terminals.`)
+    const run = rec.run
+    if (!run || run.nonce !== runId) {
+      throw new ToolError(`Unknown runId "${runId}" for this terminal (only the last ${FINISHED_KEEP} runs are kept).`)
+    }
+    const ms = Math.max(0, Math.min(Number.isFinite(waitMs) ? waitMs : 0, 600_000))
+    if (ms === 0) return Promise.resolve({ id, runId, state: 'running', result: null })
+    this.checkWaitRoom(rec)
+    return new Promise<RunLookup>((resolve) => {
+      const rw: RunWaiter = {
+        timer: setTimeout(() => {
+          const i = run.waits.indexOf(rw)
+          if (i >= 0) run.waits.splice(i, 1)
+          later(() => resolve({ id, runId, state: 'running', result: null }))
+        }, ms),
+        resolve
+      }
+      run.waits.push(rw)
+    })
+  }
+
+  /** The visible screen of a terminal as the user sees it (headless xterm mirror fed with the same pty data). */
+  async screen(id: string): Promise<ScreenSnapshot & { id: string; alive: boolean }> {
+    const rec = this.recs.get(id)
+    if (!rec) throw new ToolError(`Unknown terminal id "${id}". Use list_terminals.`)
+    const snap = await rec.screen.snapshot()
+    return { id, alive: rec.alive, ...snap }
   }
 
   async close(id: string): Promise<void> {
@@ -494,23 +591,43 @@ export class TerminalHost implements TerminalControl {
     return rec
   }
 
-  private matchLine(w: Waiter): string | null {
-    for (const line of toLines(w.buf)) {
-      if (typeof w.pattern === 'string' ? line.includes(w.pattern) : w.pattern.test(line)) return line
+  /** Pending waits of a terminal: wait_for_output waiters plus get_run_result waits. */
+  private checkWaitRoom(rec: Rec): void {
+    const count = (r: Rec): number => r.waiters.length + (r.run ? r.run.waits.length : 0)
+    if (count(rec) >= MAX_WAITERS_PER_TERM) {
+      throw new ToolError(`Too many pending waits on this terminal (max ${MAX_WAITERS_PER_TERM}); let one finish or time out.`)
+    }
+    let total = 0
+    for (const r of this.recs.values()) total += count(r)
+    if (total >= MAX_WAITERS_TOTAL) {
+      throw new ToolError(`Too many pending waits (max ${MAX_WAITERS_TOTAL} in total); let one finish or time out.`)
+    }
+  }
+
+  /** Tests the complete lines of `text`, then its unfinished last line, against the waiter's matchers, each line once.
+   *  The unfinished part (raw, capped) is kept as `pending` and rescanned together with the next chunk. */
+  private scanText(w: Waiter, text: string): { line: string; index: number } | null {
+    const nl = text.lastIndexOf('\n')
+    const complete = nl >= 0 ? text.slice(0, nl + 1) : ''
+    w.pending = nl >= 0 ? text.slice(nl + 1) : text
+    if (w.pending.length > PENDING_CAP) w.pending = w.pending.slice(-PENDING_CAP)
+    const lines = complete ? toLines(complete) : []
+    if (w.pending) lines.push(...toLines(w.pending))
+    for (const line of lines) {
+      const index = firstMatch(w.matchers, line)
+      if (index >= 0) return { line, index }
     }
     return null
   }
 
   private feedWaiters(rec: Rec, chunk: string): void {
     for (const w of [...rec.waiters]) {
-      w.buf += chunk
-      if (w.buf.length > WAIT_BUF_CAP) w.buf = w.buf.slice(-WAIT_BUF_CAP)
-      const line = this.matchLine(w)
-      if (line !== null) this.finishWaiter(rec, w, { line })
+      const hit = this.scanText(w, w.pending + chunk)
+      if (hit) this.finishWaiter(rec, w, hit)
     }
   }
 
-  private finishWaiter(rec: Rec, w: Waiter, r: { line?: string; timedOut?: boolean; exited?: boolean }): void {
+  private finishWaiter(rec: Rec, w: Waiter, r: { line?: string; index?: number; timedOut?: boolean; exited?: boolean }): void {
     const i = rec.waiters.indexOf(w)
     if (i < 0) return
     rec.waiters.splice(i, 1)
@@ -522,6 +639,8 @@ export class TerminalHost implements TerminalControl {
       line: r.line ?? null,
       timedOut: r.timedOut === true,
       exited: r.exited === true,
+      patternIndex: r.index ?? null,
+      pattern: r.index !== undefined ? w.matchers[r.index].source : null,
       tail: all.slice(-TAIL_LINES)
     }
     later(() => w.resolve(result))
@@ -566,23 +685,18 @@ export class TerminalHost implements TerminalControl {
           if (rec.run !== run) return
           rec.run = null
           run.ending = null
-          this.settle(rec, run, { exitCode: code, text })
+          this.finish(rec, run, { exitCode: code, text })
         }, EXIT_WAIT_MS)
         run.ending = { code, text, timer }
         return
       }
       rec.run = null
-      this.settle(rec, run, { exitCode: m.end.code, text })
+      this.finish(rec, run, { exitCode: m.end.code, text })
       return
     }
     run.scan = body.length
-    if (run.settled) {
-      // Nobody is waiting for the text any more: keep only what is needed to find the end marker.
-      if (body.length > 1024) {
-        run.body = body.slice(-1024)
-        run.scan = run.body.length
-      }
-    } else if (body.length > RUN_BODY_CAP) {
+    // Also after a timeout: the final result (get_run_result) is the whole run, capped.
+    if (body.length > RUN_BODY_CAP) {
       const cut = body.length - RUN_BODY_CAP
       run.body = body.slice(cut)
       run.scan = Math.max(0, run.scan - cut)
@@ -590,22 +704,42 @@ export class TerminalHost implements TerminalControl {
     }
   }
 
-  /** Resolve the caller (once). `text` defaults to what was captured so far. */
-  private settle(
-    rec: Rec,
-    run: Run,
-    r: { exitCode: number | null; timedOut?: boolean; exited?: boolean; text?: string }
-  ): void {
+  /** The run really ended (end marker, shell exit, tab removed): records the final result, resolves the caller if it
+   *  is still waiting, and wakes get_run_result waits. */
+  private finish(rec: Rec, run: Run, r: { exitCode: number | null; exited?: boolean; text?: string }): void {
     if (run.timer) {
       clearTimeout(run.timer)
       run.timer = null
     }
-    if (run.settled) return
-    run.settled = true
+    if (this.finished.has(run.nonce)) return
+    const result = this.buildResult(rec, run, { ...r, timedOut: false })
+    this.finished.set(run.nonce, { termId: rec.id, result })
+    while (this.finished.size > FINISHED_KEEP) {
+      const oldest = this.finished.keys().next().value
+      if (oldest === undefined) break
+      this.finished.delete(oldest)
+    }
+    if (!run.settled) {
+      run.settled = true
+      later(() => run.resolve(result))
+    }
+    for (const rw of run.waits.splice(0)) {
+      clearTimeout(rw.timer)
+      later(() => rw.resolve({ id: rec.id, runId: run.nonce, state: 'done', result }))
+    }
+  }
+
+  /** A RunResult from what the run captured so far (`text` overrides the captured body). */
+  private buildResult(
+    rec: Rec,
+    run: Run,
+    r: { exitCode: number | null; timedOut?: boolean; exited?: boolean; text?: string }
+  ): RunResult {
     const raw = r.text ?? run.body ?? ''
     const { output, truncated } = limitOutput(toLines(raw).join('\n'), run.bodyCut)
-    const result: RunResult = {
+    return {
       id: rec.id,
+      runId: run.nonce,
       exitCode: r.exitCode,
       success: r.exitCode === null ? null : r.exitCode === 0,
       output,
@@ -614,6 +748,5 @@ export class TerminalHost implements TerminalControl {
       exited: r.exited === true,
       durationMs: Date.now() - run.startedAt
     }
-    later(() => run.resolve(result))
   }
 }
